@@ -225,3 +225,333 @@ pub struct FinalityStats {
     pub pending_count: usize,
     pub total_messages: usize,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adic_types::{AdicParams, PublicKey};
+
+    fn make_ball_ids(axis_vals: &[(u32, &[u8])]) -> HashMap<u32, Vec<u8>> {
+        axis_vals
+            .iter()
+            .map(|(a, v)| (*a, v.to_vec()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_finality_engine_basic_flow() {
+        // Configure very permissive thresholds so simple chains can finalize
+        let mut params = AdicParams::default();
+        params.k = 1;              // minimal core size
+        params.depth_star = 0;     // allow depth 0
+        params.q = 1;              // diversity of 1 per axis
+        params.r_sum_min = 0.0;    // no reputation threshold
+
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let finality_cfg = FinalityConfig::from(&params);
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone());
+
+        // Create a tiny chain: root -> child
+        let root = MessageId::new(b"root");
+        let child = MessageId::new(b"child");
+
+        // Add root (no parents)
+        engine
+            .add_message(
+                root,
+                vec![],
+                1.0,
+                make_ball_ids(&[(0, &[0, 0]), (1, &[1, 0])]),
+            )
+            .await
+            .unwrap();
+
+        // Add child referencing root
+        engine
+            .add_message(
+                child,
+                vec![root],
+                1.0,
+                make_ball_ids(&[(0, &[0, 1]), (1, &[1, 0])]),
+            )
+            .await
+            .unwrap();
+
+        // Run finality check; with permissive thresholds root should finalize
+        let finalized = engine.check_finality().await.unwrap();
+        assert!(!finalized.is_empty());
+        assert!(engine.is_finalized(&root).await);
+        assert!(engine.get_artifact(&root).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_finality_config_from_params() {
+        let mut params = AdicParams::default();
+        params.k = 7;
+        params.depth_star = 10;
+        params.q = 3;
+        params.r_sum_min = 5.0;
+
+        let config = FinalityConfig::from(&params);
+        
+        assert_eq!(config.k, 7);
+        assert_eq!(config.min_depth, 10);
+        assert_eq!(config.min_diversity, 3);
+        assert_eq!(config.min_reputation, 5.0);
+        assert_eq!(config.check_interval_ms, 1000);
+        assert_eq!(config.window_size, 1000);
+    }
+
+    #[tokio::test]
+    async fn test_finality_engine_window_management() {
+        let params = AdicParams::default();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let mut finality_cfg = FinalityConfig::from(&params);
+        finality_cfg.window_size = 5; // Small window for testing
+        
+        let engine = FinalityEngine::new(finality_cfg, consensus);
+
+        // Add more messages than window size
+        for i in 0..10 {
+            let msg_id = MessageId::new(&[i; 32]);
+            engine
+                .add_message(msg_id, vec![], 1.0, HashMap::new())
+                .await
+                .unwrap();
+        }
+
+        // Check that pending window is limited
+        let pending = engine.pending.read().await;
+        assert!(pending.len() <= 5);
+    }
+
+    #[tokio::test]
+    async fn test_finality_engine_stats() {
+        let params = AdicParams::default();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let finality_cfg = FinalityConfig::from(&params);
+        let engine = FinalityEngine::new(finality_cfg, consensus);
+
+        // Add some messages
+        for i in 0..3 {
+            let msg_id = MessageId::new(&[i; 32]);
+            engine
+                .add_message(msg_id, vec![], 1.0, HashMap::new())
+                .await
+                .unwrap();
+        }
+
+        let stats = engine.get_stats().await;
+        assert_eq!(stats.pending_count, 3);
+        assert_eq!(stats.finalized_count, 0);
+        assert_eq!(stats.total_messages, 3);
+    }
+
+    #[tokio::test]
+    async fn test_finality_engine_with_deposits() {
+        let mut params = AdicParams::default();
+        params.k = 1;
+        params.depth_star = 0;
+        params.q = 1;
+        params.r_sum_min = 0.0;
+
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let finality_cfg = FinalityConfig::from(&params);
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone());
+
+        let root = MessageId::new(b"root");
+        let proposer = PublicKey::from_bytes([1; 32]);
+        
+        // Escrow deposit for the message
+        consensus.deposits.escrow(root, proposer).await.unwrap();
+        
+        // Add message to finality engine
+        engine
+            .add_message(
+                root,
+                vec![],
+                1.0,
+                make_ball_ids(&[(0, &[0, 0]), (1, &[1, 0])]),
+            )
+            .await
+            .unwrap();
+        
+        // Add child to trigger finality
+        let child = MessageId::new(b"child");
+        engine
+            .add_message(
+                child,
+                vec![root],
+                1.0,
+                make_ball_ids(&[(0, &[0, 1]), (1, &[1, 0])]),
+            )
+            .await
+            .unwrap();
+
+        // Check finality
+        let finalized = engine.check_finality().await.unwrap();
+        assert!(!finalized.is_empty());
+        
+        // Deposit should be refunded
+        let deposit_state = consensus.deposits.get_state(&root).await;
+        assert_eq!(deposit_state, Some(adic_consensus::DepositState::Refunded));
+        
+        // Reputation should be updated
+        let reputation = consensus.reputation.get_reputation(&proposer).await;
+        assert!(reputation > 1.0);
+    }
+
+    #[tokio::test]
+    async fn test_finality_artifact_creation() {
+        let params = AdicParams::default();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let finality_cfg = FinalityConfig::from(&params);
+        let engine = FinalityEngine::new(finality_cfg.clone(), consensus);
+
+        let msg_id = MessageId::new(b"test");
+        let kcore_result = KCoreResult {
+            is_final: true,
+            kcore_root: Some(MessageId::new(b"root")),
+            depth: 5,
+            total_reputation: 10.0,
+            distinct_balls: vec![(0, 3), (1, 4)].into_iter().collect(),
+            core_size: 7,
+        };
+
+        let artifact = engine.create_artifact(msg_id, kcore_result);
+        
+        assert_eq!(artifact.intent_id, msg_id);
+        assert_eq!(artifact.gate, FinalityGate::F1KCore);
+        assert_eq!(artifact.params.k, finality_cfg.k);
+        assert_eq!(artifact.params.q, finality_cfg.min_diversity);
+        assert_eq!(artifact.witness.depth, 5);
+        assert_eq!(artifact.witness.reputation_sum, 10.0);
+        assert_eq!(artifact.witness.core_size, 7);
+    }
+
+    #[tokio::test]
+    async fn test_finality_engine_clone() {
+        let params = AdicParams::default();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let finality_cfg = FinalityConfig::from(&params);
+        let engine = FinalityEngine::new(finality_cfg, consensus);
+
+        let msg_id = MessageId::new(b"test");
+        engine
+            .add_message(msg_id, vec![], 1.0, HashMap::new())
+            .await
+            .unwrap();
+
+        let cloned = engine.clone();
+        
+        // Both should see the same pending messages
+        let original_pending = engine.pending.read().await;
+        let cloned_pending = cloned.pending.read().await;
+        assert_eq!(original_pending.len(), cloned_pending.len());
+    }
+
+    #[tokio::test]
+    async fn test_multiple_finality_checks() {
+        let mut params = AdicParams::default();
+        params.k = 1;
+        params.depth_star = 0;
+        params.q = 1;
+        params.r_sum_min = 0.0;
+
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let finality_cfg = FinalityConfig::from(&params);
+        let engine = FinalityEngine::new(finality_cfg, consensus);
+
+        // Create a chain: root -> middle -> tip
+        let root = MessageId::new(b"root");
+        let middle = MessageId::new(b"middle");
+        let tip = MessageId::new(b"tip");
+
+        engine
+            .add_message(root, vec![], 1.0, make_ball_ids(&[(0, &[0])]))
+            .await
+            .unwrap();
+            
+        engine
+            .add_message(middle, vec![root], 1.0, make_ball_ids(&[(0, &[1])]))
+            .await
+            .unwrap();
+
+        // First check might finalize root
+        let finalized1 = engine.check_finality().await.unwrap();
+        
+        engine
+            .add_message(tip, vec![middle], 1.0, make_ball_ids(&[(0, &[2])]))
+            .await
+            .unwrap();
+
+        // Second check might finalize middle
+        let finalized2 = engine.check_finality().await.unwrap();
+        
+        // At least one should be finalized
+        assert!(finalized1.len() + finalized2.len() > 0);
+    }
+
+    #[tokio::test] 
+    async fn test_finality_no_consensus_proposer() {
+        let mut params = AdicParams::default();
+        params.k = 1;
+        params.depth_star = 0;
+        params.q = 1;
+        params.r_sum_min = 0.0;
+
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let finality_cfg = FinalityConfig::from(&params);
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone());
+
+        let root = MessageId::new(b"root");
+        let child = MessageId::new(b"child");
+        
+        // Add messages without escrowing deposits
+        engine
+            .add_message(root, vec![], 1.0, make_ball_ids(&[(0, &[0])]))
+            .await
+            .unwrap();
+            
+        engine
+            .add_message(child, vec![root], 1.0, make_ball_ids(&[(0, &[1])]))
+            .await
+            .unwrap();
+
+        // Should still finalize even without deposits
+        let finalized = engine.check_finality().await.unwrap();
+        assert!(!finalized.is_empty());
+    }
+
+    #[test]
+    fn test_finality_stats_creation() {
+        let stats = FinalityStats {
+            finalized_count: 10,
+            pending_count: 5,
+            total_messages: 15,
+        };
+        
+        assert_eq!(stats.finalized_count, 10);
+        assert_eq!(stats.pending_count, 5);
+        assert_eq!(stats.total_messages, 15);
+    }
+
+    #[test]
+    fn test_finality_config_creation() {
+        let config = FinalityConfig {
+            k: 5,
+            min_depth: 10,
+            min_diversity: 3,
+            min_reputation: 2.5,
+            check_interval_ms: 500,
+            window_size: 2000,
+        };
+        
+        assert_eq!(config.k, 5);
+        assert_eq!(config.min_depth, 10);
+        assert_eq!(config.min_diversity, 3);
+        assert_eq!(config.min_reputation, 2.5);
+        assert_eq!(config.check_interval_ms, 500);
+        assert_eq!(config.window_size, 2000);
+    }
+}

@@ -347,7 +347,7 @@ mod tests {
         let result = analyzer.analyze(root, &graph).unwrap();
         
         assert!(result.core_size > 0);
-        assert!(result.depth >= 0);
+        // depth is u32, so it's always >= 0
     }
 
     #[test]

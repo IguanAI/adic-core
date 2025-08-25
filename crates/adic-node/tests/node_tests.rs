@@ -2,6 +2,7 @@ use adic_node::{NodeConfig, AdicNode};
 use adic_crypto::Keypair;
 use adic_storage::{StorageEngine, StorageConfig};
 use adic_types::*;
+use adic_types::features::{AxisPhi, QpDigits};
 use chrono::Utc;
 
 #[tokio::test]
@@ -20,7 +21,22 @@ async fn test_message_submission() {
     let config = NodeConfig::default();
     let node = AdicNode::new(config).await.unwrap();
     
-    // Submit a test message
+    // First create genesis and some diverse parent messages
+    // Genesis is required to bootstrap the DAG
+    let genesis_id = create_genesis_for_node(&node).await;
+    
+    // Create diverse parents to satisfy diversity requirements
+    let _parent_ids = create_diverse_parents(&node, genesis_id).await;
+    
+    // Sync tips from storage to TipManager
+    node.sync_tips_from_storage().await.unwrap();
+    
+    // Check what tips are available
+    let tips = node.storage.get_tips().await.unwrap();
+    println!("Available tips in storage: {}", tips.len());
+    assert!(tips.len() >= 4, "Need at least 4 tips for diversity, got {}", tips.len());
+    
+    // Now we can submit a test message
     let content = b"Hello, ADIC!".to_vec();
     let message_id = node.submit_message(content.clone()).await.unwrap();
     
@@ -43,13 +59,23 @@ async fn test_node_stats() {
     assert_eq!(stats.message_count, 0);
     assert_eq!(stats.tip_count, 0);
     
+    // Create genesis and diverse parents first
+    let genesis_id = create_genesis_for_node(&node).await;
+    let _parent_ids = create_diverse_parents(&node, genesis_id).await;
+    
+    // Sync tips from storage to TipManager
+    node.sync_tips_from_storage().await.unwrap();
+    
+    // Get stats after genesis
+    let stats = node.get_stats().await.unwrap();
+    assert!(stats.message_count > 0);
+    
     // Submit a message
     node.submit_message(b"test".to_vec()).await.unwrap();
     
     // Check stats updated
-    let stats = node.get_stats().await.unwrap();
-    assert_eq!(stats.message_count, 1);
-    assert_eq!(stats.tip_count, 1);
+    let new_stats = node.get_stats().await.unwrap();
+    assert_eq!(new_stats.message_count, stats.message_count + 1);
 }
 
 #[tokio::test]
@@ -143,4 +169,75 @@ fn test_message_id_generation() {
     
     // Different content should produce different IDs
     assert_ne!(msg1.id, msg2.id);
+}
+
+// Helper functions for test setup
+async fn create_genesis_for_node(node: &AdicNode) -> MessageId {
+    // Create genesis message with all-zero features as per spec
+    let genesis_features = AdicFeatures::new(vec![
+        AxisPhi::new(0, QpDigits::from_u64(0, 3, 10)),
+        AxisPhi::new(1, QpDigits::from_u64(0, 3, 10)),
+        AxisPhi::new(2, QpDigits::from_u64(0, 3, 10)),
+    ]);
+    
+    let keypair = Keypair::generate();
+    let mut genesis = AdicMessage::new(
+        vec![],  // No parents for genesis
+        genesis_features,
+        AdicMeta::new(Utc::now()),
+        *keypair.public_key(),
+        b"Genesis".to_vec(),
+    );
+    
+    // Sign the message
+    let signature = keypair.sign(&genesis.to_bytes());
+    genesis.signature = signature;
+    
+    // Store directly in the node's storage
+    node.storage.store_message(&genesis).await.unwrap();
+    
+    genesis.id
+}
+
+async fn create_diverse_parents(node: &AdicNode, genesis_id: MessageId) -> Vec<MessageId> {
+    let mut tip_ids = Vec::new();
+    
+    // Create messages with diverse features to satisfy diversity requirements
+    // We need at least d+1 parents with diverse p-adic balls
+    // Use powers of 3 to ensure maximum diversity in base 3
+    let diverse_values = vec![
+        (1, 2, 4),    // Different low values
+        (3, 5, 7),    // Prime numbers
+        (9, 10, 11),  // Powers and neighbors
+        (27, 28, 29), // 3^3 and neighbors
+        (81, 82, 83), // 3^4 and neighbors
+        (100, 101, 102), // Different century
+    ];
+    
+    for (i, (v0, v1, v2)) in diverse_values.iter().enumerate() {
+        let features = AdicFeatures::new(vec![
+            AxisPhi::new(0, QpDigits::from_u64(*v0, 3, 10)),
+            AxisPhi::new(1, QpDigits::from_u64(*v1, 3, 10)),
+            AxisPhi::new(2, QpDigits::from_u64(*v2, 3, 10)),
+        ]);
+        
+        let keypair = Keypair::generate();
+        let mut msg = AdicMessage::new(
+            vec![genesis_id],  // Point back to genesis
+            features,
+            AdicMeta::new(Utc::now()),
+            *keypair.public_key(),
+            format!("Parent {}", i + 1).into_bytes(),
+        );
+        
+        let signature = keypair.sign(&msg.to_bytes());
+        msg.signature = signature;
+        
+        // Store the message - storage automatically manages tips
+        node.storage.store_message(&msg).await.unwrap();
+        
+        tip_ids.push(msg.id);
+    }
+    
+    tip_ids
 }

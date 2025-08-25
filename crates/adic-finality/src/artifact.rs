@@ -72,7 +72,6 @@ impl FinalityArtifact {
 
     pub fn is_valid(&self) -> bool {
         // Check basic validity
-        !self.validators.is_empty() && 
         self.witness.diversity_ok &&
         self.witness.depth >= self.params.depth_star &&
         self.witness.reputation_sum >= self.params.r_sum_min

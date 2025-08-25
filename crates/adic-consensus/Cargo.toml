@@ -9,6 +9,7 @@ license.workspace = true
 adic-types = { path = "../adic-types" }
 adic-math = { path = "../adic-math" }
 adic-crypto = { path = "../adic-crypto" }
+adic-economics = { path = "../adic-economics" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }

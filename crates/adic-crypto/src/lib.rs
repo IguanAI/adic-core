@@ -109,18 +109,8 @@ impl CryptoEngine {
     }
 
     fn message_to_bytes(&self, message: &AdicMessage) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        
-        for parent in &message.parents {
-            bytes.extend_from_slice(parent.as_bytes());
-        }
-        
-        bytes.extend_from_slice(&serde_json::to_vec(&message.features).unwrap());
-        bytes.extend_from_slice(&serde_json::to_vec(&message.meta).unwrap());
-        bytes.extend_from_slice(message.proposer_pk.as_bytes());
-        bytes.extend_from_slice(&message.payload);
-        
-        bytes
+        // Use the message's own to_bytes() method for consistency
+        message.to_bytes()
     }
 }
 

@@ -7,18 +7,19 @@ members = [
     "crates/adic-mrw",
     "crates/adic-consensus",
     "crates/adic-finality",
-    # "crates/adic-network",  # Temporarily disabled - complex dependencies
+    "crates/adic-economics",
+    "crates/adic-network",
     "crates/adic-node",
     "crates/adic-bench",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["ADIC Core Team"]
 license = "MIT"
-repository = "https://github.com/adic-core/adic-core"
+repository = "https://github.com/IguanAI/adic-core"
 
 [workspace.dependencies]
 # Async runtime
@@ -41,7 +42,7 @@ hex = "0.4"
 rocksdb = "0.22"
 
 # Networking
-libp2p = { version = "0.54", features = ["tcp", "noise", "yamux", "gossipsub", "kad", "identify"] }
+libp2p = { version = "0.54", features = ["tcp", "tokio", "noise", "yamux", "gossipsub", "kad", "identify", "mdns", "request-response", "dcutr", "relay", "metrics"] }
 quinn = "0.11"
 
 # Math

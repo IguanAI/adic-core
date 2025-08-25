@@ -2,6 +2,7 @@ pub mod config;
 pub mod node;
 pub mod api;
 pub mod cli;
+pub mod economics_api;
 pub mod metrics;
 
 pub use config::NodeConfig;

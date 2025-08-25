@@ -122,3 +122,18 @@ impl Metrics {
         encoder.encode_to_string(&metric_families).unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metrics_gather() {
+        let m = Metrics::new();
+        m.messages_submitted.inc();
+        m.finalizations_total.inc_by(2);
+        let text = m.gather();
+        assert!(text.contains("adic_messages_submitted_total"));
+        assert!(text.contains("adic_finalizations_total"));
+    }
+}

@@ -293,6 +293,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_duplicate_message_error() {
+        let backend = MemoryBackend::new();
+        
+        let message = AdicMessage::new(
+            vec![],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(10, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([0; 32]),
+            vec![],
+        );
+        
+        backend.put_message(&message).await.unwrap();
+        
+        // Trying to insert the same message again should fail
+        let result = backend.put_message(&message).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), StorageError::AlreadyExists(_)));
+    }
+
+    #[tokio::test]
+    async fn test_delete_message() {
+        let backend = MemoryBackend::new();
+        
+        let parent = AdicMessage::new(
+            vec![],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(1, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([0; 32]),
+            vec![],
+        );
+        
+        let child = AdicMessage::new(
+            vec![parent.id],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(2, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([1; 32]),
+            vec![],
+        );
+        
+        backend.put_message(&parent).await.unwrap();
+        backend.put_message(&child).await.unwrap();
+        
+        // Delete child message
+        backend.delete_message(&child.id).await.unwrap();
+        
+        assert!(!backend.has_message(&child.id).await.unwrap());
+        assert!(backend.has_message(&parent.id).await.unwrap());
+        
+        // Parent should no longer have child in its children list
+        let children = backend.get_children(&parent.id).await.unwrap();
+        assert!(!children.contains(&child.id));
+    }
+
+    #[tokio::test]
+    async fn test_list_messages() {
+        let backend = MemoryBackend::new();
+        
+        let mut message_ids = vec![];
+        
+        for i in 0..5 {
+            let message = AdicMessage::new(
+                vec![],
+                AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(i, 3, 5))]),
+                AdicMeta::new(Utc::now()),
+                PublicKey::from_bytes([i as u8; 32]),
+                vec![],
+            );
+            message_ids.push(message.id);
+            backend.put_message(&message).await.unwrap();
+        }
+        
+        let listed = backend.list_messages().await.unwrap();
+        assert_eq!(listed.len(), 5);
+        
+        for id in message_ids {
+            assert!(listed.contains(&id));
+        }
+    }
+
+    #[tokio::test]
     async fn test_tips_management() {
         let backend = MemoryBackend::new();
         
@@ -331,5 +411,201 @@ mod tests {
         let parents = backend.get_parents(&child1).await.unwrap();
         assert_eq!(parents.len(), 1);
         assert!(parents.contains(&parent));
+    }
+
+    #[tokio::test]
+    async fn test_metadata() {
+        let backend = MemoryBackend::new();
+        
+        let msg_id = MessageId::new(b"msg1");
+        let key = "test_key";
+        let value = b"test_value";
+        
+        backend.put_metadata(&msg_id, key, value).await.unwrap();
+        
+        let retrieved = backend.get_metadata(&msg_id, key).await.unwrap();
+        assert_eq!(retrieved, Some(value.to_vec()));
+        
+        let missing = backend.get_metadata(&msg_id, "missing_key").await.unwrap();
+        assert_eq!(missing, None);
+    }
+
+    #[tokio::test]
+    async fn test_reputation() {
+        let backend = MemoryBackend::new();
+        
+        let pubkey = PublicKey::from_bytes([42; 32]);
+        let score = 0.75;
+        
+        backend.put_reputation(&pubkey, score).await.unwrap();
+        
+        let retrieved = backend.get_reputation(&pubkey).await.unwrap();
+        assert_eq!(retrieved, Some(score));
+        
+        let missing_key = PublicKey::from_bytes([99; 32]);
+        let missing = backend.get_reputation(&missing_key).await.unwrap();
+        assert_eq!(missing, None);
+    }
+
+    #[tokio::test]
+    async fn test_finality() {
+        let backend = MemoryBackend::new();
+        
+        let msg_id = MessageId::new(b"final_msg");
+        let artifact = b"finality_artifact_data";
+        
+        assert!(!backend.is_finalized(&msg_id).await.unwrap());
+        
+        backend.mark_finalized(&msg_id, artifact).await.unwrap();
+        
+        assert!(backend.is_finalized(&msg_id).await.unwrap());
+        
+        let retrieved = backend.get_finality_artifact(&msg_id).await.unwrap();
+        assert_eq!(retrieved, Some(artifact.to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_conflict_sets() {
+        let backend = MemoryBackend::new();
+        
+        let conflict_id = "conflict_1";
+        let msg1 = MessageId::new(b"msg1");
+        let msg2 = MessageId::new(b"msg2");
+        let msg3 = MessageId::new(b"msg3");
+        
+        backend.add_to_conflict(conflict_id, &msg1).await.unwrap();
+        backend.add_to_conflict(conflict_id, &msg2).await.unwrap();
+        backend.add_to_conflict(conflict_id, &msg3).await.unwrap();
+        
+        let conflict_set = backend.get_conflict_set(conflict_id).await.unwrap();
+        assert_eq!(conflict_set.len(), 3);
+        assert!(conflict_set.contains(&msg1));
+        assert!(conflict_set.contains(&msg2));
+        assert!(conflict_set.contains(&msg3));
+        
+        let empty_set = backend.get_conflict_set("nonexistent").await.unwrap();
+        assert!(empty_set.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_ball_index() {
+        let backend = MemoryBackend::new();
+        
+        let axis = 0;
+        let ball_id = b"ball_123";
+        let msg1 = MessageId::new(b"msg1");
+        let msg2 = MessageId::new(b"msg2");
+        
+        backend.add_to_ball_index(axis, ball_id, &msg1).await.unwrap();
+        backend.add_to_ball_index(axis, ball_id, &msg2).await.unwrap();
+        
+        let members = backend.get_ball_members(axis, ball_id).await.unwrap();
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&msg1));
+        assert!(members.contains(&msg2));
+        
+        let empty = backend.get_ball_members(axis, b"nonexistent").await.unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_transactions() {
+        let backend = MemoryBackend::new();
+        
+        // Transactions are no-ops for memory backend, but should not error
+        backend.begin_transaction().await.unwrap();
+        backend.commit_transaction().await.unwrap();
+        backend.rollback_transaction().await.unwrap();
+        backend.flush().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_storage_stats() {
+        let backend = MemoryBackend::new();
+        
+        // Add some data
+        let msg1 = AdicMessage::new(
+            vec![],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(1, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([1; 32]),
+            vec![],
+        );
+        
+        let msg2 = AdicMessage::new(
+            vec![msg1.id],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(2, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([2; 32]),
+            vec![],
+        );
+        
+        backend.put_message(&msg1).await.unwrap();
+        backend.put_message(&msg2).await.unwrap();
+        backend.add_tip(&msg2.id).await.unwrap();
+        backend.mark_finalized(&msg1.id, b"artifact").await.unwrap();
+        backend.put_reputation(&PublicKey::from_bytes([1; 32]), 1.0).await.unwrap();
+        backend.add_to_conflict("conflict1", &msg1.id).await.unwrap();
+        
+        let stats = backend.get_stats().await.unwrap();
+        
+        assert_eq!(stats.message_count, 2);
+        assert_eq!(stats.tip_count, 1);
+        assert_eq!(stats.finalized_count, 1);
+        assert_eq!(stats.reputation_entries, 1);
+        assert_eq!(stats.conflict_sets, 1);
+        assert_eq!(stats.total_size_bytes, None);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_operations() {
+        let backend = MemoryBackend::new();
+        let mut handles = vec![];
+        
+        // Concurrent message insertions
+        for i in 0..10 {
+            let backend_clone = backend.clone();
+            let handle = tokio::spawn(async move {
+                let message = AdicMessage::new(
+                    vec![],
+                    AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(i, 3, 5))]),
+                    AdicMeta::new(Utc::now()),
+                    PublicKey::from_bytes([i as u8; 32]),
+                    vec![],
+                );
+                backend_clone.put_message(&message).await
+            });
+            handles.push(handle);
+        }
+        
+        for handle in handles {
+            assert!(handle.await.unwrap().is_ok());
+        }
+        
+        let messages = backend.list_messages().await.unwrap();
+        assert_eq!(messages.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_default_impl() {
+        let backend = MemoryBackend::default();
+        let stats = backend.get_stats().await.unwrap();
+        assert_eq!(stats.message_count, 0);
+    }
+}
+
+impl Clone for MemoryBackend {
+    fn clone(&self) -> Self {
+        Self {
+            messages: Arc::clone(&self.messages),
+            parents: Arc::clone(&self.parents),
+            children: Arc::clone(&self.children),
+            tips: Arc::clone(&self.tips),
+            metadata: Arc::clone(&self.metadata),
+            reputation: Arc::clone(&self.reputation),
+            finalized: Arc::clone(&self.finalized),
+            conflicts: Arc::clone(&self.conflicts),
+            ball_index: Arc::clone(&self.ball_index),
+        }
     }
 }

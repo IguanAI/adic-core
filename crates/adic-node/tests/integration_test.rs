@@ -3,7 +3,7 @@ use adic_crypto::Keypair;
 use adic_finality::{FinalityEngine, FinalityConfig};
 use adic_math::{vp_diff, proximity_score};
 use adic_mrw::{MrwSelector, SelectionParams, ParentCandidate, WeightCalculator};
-use adic_storage::{StorageEngine, StorageConfig, StorageBackend};
+use adic_storage::{StorageEngine, StorageConfig};
 use adic_types::*;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ async fn test_full_consensus_flow() {
     
     // Create consensus engine
     let consensus = Arc::new(ConsensusEngine::new(params.clone()));
-    let checker = AdmissibilityChecker::new(params.clone());
+    let _checker = AdmissibilityChecker::new(params.clone());
     
     // Create finality engine
     let finality_config = FinalityConfig::from(&params);
@@ -61,7 +61,7 @@ async fn test_full_consensus_flow() {
     }
     
     // Check finality
-    let finalized = finality.check_finality().await.unwrap();
+    let _finalized = finality.check_finality().await.unwrap();
     
     // Verify storage
     let stats = storage.get_stats().await.unwrap();
@@ -124,7 +124,7 @@ async fn test_admissibility_constraints() {
     let result = checker.check_message(&message, &parent_features, &parent_reputations).unwrap();
     
     // Check individual constraints
-    println!("C1 (Proximity): {}", result.c1_passed);
+    println!("Score passed (S(x;A) >= d): {}", result.score_passed);
     println!("C2 (Diversity): {}", result.c2_passed);
     println!("C3 (Reputation): {}", result.c3_passed);
     println!("Overall admissible: {}", result.is_admissible);
@@ -143,15 +143,16 @@ async fn test_mrw_parent_selection() {
     let mut candidates = Vec::new();
     for i in 0..10 {
         candidates.push(ParentCandidate {
-            id: MessageId::new(format!("tip{}", i).as_bytes()),
-            features: AdicFeatures::new(vec![
-                AxisPhi::new(0, QpDigits::from_u64(i as u64, 3, 10)),
-                AxisPhi::new(1, QpDigits::from_u64((i * 2) as u64, 3, 10)),
-                AxisPhi::new(2, QpDigits::from_u64((i * 3) as u64, 3, 10)),
-            ]),
+            message_id: MessageId::new(format!("tip{}", i).as_bytes()),
+            features: vec![
+                QpDigits::from_u64(i as u64, 3, 10),
+                QpDigits::from_u64((i * 2) as u64, 3, 10),
+                QpDigits::from_u64((i * 3) as u64, 3, 10),
+            ],
             reputation: 1.0 + (i as f64) * 0.1,
-            depth: 10 + i as u32,
-            descendant_count: 100 - i * 10,
+            conflict_penalty: 0.1 * (i as f64),
+            weight: 1.0,
+            axis_weights: HashMap::new(),
         });
     }
     
@@ -175,11 +176,11 @@ async fn test_mrw_parent_selection() {
     // Check diversity
     let mut balls_per_axis: HashMap<u32, HashSet<Vec<u8>>> = HashMap::new();
     for parent_id in &selected {
-        let parent = candidates.iter().find(|c| c.id == *parent_id).unwrap();
-        for (idx, axis_phi) in parent.features.phi.iter().enumerate() {
+        let parent = candidates.iter().find(|c| c.message_id == *parent_id).unwrap();
+        for (idx, qp_digits) in parent.features.iter().enumerate() {
             balls_per_axis.entry(idx as u32)
                 .or_insert_with(HashSet::new)
-                .insert(axis_phi.qp_digits.ball_id(3));
+                .insert(qp_digits.ball_id(3));
         }
     }
     
@@ -188,17 +189,17 @@ async fn test_mrw_parent_selection() {
         assert!(balls.len() >= params.q as usize);
     }
     
-    println!("Selected {} parents with trace length {}", selected.len(), trace.len());
+    println!("Selected {} parents with {} steps", selected.len(), trace.steps.len());
 }
 
 #[test]
 fn test_padic_mathematics() {
     // Test vp_diff
-    let x = QpDigits::from_u64(27, 3, 10); // 27 = 1*3^0 + 0*3^1 + 0*3^2 + 1*3^3
+    let x = QpDigits::from_u64(27, 3, 10); // 27 = 0*3^0 + 0*3^1 + 0*3^2 + 1*3^3
     let y = QpDigits::from_u64(9, 3, 10);  // 9 = 0*3^0 + 0*3^1 + 1*3^2
     
     let diff = vp_diff(&x, &y);
-    assert_eq!(diff, 0); // They differ at position 0
+    assert_eq!(diff, 2); // They differ at position 2
     
     // Test with same prefix
     let x = QpDigits::from_u64(10, 3, 10); // 10 = 1*3^0 + 0*3^1 + 1*3^2
@@ -253,7 +254,7 @@ async fn test_finality_kcore() {
     }
     
     // Check finality
-    let finalized = finality.check_finality().await.unwrap();
+    let _finalized = finality.check_finality().await.unwrap();
     
     // Get stats
     let stats = finality.get_stats().await;

@@ -25,7 +25,8 @@ mod tests {
         let x = QpDigits::from_u64(10, 3, 5);
         let y = QpDigits::from_u64(11, 3, 5);
         let diff = vp_diff(&x, &y);
-        assert!(diff >= 0);
+        // diff is u32, so it's always >= 0
+        assert!(diff < u32::MAX);  // Just check it's a valid value
     }
 
     #[test]

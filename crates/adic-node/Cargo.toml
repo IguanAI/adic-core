@@ -14,6 +14,7 @@ adic-types = { path = "../adic-types" }
 adic-math = { path = "../adic-math" }
 adic-crypto = { path = "../adic-crypto" }
 adic-consensus = { path = "../adic-consensus" }
+adic-economics = { path = "../adic-economics" }
 adic-mrw = { path = "../adic-mrw" }
 adic-finality = { path = "../adic-finality" }
 adic-storage = { path = "../adic-storage" }
@@ -36,3 +37,4 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
 toml = "0.8"
+dotenv = "0.15"

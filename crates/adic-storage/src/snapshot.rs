@@ -206,10 +206,11 @@ impl SnapshotManager {
         // Create snapshot
         let snapshot = Snapshot::create(backend).await?;
         
-        // Generate filename with timestamp
+        // Generate filename with timestamp including nanoseconds for uniqueness
         let filename = format!(
-            "snapshot_{}.bin",
-            snapshot.metadata.created_at.timestamp()
+            "snapshot_{}_{}.bin",
+            snapshot.metadata.created_at.timestamp(),
+            snapshot.metadata.created_at.timestamp_nanos_opt().unwrap_or(0) % 1_000_000
         );
         let path = self.snapshot_dir.join(filename);
 
@@ -264,10 +265,13 @@ impl SnapshotManager {
 
     /// Clean up old snapshots beyond max_snapshots limit
     async fn cleanup_old_snapshots(&self) -> Result<()> {
-        let snapshots = self.list_snapshots().await?;
+        let mut snapshots = self.list_snapshots().await?;
         
         if snapshots.len() > self.max_snapshots {
-            // Delete oldest snapshots
+            // Sort by created_at (newest first)
+            snapshots.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
+            
+            // Delete oldest snapshots (those beyond max_snapshots)
             for (path, _) in snapshots.iter().skip(self.max_snapshots) {
                 fs::remove_file(path).await?;
             }
@@ -334,6 +338,16 @@ mod tests {
         assert!(tips.contains(&message.id));
     }
 
+    fn create_test_message(content: String) -> AdicMessage {
+        AdicMessage::new(
+            vec![],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(content.len() as u64, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([content.bytes().next().unwrap_or(0); 32]),
+            content.into_bytes(),
+        )
+    }
+
     #[tokio::test]
     async fn test_snapshot_manager() {
         let temp_dir = TempDir::new().unwrap();
@@ -365,12 +379,17 @@ mod tests {
         assert_eq!(latest.unwrap().messages.len(), 1);
         
         // Test cleanup (create more than max_snapshots)
-        for _ in 0..4 {
+        for i in 0..4 {
+            // Add a message to make snapshots different
+            let msg = create_test_message(format!("test{}", i + 1));
+            backend.put_message(&msg).await.unwrap();
+            
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             manager.create_snapshot(&backend).await.unwrap();
         }
         
         let snapshots = manager.list_snapshots().await.unwrap();
+        println!("Final snapshots count: {}", snapshots.len());
         assert_eq!(snapshots.len(), 3); // Should be limited to max_snapshots
     }
 }

@@ -5,7 +5,7 @@ pub mod validation;
 pub mod conflict;
 
 pub use admissibility::{AdmissibilityChecker, AdmissibilityResult};
-pub use deposit::{DepositManager, DepositState};
+pub use deposit::{DepositManager, DepositState, DepositStatus, Deposit, DepositStats};
 pub use reputation::ReputationTracker;
 pub use validation::{MessageValidator, ValidationResult};
 pub use conflict::{ConflictResolver, ConflictEnergy};
@@ -75,11 +75,141 @@ impl ConsensusEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use adic_types::{AdicFeatures, AdicMeta, PublicKey, MessageId, ConflictId};
+    use adic_types::features::{AxisPhi, QpDigits};
+    use chrono::Utc;
 
     #[test]
-    fn it_works() {
+    fn test_consensus_engine_creation() {
         let params = AdicParams::default();
         let engine = ConsensusEngine::new(params);
         assert_eq!(engine.params().d, 3);
+        assert_eq!(engine.params().k, 20);
+        assert_eq!(engine.params().gamma, 0.9);
+    }
+
+    #[tokio::test]
+    async fn test_validate_and_slash_with_invalid_signature() {
+        let params = AdicParams::default();
+        let engine = ConsensusEngine::new(params);
+        
+        let mut message = AdicMessage::new(
+            vec![],
+            AdicFeatures::new(vec![
+                AxisPhi::new(0, QpDigits::from_u64(1, 3, 10)),
+                AxisPhi::new(1, QpDigits::from_u64(2, 3, 10)),
+                AxisPhi::new(2, QpDigits::from_u64(3, 3, 10)),
+            ]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([1; 32]),
+            vec![],
+        );
+        
+        // Add a non-empty but invalid signature
+        message.signature = adic_types::Signature::new(vec![1; 64]);
+        
+        // First escrow deposit for the message
+        engine.deposits.escrow(message.id, PublicKey::from_bytes([1; 32])).await.unwrap();
+        
+        let result = engine.validate_and_slash(&message).await.unwrap();
+        
+        // Message with invalid signature should fail validation
+        assert!(!result.is_valid);
+        assert!(!result.errors.is_empty());
+        
+        // Deposit should be slashed due to invalid message
+        let deposit_state = engine.deposits.get_state(&message.id).await;
+        assert_eq!(deposit_state, Some(DepositState::Slashed));
+    }
+
+    #[tokio::test]
+    async fn test_validate_and_slash_invalid_message() {
+        let params = AdicParams::default();
+        let engine = ConsensusEngine::new(params);
+        
+        // Create an invalid message with too many parents
+        let mut parents = vec![];
+        for i in 0..10 {
+            parents.push(MessageId::new(&[i; 32]));
+        }
+        
+        let message = AdicMessage::new(
+            parents,
+            AdicFeatures::new(vec![
+                AxisPhi::new(0, QpDigits::from_u64(1, 3, 10)),
+                AxisPhi::new(1, QpDigits::from_u64(2, 3, 10)),
+                AxisPhi::new(2, QpDigits::from_u64(3, 3, 10)),
+            ]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([1; 32]),
+            vec![],
+        );
+        
+        // First escrow a deposit for this message
+        engine.deposits.escrow(message.id, PublicKey::from_bytes([1; 32])).await.unwrap();
+        
+        let result = engine.validate_and_slash(&message).await.unwrap();
+        assert!(!result.is_valid);
+        assert!(!result.errors.is_empty());
+        
+        // Check deposit was slashed
+        let deposit_state = engine.deposits.get_state(&message.id).await;
+        assert_eq!(deposit_state, Some(DepositState::Slashed));
+    }
+
+    #[test]
+    fn test_consensus_engine_getters() {
+        let params = AdicParams::default();
+        let engine = ConsensusEngine::new(params.clone());
+        
+        assert_eq!(engine.params().d, params.d);
+        assert_eq!(engine.params().k, params.k);
+        assert_eq!(engine.params().gamma, params.gamma);
+        
+        // Test that getters return proper references
+        let _ = engine.admissibility();
+        let _ = engine.validator();
+        let _ = engine.conflicts();
+        let _ = engine.conflict_resolver();
+    }
+
+    #[tokio::test]
+    async fn test_consensus_engine_reputation_tracking() {
+        let params = AdicParams::default();
+        let engine = ConsensusEngine::new(params);
+        
+        let proposer = PublicKey::from_bytes([2; 32]);
+        let initial_rep = engine.reputation.get_reputation(&proposer).await;
+        assert_eq!(initial_rep, 1.0);
+        
+        // Good update
+        engine.reputation.good_update(&proposer, 5.0, 10).await;
+        let new_rep = engine.reputation.get_reputation(&proposer).await;
+        assert!(new_rep > initial_rep);
+        
+        // Bad update
+        engine.reputation.bad_update(&proposer, 2.0).await;
+        let final_rep = engine.reputation.get_reputation(&proposer).await;
+        assert!(final_rep < new_rep);
+    }
+
+    #[tokio::test]
+    async fn test_consensus_engine_conflict_resolution() {
+        let params = AdicParams::default();
+        let engine = ConsensusEngine::new(params);
+        
+        let conflict_id = ConflictId::new("test-conflict".to_string());
+        let msg1 = MessageId::new(b"msg1");
+        let msg2 = MessageId::new(b"msg2");
+        
+        engine.conflicts.register_conflict(conflict_id.clone()).await;
+        engine.conflicts.update_support(&conflict_id, msg1, 3.0, 1).await.unwrap();
+        engine.conflicts.update_support(&conflict_id, msg2, 1.0, 1).await.unwrap();
+        
+        let winner = engine.conflicts.get_winner(&conflict_id).await;
+        assert_eq!(winner, Some(msg1));
+        
+        let penalty = engine.conflicts.get_penalty(&msg2, &conflict_id).await;
+        assert!(penalty > 0.0);
     }
 }

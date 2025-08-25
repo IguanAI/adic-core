@@ -76,6 +76,8 @@ mod tests {
 
     #[test]
     fn test_balls_are_distinct() {
+        // 10=[1,0,1,0,0], 11=[2,0,1,0,0], 12=[0,1,1,0,0]
+        // With radius 1, they have different first digits: 1, 2, 0
         let points = vec![
             QpDigits::from_u64(10, 3, 5),
             QpDigits::from_u64(11, 3, 5),
@@ -84,12 +86,16 @@ mod tests {
         
         assert!(balls_are_distinct(&points, 1, 3));
         
+        // For same ball test, use numbers that share first 2 digits
+        // 9=[0,0,1,0,0], 27=[0,0,0,1,0], 81=[0,0,0,0,1]
+        // All have [0,0] as first 2 digits
         let same_ball = vec![
             QpDigits::from_u64(9, 3, 5),
-            QpDigits::from_u64(12, 3, 5),
-            QpDigits::from_u64(15, 3, 5),
+            QpDigits::from_u64(27, 3, 5),
+            QpDigits::from_u64(81, 3, 5),
         ];
         
+        // They're all in the same ball with radius 2, so we don't have 3 distinct balls
         assert!(!balls_are_distinct(&same_ball, 2, 3));
     }
 
@@ -105,6 +111,8 @@ mod tests {
 
     #[test]
     fn test_count_distinct_balls() {
+        // 10=[1,0,1], 11=[2,0,1], 12=[0,1,1], 13=[1,1,1]
+        // With radius 1: balls are [1], [2], [0], [1] - only 3 distinct
         let points = vec![
             QpDigits::from_u64(10, 3, 5),
             QpDigits::from_u64(11, 3, 5),
@@ -113,9 +121,12 @@ mod tests {
         ];
         
         let count = count_distinct_balls(&points, 1);
-        assert_eq!(count, 4);
+        assert_eq!(count, 3); // 10 and 13 share ball [1]
         
+        // With radius 2, we look at first 2 digits
+        // 10=[1,0], 11=[2,0], 12=[0,1], 13=[1,1] - all 4 are distinct
         let count_r2 = count_distinct_balls(&points, 2);
-        assert!(count_r2 <= count);
+        assert_eq!(count_r2, 4);
+        assert!(count_r2 >= count); // More precision can't reduce distinct balls
     }
 }

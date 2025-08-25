@@ -29,4 +29,7 @@ RUN mkdir -p /results
 EXPOSE 8888
 
 # Default command to run Jupyter
-CMD ["jupyter", "notebook", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--NotebookApp.token=''", "--NotebookApp.password=''"]
+# WARNING: This configuration is for development only!
+# For production, remove --NotebookApp.token='' and set a secure token/password
+# Generate a password hash with: python -c "from notebook.auth import passwd; print(passwd())"
+CMD ["jupyter", "notebook", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]

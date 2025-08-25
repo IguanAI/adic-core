@@ -15,10 +15,10 @@ use tracing::{info, debug, warn};
 pub struct AdicNode {
     config: NodeConfig,
     keypair: Keypair,
-    consensus: Arc<ConsensusEngine>,
+    pub consensus: Arc<ConsensusEngine>,
     pub mrw: Arc<MrwEngine>,
-    storage: Arc<StorageEngine>,
-    finality: Arc<FinalityEngine>,
+    pub storage: Arc<StorageEngine>,
+    pub finality: Arc<FinalityEngine>,
     index: Arc<MessageIndex>,
     tip_manager: Arc<TipManager>,
     running: Arc<RwLock<bool>>,
@@ -95,9 +95,27 @@ impl AdicNode {
         
         // Main loop
         while *self.running.read().await {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            // Process incoming messages from network (if any)
+            self.process_incoming_messages().await?;
             
-            // Periodic tasks would go here
+            // Check for finalized messages
+            self.check_finality().await?;
+            
+            // Update tips
+            self.update_tips().await?;
+            
+            // Apply reputation decay periodically
+            if self.should_apply_reputation_decay() {
+                self.consensus.reputation.apply_decay().await;
+            }
+            
+            // Cleanup old conflicts
+            if self.should_cleanup_conflicts() {
+                self.consensus.conflicts()
+                    .cleanup_resolved(0.5, 86400).await; // 1 day old conflicts
+            }
+            
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             // - Check for new messages
             // - Run consensus
             // - Update finality
@@ -150,7 +168,7 @@ impl AdicNode {
         let validation_result = self.consensus.validate_and_slash(&message).await?;
         if !validation_result.is_valid {
             warn!("Message failed validation and was slashed: {:?}", validation_result.errors);
-            return Err(anyhow::anyhow!("Message failed validation"));
+            return Err(anyhow::anyhow!("Message failed validation: {:?}", validation_result.errors));
         }
 
         // The admissibility check is now implicitly handled by mrw.select_parents
@@ -209,6 +227,82 @@ impl AdicNode {
     
     pub async fn get_finality_artifact(&self, id: &MessageId) -> Option<adic_finality::artifact::FinalityArtifact> {
         self.finality.get_artifact(id).await
+    }
+    
+    async fn process_incoming_messages(&self) -> Result<()> {
+        // In a real implementation, this would fetch messages from the network
+        // For now, we'll just process any messages in a queue
+        Ok(())
+    }
+    
+    async fn check_finality(&self) -> Result<()> {
+        let finalized = self.finality.check_finality().await?;
+        
+        for msg_id in finalized {
+            debug!("Message finalized: {}", hex::encode(msg_id.as_bytes()));
+            
+            // Update tip manager - remove finalized messages from tips
+            if let Ok(tips) = self.storage.get_tips().await {
+                if tips.contains(&msg_id) {
+                    self.tip_manager.remove_tip(&msg_id).await;
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    pub async fn update_tips(&self) -> Result<()> {
+        // First clear the TipManager
+        self.tip_manager.clear().await;
+        
+        // Get current tips from storage
+        let tips = self.storage.get_tips().await.map_err(|e| anyhow::anyhow!(e))?;
+        
+        // Add all tips from storage to TipManager
+        for tip in tips {
+            self.tip_manager.add_tip(tip, 1.0).await;
+        }
+        
+        Ok(())
+    }
+    
+    /// Initialize tips from storage (useful for tests)
+    #[allow(dead_code)]
+    pub async fn sync_tips_from_storage(&self) -> Result<()> {
+        self.update_tips().await
+    }
+    
+    fn should_apply_reputation_decay(&self) -> bool {
+        // Apply decay every hour
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_DECAY: AtomicU64 = AtomicU64::new(0);
+        
+        let now = chrono::Utc::now().timestamp() as u64;
+        let last = LAST_DECAY.load(Ordering::Relaxed);
+        
+        if now - last > 3600 {
+            LAST_DECAY.store(now, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+    
+    fn should_cleanup_conflicts(&self) -> bool {
+        // Cleanup conflicts every 10 minutes
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_CLEANUP: AtomicU64 = AtomicU64::new(0);
+        
+        let now = chrono::Utc::now().timestamp() as u64;
+        let last = LAST_CLEANUP.load(Ordering::Relaxed);
+        
+        if now - last > 600 {
+            LAST_CLEANUP.store(now, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
     }
 }
 

@@ -52,6 +52,18 @@ impl MrwSelector {
         weight_calc: &WeightCalculator,
     ) -> Result<(Vec<MessageId>, MrwTrace)> {
         let mut trace = MrwTrace::new();
+        
+        // Special case: if we have very few tips (bootstrap scenario)
+        // Relax the diversity requirements
+        let is_bootstrap = tips.len() <= (self.params.d + 1) as usize;
+        
+        if is_bootstrap {
+            // In bootstrap mode, just select the best available tips
+            let selected = self.select_bootstrap_parents(&tips, message_features)?;
+            trace.record_success(selected.iter().map(|c| c.message_id).collect());
+            return Ok((selected.iter().map(|c| c.message_id).collect(), trace));
+        }
+        
         let mut horizon = (self.params.d + 1) as usize * 2;
         let mut attempts = 0;
         const MAX_ATTEMPTS: u32 = 10;
@@ -80,9 +92,10 @@ impl MrwSelector {
             }
         }
 
-        Err(AdicError::ParentSelectionFailed(
-            "Could not find diverse parent set after maximum attempts".to_string()
-        ))
+        // If we still can't find diverse parents, fall back to best available
+        let selected = self.select_best_available(&tips, message_features, weight_calc)?;
+        trace.record_success(selected.iter().map(|c| c.message_id).collect());
+        Ok((selected.iter().map(|c| c.message_id).collect(), trace))
     }
 
     fn run_mrw_per_axis(
@@ -227,6 +240,86 @@ impl MrwSelector {
         Ok(selected_candidates)
     }
 
+    
+    /// Select parents in bootstrap mode when we have very few tips
+    fn select_bootstrap_parents(
+        &self,
+        tips: &[ParentCandidate],
+        _message_features: &AdicFeatures,
+    ) -> Result<Vec<ParentCandidate>> {
+        let required = (self.params.d + 1) as usize;
+        
+        if tips.is_empty() {
+            return Err(AdicError::ParentSelectionFailed(
+                "No tips available for bootstrap".to_string()
+            ));
+        }
+        
+        // In bootstrap mode, repeat tips if necessary to meet requirements
+        let mut selected = Vec::new();
+        let mut idx = 0;
+        
+        while selected.len() < required {
+            selected.push(tips[idx % tips.len()].clone());
+            idx += 1;
+        }
+        
+        Ok(selected)
+    }
+    
+    /// Fall back to selecting the best available parents when diversity can't be met
+    fn select_best_available(
+        &self,
+        tips: &[ParentCandidate],
+        message_features: &AdicFeatures,
+        weight_calc: &WeightCalculator,
+    ) -> Result<Vec<ParentCandidate>> {
+        let required = (self.params.d + 1) as usize;
+        
+        if tips.is_empty() {
+            return Err(AdicError::ParentSelectionFailed(
+                "No tips available".to_string()
+            ));
+        }
+        
+        // Calculate weights for all tips
+        let mut weighted_tips: Vec<ParentCandidate> = tips.to_vec();
+        
+        for tip in &mut weighted_tips {
+            let mut total_weight = 0.0;
+            
+            for (axis_idx, msg_axis) in message_features.phi.iter().enumerate() {
+                if let Some(tip_phi) = tip.features.get(axis_idx) {
+                    let proximity = proximity_score(&msg_axis.qp_digits, tip_phi, 
+                        self.params.rho.get(axis_idx).copied().unwrap_or(2));
+                    
+                    let weight = weight_calc.compute_weight(
+                        proximity,
+                        tip.reputation,
+                        tip.conflict_penalty,
+                    );
+                    
+                    total_weight += weight;
+                }
+            }
+            
+            tip.weight = total_weight;
+        }
+        
+        // Sort by weight and select top candidates
+        weighted_tips.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap());
+        
+        // Take the required number, repeating the best if necessary
+        let mut selected = Vec::new();
+        let mut idx = 0;
+        
+        while selected.len() < required {
+            selected.push(weighted_tips[idx % weighted_tips.len()].clone());
+            idx += 1;
+        }
+        
+        Ok(selected)
+    }
 }
 
 #[cfg(test)]

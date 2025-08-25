@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b851e75fd9e4f78ae46cd289505a9489b5b9ff0e114eb79fcb23de4f4bfb55ae # shrinks to num_accounts = 2, num_operations = 10
+cc 71159bd9c5da3964f305b8b989bcee388d3a0e8b121a794d81bfe53bbcbfed26 # shrinks to num_signers = 2, threshold = 1, approvals = [0]
+cc fd1409e640f11e44c9dcef7380c06b253f4a26e16fbbd81a936bc76d5ba21361 # shrinks to account = AccountAddress([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), lock_amounts = [AdicAmount(0)]
+cc 42c2df95f8e9d29c32017bff590ef9a960231761f23cea050eec380b67f54b6a # shrinks to accounts = [AccountAddress([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])], amounts = [AdicAmount(0)]
+cc 3a078dd0f6dd4596348ab15beff2d37e2a593e93030691eecb91fa989e6bb22d # shrinks to operations = [(AccountAddress([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), AccountAddress([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), AdicAmount(0))]
+cc ab6714852cf6c9e6c75c9ef34827fd50dbe44b7426f636799b4ab30cc8112f82 # shrinks to from = AccountAddress([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), to = AccountAddress([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]), amount = AdicAmount(0), initial_balance = AdicAmount(1)

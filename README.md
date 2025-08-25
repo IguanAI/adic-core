@@ -6,7 +6,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://img.shields.io/github/workflow/status/adic-core/adic-core/CI)](https://github.com/adic-core/adic-core/actions)
+[![Build Status](https://img.shields.io/github/workflow/status/IguanAI/adic-core/CI)](https://github.com/IguanAI/adic-core/actions)
 [![Documentation](https://docs.rs/adic-core/badge.svg)](https://docs.rs/adic-core)
 
 *Revolutionizing distributed consensus through p-adic ultrametric mathematics*
@@ -50,7 +50,7 @@ ADIC Core is a groundbreaking Rust implementation of the **Adaptive Distributed 
 
 ```bash
 # Clone the repository
-git clone https://github.com/adic-core/adic-core.git
+git clone https://github.com/IguanAI/adic-core.git
 cd adic-core
 
 # Build the project
@@ -63,18 +63,33 @@ cargo test --all
 ### Running Your First Node
 
 ```bash
-# Generate cryptographic keys
+# Generate cryptographic keys (saves to keypair.json)
 ./target/release/adic keygen
 
 # Initialize node configuration  
 ./target/release/adic init
 
-# Start the node
+# Start the node (with command-line arguments)
 ./target/release/adic start --data-dir ./data --api-port 8080
 
-# In another terminal, run a test
+# Or configure via environment variables (copy .env.example to .env first)
+cp .env.example .env
+# Edit .env with your settings, then:
+./target/release/adic start
+
+# In another terminal, run a local test (creates test messages)
 ./target/release/adic test --count 10
 ```
+
+#### Configuration Options
+
+The node can be configured via:
+1. Command-line arguments (highest priority)
+2. Environment variables (from `.env` file or system)
+3. Configuration file (`adic-config.toml`)
+4. Default values
+
+See `.env.example` for all available environment variables.
 
 ### Verify Installation
 
@@ -105,10 +120,10 @@ adic-core/
 │   ├── adic-mrw/         # Multi-axis Random Walk parent selection
 │   ├── adic-finality/    # K-core finality algorithm implementation
 │   ├── adic-storage/     # Storage abstraction with RocksDB backend
-│   └── adic-node/        # Full node implementation with CLI
-├── libadic/              # C++ reference implementation
-├── simulation/           # Python simulation and analysis tools  
-├── monitoring/           # Prometheus/Grafana observability stack
+│   ├── adic-network/     # P2P networking, protocols, and resilience
+│   ├── adic-economics/   # Tokenomics and economic model implementation
+│   ├── adic-bench/       # Performance benchmarking suite
+│   └── adic-node/        # Full node implementation with CLI and API
 └── docs/                 # Technical documentation
 ```
 
@@ -116,11 +131,14 @@ adic-core/
 
 | Component | Purpose | Technology |
 |-----------|---------|------------|
-| **adic-node** | Full node binary with P2P networking | Rust + libp2p |
+| **adic-node** | Full node binary with CLI and HTTP API | Rust + Axum |
 | **adic-consensus** | Consensus engine with admissibility checks | Rust + async |
-| **adic-math** | P-adic mathematics and ball calculations | Rust + num-bigint |
-| **adic-storage** | Persistent storage with snapshots | RocksDB |
-| **libadic** | Mathematical reference implementation | C++ + GMP |
+| **adic-math** | P-adic mathematics and ball calculations | Rust |
+| **adic-storage** | Persistent storage with snapshots | RocksDB + In-memory |
+| **adic-network** | P2P networking and protocol handling | Rust + libp2p |
+| **adic-economics** | Tokenomics, balances, and emissions | Rust |
+| **adic-mrw** | Multi-axis random walk parent selection | Rust |
+| **adic-finality** | K-core finality algorithm | Rust |
 
 ## Protocol Concepts
 
@@ -162,42 +180,65 @@ Messages achieve irreversible finality when they form a k-core subgraph:
 - Sufficient depth from current tips
 - Meets all reputation and diversity requirements
 
+### Economics Model
+
+ADIC implements a comprehensive tokenomics system with:
+
+#### Supply Management
+- **Genesis Supply**: 1 billion ADIC tokens
+- **Max Supply**: 2 billion ADIC tokens (reached asymptotically)
+- **Emission Schedule**: Logarithmic decay over time
+- **Treasury**: Protocol-controlled reserves for ecosystem development
+- **Liquidity Pool**: Automated market making reserves
+
+#### Token Distribution
+- **Genesis Allocation**: Initial distribution to early participants
+- **Emissions**: Block rewards following decay curve
+- **Treasury**: 10% of genesis for protocol development
+- **Liquidity**: 5% of genesis for market stability
+
+#### Deposit System
+- **Anti-spam Deposits**: Refundable deposits for message submission
+- **Slashing**: Malicious actors lose deposits
+- **Reputation Integration**: Higher reputation reduces deposit requirements
+
 ## CLI Reference
 
 ### Node Operations
 
 ```bash
 # Start a validator node
-adic start --validator --data-dir ./validator-data
+adic start --validator --data-dir ./validator-data --port 9000 --api-port 8080
 
 # Start with custom configuration
 adic start --config ./custom-adic.toml
 
 # Enable debug logging
 RUST_LOG=debug adic start
+
+# Enable trace logging for maximum verbosity
+adic start -vv  # Or use RUST_LOG=trace
 ```
 
 ### Key Management
 
 ```bash
-# Generate new keypair
+# Generate new keypair (outputs to stdout or file)
+adic keygen
 adic keygen --output ./keys/node.key
-
-# Show public key
-adic pubkey --key ./keys/node.key
 ```
 
 ### Testing & Development
 
 ```bash
-# Run integration tests
-adic test --count 100 --delay 500ms
+# Run local test (creates test messages locally)
+adic test --count 100
 
 # Benchmark message processing
 cargo bench --bench consensus_bench
 
-# Generate test network data
-adic simulate --nodes 10 --messages 1000
+# Run all tests
+cargo test --workspace
 ```
 
 ## HTTP API
@@ -211,28 +252,38 @@ adic simulate --nodes 10 --messages 1000
 | `/submit` | POST | Submit new message |
 | `/message/:id` | GET | Retrieve message by ID |
 | `/tips` | GET | Current DAG tips |
-| `/finality/:id` | GET | Check finality status |
+| `/v1/finality/:id` | GET | Check finality status |
+| `/v1/reputation/all` | GET | All reputation scores |
+| `/v1/reputation/:pubkey` | GET | Specific reputation score |
+| `/v1/conflicts` | GET | List all conflicts |
+| `/v1/conflict/:id` | GET | Conflict details |
+| `/v1/mrw/traces` | GET | MRW selection traces |
+| `/v1/mrw/trace/:id` | GET | Specific MRW trace |
+| `/v1/economics/deposits` | GET | Deposits summary |
+| `/v1/economics/deposit/:id` | GET | Deposit status |
+| `/v1/statistics/detailed` | GET | Detailed statistics |
+| `/metrics` | GET | Prometheus metrics |
 
 ### Example API Usage
 
 ```bash
-# Submit a message with metadata
+# Submit a message
 curl -X POST http://localhost:8080/submit \
   -H "Content-Type: application/json" \
   -d '{
-    "content": "Transaction data",
-    "metadata": {
-      "type": "payment",
-      "amount": "100.00"
-    }
+    "content": "Transaction data"
   }'
 
 # Response
 {
-  "message_id": "a1b2c3d4...",
-  "parents": ["parent1...", "parent2..."],
-  "timestamp": "2024-08-25T12:00:00Z"
+  "message_id": "a1b2c3d4..."
 }
+
+# Get message details
+curl http://localhost:8080/message/a1b2c3d4...
+
+# Check node status
+curl http://localhost:8080/status
 ```
 
 ## Configuration
@@ -428,17 +479,16 @@ spec:
 ## Documentation
 
 - 📖 [**Protocol Specification**](./DESIGN.md) - Complete Phase-0 design
-- 🔬 [**Mathematical Reference**](./libadic/docs/MATHEMATICAL_REFERENCE.md) - P-adic theory
 - 🛠️ [**API Documentation**](https://docs.rs/adic-core) - Rust API docs
 - 🎯 [**Integration Guide**](./docs/INTEGRATION.md) - Building on ADIC
-- 📊 [**Benchmarks**](./benches/README.md) - Performance analysis
+- 📊 [**Benchmarks**](./crates/adic-bench/README.md) - Performance analysis
 
 ## Community & Support
 
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/adic-core/adic-core/discussions)
-- 🐛 **Issues**: [Bug Reports](https://github.com/adic-core/adic-core/issues)
-- 📧 **Email**: core-team@adic.network
-- 🐦 **Twitter**: [@adic_protocol](https://twitter.com/adic_protocol)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/IguanAI/adic-core/discussions)
+- 🐛 **Issues**: [Bug Reports](https://github.com/IguanAI/adic-core/issues)
+- 📧 **Email**: ADICL1@proton.me
+- 🐦 **X (Twitter)**: [@ADICL1Tangle](https://x.com/ADICL1Tangle)
 
 ## Roadmap
 
@@ -449,13 +499,13 @@ spec:
 - [x] Multi-axis random walk
 - [x] HTTP API and CLI
 
-### Phase 1 (Q1 2025)
+### Phase 1 (Q2 2025)
 - [ ] Full P2P networking with libp2p
 - [ ] Advanced finality gates (F2, SSF)
 - [ ] Web-based explorer interface
 - [ ] Enhanced monitoring and alerting
 
-### Phase 2 (Q2 2025)  
+### Phase 2 (Q3 2025)  
 - [ ] Smart contract execution layer
 - [ ] Cross-chain bridges
 - [ ] Governance mechanisms
@@ -463,18 +513,18 @@ spec:
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](./libadic/LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
 
 ## Citation
 
 If you use ADIC Core in your research, please cite:
 
 ```bibtex
-@misc{adic2024,
+@misc{adic2025,
   title={ADIC: Adaptive Distributed Information Consensus via P-adic Ultrametrics},
   author={ADIC Core Team},
-  year={2024},
-  howpublished={\url{https://github.com/adic-core/adic-core}}
+  year={2025},
+  howpublished={\url{https://github.com/IguanAI/adic-core}}
 }
 ```
 
@@ -486,5 +536,4 @@ If you use ADIC Core in your research, please cite:
 
 *Advancing the frontiers of distributed consensus through mathematical innovation*
 
-</div># adic-core
-# adic-core
+</div>
