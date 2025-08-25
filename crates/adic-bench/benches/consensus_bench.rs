@@ -1,68 +1,127 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use adic_consensus::{ConsensusEngine, ConsensusConfig};
-use adic_types::{AdicMessage, MessageId, QpDigits, Features};
+use adic_consensus::ConsensusEngine;
+use adic_types::{AdicMessage, MessageId, QpDigits, AdicFeatures, AdicMeta, AdicParams, AxisPhi, DEFAULT_PRECISION, DEFAULT_P};
 use adic_crypto::Keypair;
+use adic_storage::{MemoryBackend, StorageBackend};
+use adic_math::{padic_distance, vp_diff, ball_id};
+use chrono::Utc;
 use std::time::Duration;
+use std::sync::Arc;
+use std::collections::HashMap;
 
-fn create_test_message(i: u32, parents: Vec<MessageId>) -> AdicMessage {
-    let id = MessageId::new(&format!("msg_{}", i).into_bytes());
-    let features = Features {
-        time: QpDigits::from_u64(3, i as u64),
-        topic: QpDigits::from_u64(3, (i % 10) as u64),
-        region: QpDigits::from_u64(3, (i % 5) as u64),
-    };
+fn create_test_message(i: u32, parents: Vec<MessageId>, keypair: &Keypair) -> AdicMessage {
+    let features = AdicFeatures::new(vec![
+        AxisPhi::new(0, QpDigits::from_u64(i as u64, DEFAULT_P, DEFAULT_PRECISION)),
+        AxisPhi::new(1, QpDigits::from_u64((i % 10) as u64, DEFAULT_P, DEFAULT_PRECISION)),
+        AxisPhi::new(2, QpDigits::from_u64((i % 5) as u64, DEFAULT_P, DEFAULT_PRECISION)),
+    ]);
     
-    AdicMessage {
-        id,
+    let meta = AdicMeta::new(Utc::now());
+    
+    let mut msg = AdicMessage::new(
         parents,
         features,
-        author: format!("author_{}", i % 3).into_bytes(),
-        signature: vec![0; 64],
-        payload: format!("data_{}", i).into_bytes(),
-        timestamp: i as u64,
-        deposit: 100,
+        meta,
+        *keypair.public_key(),
+        format!("data_{}", i).into_bytes(),
+    );
+    
+    // Sign the message
+    let signature = keypair.sign(&msg.to_bytes());
+    msg.signature = signature;
+    
+    msg
+}
+
+struct TestContext {
+    engine: ConsensusEngine,
+    storage: Arc<MemoryBackend>,
+    messages: HashMap<MessageId, AdicMessage>,
+}
+
+impl TestContext {
+    fn new(params: AdicParams) -> Self {
+        Self {
+            engine: ConsensusEngine::new(params),
+            storage: Arc::new(MemoryBackend::new()),
+            messages: HashMap::new(),
+        }
+    }
+    
+    async fn add_message(&mut self, msg: AdicMessage) -> Result<(), Box<dyn std::error::Error>> {
+        // Store message in memory backend
+        self.storage.put_message(&msg).await?;
+        self.messages.insert(msg.id.clone(), msg);
+        Ok(())
+    }
+    
+    fn get_parent_features(&self, message: &AdicMessage) -> Vec<Vec<QpDigits>> {
+        message.parents.iter()
+            .filter_map(|parent_id| {
+                self.messages.get(parent_id).map(|parent| {
+                    parent.features.phi.iter().map(|axis| axis.qp_digits.clone()).collect()
+                })
+            })
+            .collect()
+    }
+    
+    fn get_parent_reputations(&self, message: &AdicMessage) -> Vec<f64> {
+        // For benchmarking, return default reputation scores
+        // In a real system, these would be async lookups
+        message.parents.iter()
+            .map(|_| 10.0) // Default reputation score
+            .collect()
     }
 }
 
 fn bench_message_processing(c: &mut Criterion) {
     let mut group = c.benchmark_group("message_processing");
-    group.measurement_time(Duration::from_secs(10));
+    group.measurement_time(Duration::from_secs(5));
     
-    for size in &[10, 100, 1000] {
+    // Create a runtime for async operations
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    
+    for size in &[10, 50, 100] {
         group.bench_with_input(
             BenchmarkId::from_parameter(size),
             size,
             |b, &size| {
-                let config = ConsensusConfig {
-                    k: 10,
-                    c: 0.5,
-                    alpha: 2.0,
-                    tau: 0.1,
-                    max_parents: 8,
-                    p: 3,
-                    delta: 0.05,
-                };
+                let params = AdicParams::default();
+                let mut context = TestContext::new(params);
+                let keypair = Keypair::generate();
                 
-                let mut engine = ConsensusEngine::new(config);
-                
-                // Bootstrap with messages
+                // Bootstrap with messages using async runtime
                 let mut prev_ids = vec![];
-                for i in 0..size {
-                    let parents = if i < 3 {
-                        vec![]
-                    } else {
-                        prev_ids[prev_ids.len()-3..].to_vec()
-                    };
-                    
-                    let msg = create_test_message(i, parents);
-                    prev_ids.push(msg.id.clone());
-                    let _ = engine.process_message(msg);
-                }
+                runtime.block_on(async {
+                    for i in 0..size {
+                        let parents = if i < 3 {
+                            vec![]
+                        } else {
+                            prev_ids[prev_ids.len()-3..].to_vec()
+                        };
+                        
+                        let msg = create_test_message(i, parents, &keypair);
+                        prev_ids.push(msg.id.clone());
+                        context.add_message(msg).await.unwrap();
+                    }
+                });
                 
                 b.iter(|| {
-                    let parents = prev_ids[prev_ids.len()-3..].to_vec();
-                    let msg = create_test_message(size + 1, parents);
-                    black_box(engine.process_message(msg))
+                    let parents = if prev_ids.len() >= 3 {
+                        prev_ids[prev_ids.len()-3..].to_vec()
+                    } else {
+                        vec![]
+                    };
+                    let msg = create_test_message(size + 1, parents, &keypair);
+                    
+                    // Benchmark both validation and storage
+                    runtime.block_on(async {
+                        let validation = context.engine.validator().validate_message(&msg);
+                        if validation.is_valid {
+                            context.storage.put_message(&msg).await.unwrap();
+                        }
+                        black_box(validation)
+                    })
                 });
             }
         );
@@ -73,147 +132,164 @@ fn bench_message_processing(c: &mut Criterion) {
 fn bench_admissibility_check(c: &mut Criterion) {
     let mut group = c.benchmark_group("admissibility");
     
-    let config = ConsensusConfig {
-        k: 10,
-        c: 0.5,
-        alpha: 2.0,
-        tau: 0.1,
-        max_parents: 8,
-        p: 3,
-        delta: 0.05,
-    };
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let params = AdicParams::default();
+    let mut context = TestContext::new(params.clone());
+    let keypair = Keypair::generate();
     
-    let mut engine = ConsensusEngine::new(config);
+    // Setup DAG with proper parents
+    let mut all_ids = vec![];
+    runtime.block_on(async {
+        for i in 0..20 {
+            let parents = if i < (params.d + 1) { 
+                vec![] 
+            } else {
+                // Take last d+1 messages as parents
+                let start = all_ids.len().saturating_sub((params.d + 1) as usize);
+                all_ids[start..start + (params.d + 1) as usize].to_vec()
+            };
+            let msg = create_test_message(i, parents, &keypair);
+            all_ids.push(msg.id.clone());
+            context.add_message(msg).await.unwrap();
+        }
+    });
     
-    // Setup DAG
-    for i in 0..100 {
-        let parents = if i < 3 { vec![] } else { vec![] };
-        let msg = create_test_message(i, parents);
-        let _ = engine.process_message(msg);
-    }
-    
-    group.bench_function("check_single", |b| {
-        let msg = create_test_message(101, vec![]);
+    group.bench_function("check_admissibility", |b| {
+        // Create a test message with proper number of parents
+        let parents = if all_ids.len() >= (params.d + 1) as usize {
+            let start = all_ids.len() - (params.d + 1) as usize;
+            all_ids[start..].to_vec()
+        } else {
+            vec![]
+        };
+        
+        let msg = create_test_message(101, parents, &keypair);
+        let parent_features = context.get_parent_features(&msg);
+        let parent_reputations = context.get_parent_reputations(&msg);
+        
         b.iter(|| {
-            black_box(engine.check_message(&msg))
+            black_box(
+                context.engine.admissibility().check_message(
+                    &msg,
+                    &parent_features,
+                    &parent_reputations
+                )
+            )
         });
     });
     
     group.finish();
 }
 
-fn bench_finality_computation(c: &mut Criterion) {
-    let mut group = c.benchmark_group("finality");
-    group.measurement_time(Duration::from_secs(10));
+fn bench_validation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("validation");
     
-    for dag_size in &[100, 500, 1000] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(dag_size),
-            dag_size,
-            |b, &size| {
-                let config = ConsensusConfig {
-                    k: 10,
-                    c: 0.5,
-                    alpha: 2.0,
-                    tau: 0.1,
-                    max_parents: 8,
-                    p: 3,
-                    delta: 0.05,
-                };
-                
-                let mut engine = ConsensusEngine::new(config);
-                
-                // Build DAG
-                let mut all_ids = vec![];
-                for i in 0..size {
-                    let parents = if i < 3 {
-                        vec![]
-                    } else {
-                        // Select random parents
-                        let start = (i as usize).saturating_sub(10);
-                        all_ids[start..i as usize].iter()
-                            .step_by(3)
-                            .take(3)
-                            .cloned()
-                            .collect()
-                    };
-                    
-                    let msg = create_test_message(i, parents);
-                    all_ids.push(msg.id.clone());
-                    let _ = engine.process_message(msg);
-                }
-                
-                b.iter(|| {
-                    black_box(engine.compute_finality())
-                });
-            }
-        );
-    }
-    group.finish();
-}
-
-fn bench_mrw_selection(c: &mut Criterion) {
-    use adic_mrw::MultiAxisRandomWalk;
-    use adic_types::DAG;
-    use std::collections::HashMap;
+    let params = AdicParams::default();
+    let context = TestContext::new(params.clone());
+    let keypair = Keypair::generate();
     
-    let mut group = c.benchmark_group("mrw_selection");
+    group.bench_function("validate_message", |b| {
+        let msg = create_test_message(1, vec![], &keypair);
+        b.iter(|| {
+            black_box(context.engine.validator().validate_message(&msg))
+        });
+    });
     
-    for num_tips in &[10, 50, 100] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(num_tips),
-            num_tips,
-            |b, &num_tips| {
-                let mrw = MultiAxisRandomWalk::new(3, 2.0);
-                let mut dag = DAG::new();
-                let mut tips = vec![];
-                
-                // Create tips
-                for i in 0..num_tips {
-                    let msg = create_test_message(i, vec![]);
-                    tips.push(msg.id.clone());
-                    dag.messages.insert(msg.id.clone(), msg);
-                }
-                
-                // Create reputation map
-                let reputation: HashMap<Vec<u8>, f64> = (0..3)
-                    .map(|i| (format!("author_{}", i).into_bytes(), 1.0))
-                    .collect();
-                
-                b.iter(|| {
-                    black_box(mrw.select_parents(&dag, &tips, 8, &reputation))
-                });
-            }
-        );
-    }
+    group.bench_function("validate_with_parents", |b| {
+        let parent1 = create_test_message(1, vec![], &keypair);
+        let parent2 = create_test_message(2, vec![], &keypair);
+        let parent3 = create_test_message(3, vec![], &keypair);
+        let parent4 = create_test_message(4, vec![], &keypair);
+        
+        let parents = vec![parent1.id, parent2.id, parent3.id, parent4.id];
+        let msg = create_test_message(5, parents, &keypair);
+        
+        b.iter(|| {
+            black_box(context.engine.validator().validate_message(&msg))
+        });
+    });
+    
     group.finish();
 }
 
 fn bench_padic_operations(c: &mut Criterion) {
-    use adic_math::PadicOperations;
-    
     let mut group = c.benchmark_group("padic_ops");
     
     group.bench_function("valuation", |b| {
-        let x = QpDigits::from_u64(3, 243);
-        let y = QpDigits::from_u64(3, 81);
+        let x = QpDigits::from_u64(243, DEFAULT_P, DEFAULT_PRECISION);
+        let y = QpDigits::from_u64(81, DEFAULT_P, DEFAULT_PRECISION);
         b.iter(|| {
-            black_box(PadicOperations::vp_diff(&x, &y))
+            black_box(vp_diff(&x, &y))
         });
     });
     
     group.bench_function("distance", |b| {
-        let x = QpDigits::from_u64(3, 100);
-        let y = QpDigits::from_u64(3, 200);
+        let x = QpDigits::from_u64(100, DEFAULT_P, DEFAULT_PRECISION);
+        let y = QpDigits::from_u64(200, DEFAULT_P, DEFAULT_PRECISION);
         b.iter(|| {
-            black_box(PadicOperations::distance(&x, &y))
+            black_box(padic_distance(&x, &y))
         });
     });
     
     group.bench_function("ball_id", |b| {
-        let x = QpDigits::from_u64(3, 123456);
+        let x = QpDigits::from_u64(123456, DEFAULT_P, DEFAULT_PRECISION);
         b.iter(|| {
-            black_box(PadicOperations::ball_id(&x, 5))
+            black_box(ball_id(&x, 5))
+        });
+    });
+    
+    group.bench_function("ball_distance", |b| {
+        let x = QpDigits::from_u64(100, DEFAULT_P, DEFAULT_PRECISION);
+        let y = QpDigits::from_u64(200, DEFAULT_P, DEFAULT_PRECISION);
+        let z = QpDigits::from_u64(300, DEFAULT_P, DEFAULT_PRECISION);
+        
+        b.iter(|| {
+            let d1 = padic_distance(&x, &y);
+            let d2 = padic_distance(&y, &z);
+            let d3 = padic_distance(&x, &z);
+            black_box((d1, d2, d3))
+        });
+    });
+    
+    group.finish();
+}
+
+fn bench_reputation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("reputation");
+    
+    let params = AdicParams::default();
+    let engine = ConsensusEngine::new(params);
+    let keypair = Keypair::generate();
+    let pubkey = *keypair.public_key();
+    
+    group.bench_function("good_update", |b| {
+        b.iter(|| {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                // good_update(pubkey, diversity, depth)
+                black_box(engine.reputation.good_update(&pubkey, 0.8, 10).await)
+            })
+        });
+    });
+    
+    group.bench_function("bad_update", |b| {
+        b.iter(|| {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                black_box(engine.reputation.bad_update(&pubkey, 1.0).await)
+            })
+        });
+    });
+    
+    group.bench_function("get_trust_score", |b| {
+        // Pre-populate some scores
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            engine.reputation.good_update(&pubkey, 0.8, 10).await;
+        });
+        
+        b.iter(|| {
+            runtime.block_on(async {
+                black_box(engine.reputation.get_trust_score(&pubkey).await)
+            })
         });
     });
     
@@ -224,8 +300,8 @@ criterion_group!(
     benches,
     bench_message_processing,
     bench_admissibility_check,
-    bench_finality_computation,
-    bench_mrw_selection,
-    bench_padic_operations
+    bench_validation,
+    bench_padic_operations,
+    bench_reputation
 );
 criterion_main!(benches);

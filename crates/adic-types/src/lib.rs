@@ -12,6 +12,14 @@ pub use keys::{PublicKey, Signature};
 pub use error::{AdicError, Result};
 pub use encoders::{FeatureEncoder, TimeEpochEncoder, TopicHashEncoder, RegionCodeEncoder, EncoderSet, EncoderData};
 
+/// Default precision for p-adic digit representations
+/// This determines how many p-adic digits are used to represent values
+pub const DEFAULT_PRECISION: usize = 10;
+
+/// Default prime base for the p-adic number system
+/// Using p=3 gives us a ternary (base-3) representation
+pub const DEFAULT_P: u32 = 3;
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AdicParams {
     pub p: u32,
@@ -33,7 +41,7 @@ pub struct AdicParams {
 impl Default for AdicParams {
     fn default() -> Self {
         Self {
-            p: 3,
+            p: DEFAULT_P,
             d: 3,
             rho: vec![2, 2, 1],
             q: 3,

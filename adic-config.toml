@@ -1,0 +1,42 @@
+[node]
+data_dir = "./data"
+validator = false
+name = "adic-node"
+
+[consensus]
+p = 3
+d = 3
+rho = [
+    2,
+    2,
+    1,
+]
+q = 3
+k = 20
+depth_star = 12
+delta = 5
+r_sum_min = 4.0
+r_min = 1.0
+deposit = 1.0
+lambda = 1.0
+beta = 0.5
+mu = 1.0
+gamma = 0.9
+
+[storage]
+backend = "memory"
+cache_size = 10000
+snapshot_interval = 3600
+max_snapshots = 10
+
+[api]
+enabled = true
+host = "127.0.0.1"
+port = 18082
+max_connections = 100
+
+[network]
+enabled = false
+p2p_port = 19002
+bootstrap_peers = []
+max_peers = 50

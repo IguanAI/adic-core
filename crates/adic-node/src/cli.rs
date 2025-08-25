@@ -3,7 +3,7 @@ use adic_crypto::Keypair;
 use adic_finality::{FinalityEngine, FinalityConfig};
 use adic_mrw::MrwEngine;
 use adic_storage::{StorageEngine, StorageConfig, TipManager};
-use adic_types::{AdicMessage, AdicParams, AdicFeatures, AdicMeta, AxisPhi, QpDigits};
+use adic_types::{AdicMessage, AdicParams, AdicFeatures, AdicMeta, AxisPhi, QpDigits, DEFAULT_PRECISION, DEFAULT_P};
 use anyhow::Result;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -40,9 +40,9 @@ pub async fn run_local_test(count: usize) -> Result<()> {
     
     // Create genesis message
     let genesis_features = AdicFeatures::new(vec![
-        AxisPhi::new(0, QpDigits::from_u64(0, 3, 10)),
-        AxisPhi::new(1, QpDigits::from_u64(0, 3, 10)),
-        AxisPhi::new(2, QpDigits::from_u64(0, 3, 10)),
+        AxisPhi::new(0, QpDigits::from_u64(0, params.p, DEFAULT_PRECISION)),
+        AxisPhi::new(1, QpDigits::from_u64(0, params.p, DEFAULT_PRECISION)),
+        AxisPhi::new(2, QpDigits::from_u64(0, params.p, DEFAULT_PRECISION)),
     ]);
     
     let mut genesis = AdicMessage::new(
@@ -75,9 +75,9 @@ pub async fn run_local_test(count: usize) -> Result<()> {
     for i in 0..count.saturating_sub(1) {
         // Create features with slight variation
         let features = AdicFeatures::new(vec![
-            AxisPhi::new(0, QpDigits::from_u64((i + 1) as u64, 3, 10)),
-            AxisPhi::new(1, QpDigits::from_u64((i % 3) as u64, 3, 10)),
-            AxisPhi::new(2, QpDigits::from_u64((i % 5) as u64, 3, 10)),
+            AxisPhi::new(0, QpDigits::from_u64((i + 1) as u64, params.p, DEFAULT_PRECISION)),
+            AxisPhi::new(1, QpDigits::from_u64((i % 3) as u64, params.p, DEFAULT_PRECISION)),
+            AxisPhi::new(2, QpDigits::from_u64((i % 5) as u64, params.p, DEFAULT_PRECISION)),
         ]);
         
         // Get current tips

@@ -19,3 +19,4 @@ adic-mrw = { path = "../adic-mrw" }
 adic-math = { path = "../adic-math" }
 adic-storage = { path = "../adic-storage" }
 tokio = { workspace = true }
+chrono = { workspace = true }

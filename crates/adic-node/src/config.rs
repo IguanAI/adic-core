@@ -134,8 +134,8 @@ impl Default for NodeConfig {
 impl NodeConfig {
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        let mut config: Self = toml::from_str(&content)?;
-        config.apply_env_overrides();
+        let config: Self = toml::from_str(&content)?;
+        // Don't apply env overrides here - let main.rs control the precedence order
         Ok(config)
     }
 

@@ -411,14 +411,16 @@ adic start 2>&1 | tee node.log
 
 ### Benchmarks
 
-| Operation | Throughput | Latency (p50) | Latency (p99) |
-|-----------|------------|---------------|---------------|
-| Message Validation | 10,000 msg/s | 0.1ms | 2.0ms |
-| MRW Parent Selection | 1,000 ops/s | 1.0ms | 5.0ms |  
-| K-core Finality Check | 500 ops/s | 2.0ms | 10.0ms |
-| Storage Operations | 50,000 ops/s | 0.05ms | 0.5ms |
+| Operation | Latency (median) | Throughput | Description |
+|-----------|------------------|------------|-------------|
+| Message Processing | 61.5 µs | ~16,000 msg/s | Full validation + storage |
+| Message Validation | 41.0 µs | ~24,000 ops/s | Signature & structure validation |
+| Admissibility Check | 1.02 µs | ~980,000 ops/s | Parent relationship validation |
+| P-adic Valuation | 4.1 ns | ~244M ops/s | Core math operation |
+| P-adic Distance | 5.5 ns | ~182M ops/s | Ultrametric distance calculation |
+| Ball ID Computation | 8.5 ns | ~118M ops/s | Hierarchical clustering |
 
-*Benchmarked on Intel i7-12700K, 32GB RAM, NVMe SSD*
+*Benchmarked using Criterion.rs on Ubuntu Linux. Run `cargo bench` for detailed results.*
 
 ## Production Deployment
 
