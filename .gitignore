@@ -8,7 +8,7 @@ Cargo.lock
 *.swp
 *.swo
 *~
-
+libadic/
 # OS
 .DS_Store
 .DS_Store?
