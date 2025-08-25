@@ -1,0 +1,143 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "ADIC Protocol Metrics",
+    "tags": ["adic", "consensus", "dag"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "type": "graph",
+        "title": "Message Throughput",
+        "targets": [
+          {
+            "expr": "rate(adic_messages_total[5m])",
+            "legendFormat": "{{node}}"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "msg/s",
+            "label": "Messages per second"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+        "type": "graph",
+        "title": "Finalization Rate",
+        "targets": [
+          {
+            "expr": "adic_finalized_messages / adic_total_messages",
+            "legendFormat": "{{node}}"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "percentunit",
+            "label": "Finalization %"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "gridPos": {"x": 0, "y": 8, "w": 8, "h": 6},
+        "type": "stat",
+        "title": "Current Tips",
+        "targets": [
+          {
+            "expr": "adic_tips_count",
+            "legendFormat": "{{node}}"
+          }
+        ],
+        "options": {
+          "graphMode": "area",
+          "orientation": "auto",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          }
+        }
+      },
+      {
+        "id": 4,
+        "gridPos": {"x": 8, "y": 8, "w": 8, "h": 6},
+        "type": "stat",
+        "title": "K-Core Size",
+        "targets": [
+          {
+            "expr": "adic_kcore_size",
+            "legendFormat": "{{node}}"
+          }
+        ],
+        "options": {
+          "graphMode": "area",
+          "orientation": "auto",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          }
+        }
+      },
+      {
+        "id": 5,
+        "gridPos": {"x": 16, "y": 8, "w": 8, "h": 6},
+        "type": "gauge",
+        "title": "Network Health",
+        "targets": [
+          {
+            "expr": "(adic_finalized_messages / adic_total_messages) * 100",
+            "legendFormat": "Health Score"
+          }
+        ],
+        "options": {
+          "orientation": "auto",
+          "showThresholdLabels": false,
+          "showThresholdMarkers": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "max": 100,
+            "min": 0,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "red", "value": null},
+                {"color": "yellow", "value": 50},
+                {"color": "green", "value": 80}
+              ]
+            },
+            "unit": "percent"
+          }
+        }
+      },
+      {
+        "id": 6,
+        "gridPos": {"x": 0, "y": 14, "w": 24, "h": 8},
+        "type": "heatmap",
+        "title": "Message Latency Distribution",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(adic_message_latency_bucket[5m]))",
+            "legendFormat": "p95 latency"
+          }
+        ],
+        "options": {
+          "calculate": false,
+          "cellGap": 1,
+          "cellRadius": 2,
+          "color": {
+            "scheme": "Spectral"
+          }
+        }
+      }
+    ],
+    "schemaVersion": 27,
+    "version": 1,
+    "uid": "adic-main"
+  }
+}

@@ -1,0 +1,81 @@
+[workspace]
+members = [
+    "crates/adic-types",
+    "crates/adic-crypto",
+    "crates/adic-math",
+    "crates/adic-storage",
+    "crates/adic-mrw",
+    "crates/adic-consensus",
+    "crates/adic-finality",
+    # "crates/adic-network",  # Temporarily disabled - complex dependencies
+    "crates/adic-node",
+    "crates/adic-bench",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["ADIC Core Team"]
+license = "MIT"
+repository = "https://github.com/adic-core/adic-core"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.40", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+prost = "0.13"
+prost-types = "0.13"
+
+# Cryptography
+blake3 = "1.5"
+ed25519-dalek = { version = "2.1", features = ["serde"] }
+rand = "0.8"
+hex = "0.4"
+
+# Storage
+rocksdb = "0.22"
+
+# Networking
+libp2p = { version = "0.54", features = ["tcp", "noise", "yamux", "gossipsub", "kad", "identify"] }
+quinn = "0.11"
+
+# Math
+num-bigint = "0.4"
+num-traits = "0.2"
+num-integer = "0.1"
+
+# Utilities
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.5", features = ["derive"] }
+config = "0.14"
+
+# HTTP/API
+axum = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Metrics
+prometheus = "0.13"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Benchmarking
+criterion = "0.5"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[profile.bench]
+inherits = "release"
+debug = true

@@ -1,0 +1,21 @@
+[package]
+name = "adic-bench"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bench]]
+name = "consensus_bench"
+harness = false
+
+[dependencies]
+criterion = { workspace = true }
+adic-consensus = { path = "../adic-consensus" }
+adic-types = { path = "../adic-types" }
+adic-crypto = { path = "../adic-crypto" }
+adic-mrw = { path = "../adic-mrw" }
+adic-math = { path = "../adic-math" }
+adic-storage = { path = "../adic-storage" }
+tokio = { workspace = true }

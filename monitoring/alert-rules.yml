@@ -1,0 +1,109 @@
+groups:
+  - name: adic_alerts
+    interval: 30s
+    rules:
+      # High-level network health alerts
+      - alert: LowFinalizationRate
+        expr: (adic_finalized_messages / adic_total_messages) < 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low finalization rate on {{ $labels.node }}"
+          description: "Finalization rate is {{ $value | humanizePercentage }} which is below 50%"
+      
+      - alert: CriticalFinalizationRate
+        expr: (adic_finalized_messages / adic_total_messages) < 0.2
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical finalization rate on {{ $labels.node }}"
+          description: "Finalization rate is {{ $value | humanizePercentage }} which is below 20%"
+      
+      # Throughput alerts
+      - alert: LowMessageThroughput
+        expr: rate(adic_messages_total[5m]) < 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low message throughput on {{ $labels.node }}"
+          description: "Message throughput is {{ $value }} msg/s which is below expected threshold"
+      
+      - alert: NoMessageActivity
+        expr: rate(adic_messages_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No message activity on {{ $labels.node }}"
+          description: "Node {{ $labels.node }} has not processed any messages in 5 minutes"
+      
+      # DAG health alerts
+      - alert: ExcessiveTips
+        expr: adic_tips_count > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Excessive tips in DAG on {{ $labels.node }}"
+          description: "DAG has {{ $value }} tips which may indicate poor convergence"
+      
+      - alert: KCoreTooBig
+        expr: adic_kcore_size > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "K-core size too large on {{ $labels.node }}"
+          description: "K-core contains {{ $value }} messages which may impact finality performance"
+      
+      # Latency alerts
+      - alert: HighMessageLatency
+        expr: histogram_quantile(0.95, rate(adic_message_latency_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High message latency on {{ $labels.node }}"
+          description: "95th percentile latency is {{ $value }}s"
+      
+      - alert: ExtremeMessageLatency
+        expr: histogram_quantile(0.99, rate(adic_message_latency_bucket[5m])) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Extreme message latency on {{ $labels.node }}"
+          description: "99th percentile latency is {{ $value }}s"
+      
+      # Node availability
+      - alert: NodeDown
+        expr: up{job=~"adic.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ADIC node {{ $labels.node }} is down"
+          description: "Node {{ $labels.node }} has been unreachable for 1 minute"
+      
+      # Storage alerts
+      - alert: StorageErrors
+        expr: rate(adic_storage_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Storage errors on {{ $labels.node }}"
+          description: "Storage error rate is {{ $value }} errors/sec"
+      
+      # Memory usage (if exposed)
+      - alert: HighMemoryUsage
+        expr: adic_memory_usage_bytes / adic_memory_limit_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.node }}"
+          description: "Memory usage is {{ $value | humanizePercentage }} of limit"

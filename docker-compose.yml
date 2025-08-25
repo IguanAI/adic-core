@@ -1,0 +1,135 @@
+version: '3.8'
+
+services:
+  # Single node configuration
+  adic-node:
+    build: .
+    container_name: adic-node
+    ports:
+      - "8080:8080"  # API port
+      - "9000:9000"  # P2P port
+    volumes:
+      - adic-data:/data
+      - ./config:/config:ro
+    environment:
+      - RUST_LOG=info
+    command: ["adic", "start", "--data-dir", "/data", "--api-port", "8080"]
+    restart: unless-stopped
+    networks:
+      - adic-network
+
+  # Multi-node configuration for testing
+  adic-node-1:
+    build: .
+    container_name: adic-node-1
+    ports:
+      - "8081:8080"
+      - "9001:9000"
+    volumes:
+      - adic-data-1:/data
+    environment:
+      - RUST_LOG=info
+    command: ["adic", "start", "--data-dir", "/data", "--api-port", "8080", "--port", "9000"]
+    restart: unless-stopped
+    networks:
+      - adic-network
+    profiles:
+      - multi-node
+
+  adic-node-2:
+    build: .
+    container_name: adic-node-2
+    ports:
+      - "8082:8080"
+      - "9002:9000"
+    volumes:
+      - adic-data-2:/data
+    environment:
+      - RUST_LOG=info
+    command: ["adic", "start", "--data-dir", "/data", "--api-port", "8080", "--port", "9000"]
+    restart: unless-stopped
+    networks:
+      - adic-network
+    profiles:
+      - multi-node
+
+  adic-node-3:
+    build: .
+    container_name: adic-node-3
+    ports:
+      - "8083:8080"
+      - "9003:9000"
+    volumes:
+      - adic-data-3:/data
+    environment:
+      - RUST_LOG=info
+    command: ["adic", "start", "--data-dir", "/data", "--api-port", "8080", "--port", "9000"]
+    restart: unless-stopped
+    networks:
+      - adic-network
+    profiles:
+      - multi-node
+
+  # Monitoring with Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: adic-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - adic-network
+    profiles:
+      - monitoring
+
+  # Visualization with Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: adic-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    networks:
+      - adic-network
+    profiles:
+      - monitoring
+
+  # Python simulator
+  simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulator
+    container_name: adic-simulator
+    volumes:
+      - ./simulation:/app
+      - simulation-results:/results
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - adic-network
+    profiles:
+      - simulation
+
+networks:
+  adic-network:
+    driver: bridge
+
+volumes:
+  adic-data:
+  adic-data-1:
+  adic-data-2:
+  adic-data-3:
+  prometheus-data:
+  grafana-data:
+  simulation-results:
