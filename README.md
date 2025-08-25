@@ -487,3 +487,4 @@ If you use ADIC Core in your research, please cite:
 *Advancing the frontiers of distributed consensus through mathematical innovation*
 
 </div># adic-core
+# adic-core
