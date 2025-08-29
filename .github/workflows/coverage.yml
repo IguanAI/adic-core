@@ -1,0 +1,135 @@
+name: Test Coverage
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run coverage report weekly
+    - cron: '0 0 * * 0'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: llvm-tools-preview
+        
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Cache cargo index
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Cache cargo build
+      uses: actions/cache@v3
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Install cargo-tarpaulin
+      run: cargo install cargo-tarpaulin
+      
+    - name: Run tests with coverage
+      run: |
+        cargo tarpaulin \
+          --all \
+          --all-features \
+          --workspace \
+          --timeout 300 \
+          --out Xml \
+          --output-dir target/coverage \
+          --exclude-files "*/tests/*" \
+          --exclude-files "*/target/*" \
+          --exclude-files "*/examples/*" \
+          --ignore-panics \
+          --verbose
+          
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./target/coverage/cobertura.xml
+        flags: unittests
+        name: adic-core-coverage
+        fail_ci_if_error: false
+        
+    - name: Generate coverage report
+      run: |
+        echo "## Test Coverage Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Coverage data has been uploaded to Codecov" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Extract coverage percentage from XML
+        if [ -f "target/coverage/cobertura.xml" ]; then
+          coverage=$(grep -oP 'line-rate="\K[^"]+' target/coverage/cobertura.xml | head -1)
+          percentage=$(echo "$coverage * 100" | bc -l | xargs printf "%.2f")
+          echo "**Overall Coverage: ${percentage}%**" >> $GITHUB_STEP_SUMMARY
+          
+          # Add badge color based on coverage
+          if (( $(echo "$percentage < 50" | bc -l) )); then
+            echo "⚠️ Coverage is below 50%" >> $GITHUB_STEP_SUMMARY
+          elif (( $(echo "$percentage < 70" | bc -l) )); then
+            echo "📊 Coverage is moderate (50-70%)" >> $GITHUB_STEP_SUMMARY
+          elif (( $(echo "$percentage < 90" | bc -l) )); then
+            echo "✅ Good coverage (70-90%)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "🎉 Excellent coverage (90%+)!" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+        
+    - name: Archive coverage results
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-report
+        path: target/coverage/
+        
+    - name: Comment PR with coverage
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          if (fs.existsSync('target/coverage/cobertura.xml')) {
+            const xml = fs.readFileSync('target/coverage/cobertura.xml', 'utf8');
+            const match = xml.match(/line-rate="([^"]+)"/);
+            if (match) {
+              const coverage = (parseFloat(match[1]) * 100).toFixed(2);
+              
+              const comment = `## 📊 Test Coverage Report
+              
+              **Overall Coverage: ${coverage}%**
+              
+              ${coverage < 50 ? '⚠️ Coverage is below 50%' : 
+                coverage < 70 ? '📊 Coverage is moderate (50-70%)' :
+                coverage < 90 ? '✅ Good coverage (70-90%)' :
+                '🎉 Excellent coverage (90%+)!'}
+              
+              View detailed report in the [Actions tab](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`;
+              
+              github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+            }
+          }

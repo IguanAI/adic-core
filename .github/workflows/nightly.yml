@@ -1,0 +1,228 @@
+name: Nightly Tests
+
+on:
+  schedule:
+    # Run at 2 AM UTC every night
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Enable debug logging'
+        required: false
+        default: 'false'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # Extended test suite with fuzzing
+  extended-tests:
+    name: Extended Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libssl-dev \
+          libclang-dev \
+          protobuf-compiler \
+          cmake \
+          valgrind
+          
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src, miri
+        
+    - name: Cache dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: "nightly"
+        
+    - name: Install test tools
+      run: |
+        cargo install cargo-fuzz || true
+        cargo install cargo-criterion || true
+        cargo install cargo-deny || true
+        
+    - name: Run all tests with all features
+      run: cargo test --all --all-features --release -- --test-threads=1
+      
+    - name: Run ignored tests
+      run: cargo test --all -- --ignored
+      continue-on-error: true
+      
+    - name: Run tests with Miri (memory safety)
+      run: |
+        cargo +nightly miri setup
+        cargo +nightly miri test --package adic-types
+        cargo +nightly miri test --package adic-math
+      continue-on-error: true
+      
+    - name: Check for dependency issues
+      run: cargo deny check
+      continue-on-error: true
+      
+    - name: Run property-based tests
+      run: |
+        cargo test --package adic-math --test property_based_test -- --nocapture
+        cargo test --package adic-economics --test fuzz_tests -- --nocapture
+      timeout-minutes: 10
+      
+  # Stress testing
+  stress-tests:
+    name: Stress Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libssl-dev \
+          libclang-dev \
+          protobuf-compiler
+          
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      
+    - name: Cache dependencies
+      uses: Swatinem/rust-cache@v2
+      
+    - name: Run network stress tests
+      run: |
+        cargo test --package adic-network --test '*' --release -- --nocapture
+      env:
+        ADIC_TEST_STRESS: "true"
+        RUST_LOG: "info"
+      timeout-minutes: 20
+      
+    - name: Run consensus stress tests
+      run: |
+        cargo test --package adic-consensus performance --release -- --nocapture
+      timeout-minutes: 15
+      
+    - name: Run storage stress tests
+      run: |
+        cargo test --package adic-storage --test '*' --release -- --nocapture
+      timeout-minutes: 10
+      
+  # Benchmarks
+  benchmarks:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libssl-dev \
+          libclang-dev \
+          protobuf-compiler
+          
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      
+    - name: Cache dependencies
+      uses: Swatinem/rust-cache@v2
+      
+    - name: Run benchmarks
+      run: |
+        cargo bench --all --no-fail-fast
+      
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results
+        path: target/criterion
+        
+  # Multi-node integration test
+  integration:
+    name: Multi-Node Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libssl-dev \
+          libclang-dev \
+          protobuf-compiler \
+          docker-compose
+          
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      
+    - name: Build Docker image
+      run: docker build -t adic-core:nightly .
+      
+    - name: Run multi-node test
+      run: |
+        docker-compose --profile multi-node up -d
+        sleep 30
+        docker-compose ps
+        docker-compose logs --tail=100
+        docker-compose down
+        
+  # Report results
+  report:
+    name: Nightly Report
+    runs-on: ubuntu-latest
+    needs: [extended-tests, stress-tests, benchmarks, integration]
+    if: always()
+    
+    steps:
+    - name: Create issue if tests failed
+      if: failure()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const title = `Nightly Test Failure - ${new Date().toISOString().split('T')[0]}`;
+          const body = `## Nightly Test Run Failed
+          
+          One or more nightly tests failed. Please investigate:
+          
+          - Extended Tests: ${{ needs.extended-tests.result }}
+          - Stress Tests: ${{ needs.stress-tests.result }}
+          - Benchmarks: ${{ needs.benchmarks.result }}
+          - Integration: ${{ needs.integration.result }}
+          
+          [View Run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})
+          `;
+          
+          await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: title,
+            body: body,
+            labels: ['nightly-failure', 'automated']
+          });
