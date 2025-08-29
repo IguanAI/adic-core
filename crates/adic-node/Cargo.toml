@@ -37,7 +37,7 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
 toml = "0.8"
-dotenv = "0.15"
+dotenvy = "0.15"
 libp2p = { workspace = true }
 jsonwebtoken = "9"
 rand = "0.8"

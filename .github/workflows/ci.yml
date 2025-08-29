@@ -71,7 +71,12 @@ jobs:
     - name: Install system dependencies (macOS)
       if: matrix.os == 'macos-latest'
       run: |
-        brew install cmake pkg-config protobuf
+        # Update brew and handle existing installations
+        brew update || true
+        # Uninstall any existing cmake from different tap
+        brew uninstall --ignore-dependencies cmake 2>/dev/null || true
+        # Install required dependencies
+        brew install cmake pkg-config protobuf || brew upgrade cmake pkg-config protobuf
         
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -127,7 +132,12 @@ jobs:
     - name: Install system dependencies (macOS)
       if: matrix.os == 'macos-latest'
       run: |
-        brew install cmake pkg-config protobuf
+        # Update brew and handle existing installations
+        brew update || true
+        # Uninstall any existing cmake from different tap
+        brew uninstall --ignore-dependencies cmake 2>/dev/null || true
+        # Install required dependencies
+        brew install cmake pkg-config protobuf || brew upgrade cmake pkg-config protobuf
         
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
