@@ -1,0 +1,90 @@
+# Test Dockerfile to verify installation instructions
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Step 1: Install system dependencies as per README
+RUN apt-get update && \
+    apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    protobuf-compiler \
+    cmake \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Step 2: Install Rust as per README
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Verify Rust installation
+RUN rustc --version && cargo --version
+
+# Step 3: Clone and build ADIC Core
+WORKDIR /workspace
+COPY . /workspace/adic-core/
+
+WORKDIR /workspace/adic-core
+
+# Step 4: Build the project as per README instructions
+RUN cargo build --release
+
+# Step 5: Run tests to verify build
+RUN cargo test --all
+
+# Step 6: Verify the binary exists and works
+RUN ./target/release/adic --help
+
+# Step 7: Test all README commands
+# Generate keypair
+RUN ./target/release/adic keygen --output node.key && \
+    test -f node.key && \
+    echo "✓ Keygen command works"
+
+# Initialize with v1 parameters
+RUN ./target/release/adic init --params v1 && \
+    test -f adic-config.toml && \
+    echo "✓ Init command works"
+
+# Test the test command (local test mode)
+RUN ./target/release/adic test --count 5 && \
+    echo "✓ Test command works"
+
+# Create a startup script to test the node
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "Starting ADIC node..."\n\
+./target/release/adic start --data-dir ./data --api-port 8080 &\n\
+NODE_PID=$!\n\
+echo "Node PID: $NODE_PID"\n\
+sleep 5\n\
+echo "Testing API endpoints..."\n\
+curl -f http://localhost:8080/health || (echo "Health check failed" && kill $NODE_PID && exit 1)\n\
+echo "✓ Health endpoint works"\n\
+curl -f http://localhost:8080/status || (echo "Status check failed" && kill $NODE_PID && exit 1)\n\
+echo "✓ Status endpoint works"\n\
+echo "Submitting test message..."\n\
+curl -X POST http://localhost:8080/submit \
+  -H "Content-Type: application/json" \
+  -d '"'"'{"payload": "Hello, ADIC-DAG!", "features": {"axes": [{"axis": 0, "value": 42}, {"axis": 1, "value": 100}, {"axis": 2, "value": 7}]}}'"'"' \
+  || (echo "Submit failed" && kill $NODE_PID && exit 1)\n\
+echo "✓ Submit endpoint works"\n\
+kill $NODE_PID\n\
+echo "All tests passed!"' > /workspace/adic-core/test_node.sh && \
+    chmod +x /workspace/adic-core/test_node.sh
+
+# Final verification message
+RUN echo "=== Installation Verification Complete ===" && \
+    echo "✓ All dependencies installed" && \
+    echo "✓ Project builds successfully" && \
+    echo "✓ All tests pass" && \
+    echo "✓ Binary commands work" && \
+    echo "==================================="
+
+# Set up entry point for testing the node
+WORKDIR /workspace/adic-core
+CMD ["./test_node.sh"]

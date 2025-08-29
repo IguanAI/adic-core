@@ -5,6 +5,120 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2025-08-29
+
+### Phase 0 Complete 🎉
+
+This release marks the completion of Phase 0 (Research Implementation) with full protocol foundation, working P2P node, complete API, and comprehensive documentation.
+
+### Added
+- **API Documentation**: Complete REST API documentation for all 38 endpoints
+  - Created comprehensive API.md with request/response examples
+  - Added WebSocket API documentation for real-time updates
+  - Documented authentication, rate limiting, and error responses
+  - Added API quick reference section to README
+
+- **Contribution Guidelines**: Added CONTRIBUTING.md with:
+  - Development setup instructions for all platforms
+  - Code organization and architecture overview
+  - Testing guidelines and coverage requirements
+  - Security reporting procedures
+
+- **Installation Documentation**:
+  - System dependencies for Ubuntu/Debian, macOS, Fedora/RHEL, Arch Linux
+  - Troubleshooting section for common build issues
+  - Installation verification scripts
+  - Docker build improvements
+
+### Changed
+- **Documentation Updates**:
+  - Fixed all CLI command examples in README
+  - Updated whitepaper path to `docs/references/adic-dag-paper.pdf`
+  - Corrected binary name references (adic, not adic-node)
+  - Added system dependencies section to README
+
+- **Code Quality**:
+  - Removed all DEBUG print statements from production code
+  - Fixed TODO in api.rs - now fetches actual parent features
+  - Synchronized all crate versions to 0.1.4
+
+### Fixed
+- **Repository Cleanup**:
+  - Removed test files and private keys from repository
+  - Updated .gitignore to exclude sensitive files and data directories
+  - Cleaned up root directory of debug/test files
+
+- **API Improvements**:
+  - Security score endpoint now uses actual parent features when available
+  - Improved error messages when parent data is unavailable
+
+### Security
+- Enhanced .gitignore rules to prevent accidental commits of:
+  - Private keys (*.key, node.key)
+  - Database files and data directories
+  - Test files in root directory
+
+### Documentation
+- All 38 API endpoints now fully documented
+- Installation instructions verified on clean Ubuntu container
+- Added comprehensive troubleshooting guide
+
+### Known Limitations
+These are acceptable for Phase 0 and documented for transparency:
+- F2 homology uses heuristic approximation (not full persistent homology)
+- Cryptographic proofs use hash-based placeholders (no ZK proofs yet)
+- QUIC handshake not fully implemented
+- No threshold signatures implementation
+
+## [0.1.3] - 2025-08-26
+
+### Added
+- **Network Integration**: Wired adic-network into adic-node for P2P functionality
+  - Added NetworkEngine to node structure with proper lifecycle management
+  - Implemented network initialization and startup in node constructor
+  - Integrated message broadcasting to network peers
+  - Added incoming message processing from network
+  - Network configuration through NodeConfig with bootstrap peers
+  - QUIC and TCP transport layers (QUIC primary, TCP temporarily disabled)
+
+- **API Improvements**: Fixed Axum handler compilation and type issues
+  - Updated all handlers to return proper Response types
+  - Fixed Arc<AppState> Send+Sync requirements
+  - Removed non-Send libp2p transport to resolve compilation issues
+
+- **Network Testing**: Comprehensive multi-peer test suite
+  - Two-peer communication test
+  - Three-node network topology test
+  - Network resilience test with node failure simulation
+  - Configurable test port range via environment variables (ADIC_TEST_PORT_MIN/MAX)
+  - Default test port range: 6960-6969
+
+### Changed
+- **Transport Architecture**: Temporarily disabled libp2p transport
+  - Removed libp2p_transport field (not Send+Sync compatible)
+  - Focus on QUIC transport for peer connections
+  - Simplified transport initialization
+
+- **Gossip Protocol**: Made broadcast tolerant of no-peer scenarios
+  - Handle InsufficientPeers gracefully for single-node operation
+  - Allow network to function in standalone mode
+
+### Fixed
+- **Compilation Issues**: Resolved all network and API compilation errors
+  - Fixed handler trait bounds for Axum 0.7
+  - Resolved Send+Sync issues with network components
+  - Fixed rustls crypto provider initialization
+
+### Documentation
+- **Network Testing**: Added environment variable configuration for test ports
+  - Documented ADIC_TEST_PORT_MIN and ADIC_TEST_PORT_MAX
+  - Added testing instructions to README
+
+### Known Issues
+- QUIC handshake and peer authentication not fully implemented
+- Peer discovery protocol needs completion
+- Network tests timeout on actual peer connections (handshake incomplete)
+
 ## [0.1.2] - 2025-08-25
 
 ### Added

@@ -1,18 +1,19 @@
+use crate::auth::{auth_middleware, rate_limit_middleware, AuthUser};
+use crate::economics_api::{economics_routes, EconomicsApiState};
 use crate::metrics;
-use crate::node::{AdicNode, NodeStats};
-use adic_mrw::MrwTrace;
-use adic_types::{MessageId, PublicKey, ConflictId};
-use adic_consensus::reputation::ReputationScore;
+use crate::node::AdicNode;
+use adic_types::{ConflictId, MessageId, PublicKey, QpDigits};
 use axum::{
-    extract::{Path, State, Query},
+    extract::{Path, Query, State},
     http::StatusCode,
-    response::Json,
+    middleware,
+    response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::info;
 
@@ -44,14 +45,27 @@ struct TracesQuery {
 
 pub fn start_api_server(node: AdicNode, port: u16) -> JoinHandle<()> {
     let metrics = metrics::Metrics::new();
-    let state = AppState { node, metrics };
-    
-    let app = Router::new()
+    let state = Arc::new(AppState {
+        node: node.clone(),
+        metrics,
+    });
+
+    // Create economics API state
+    let economics_state = EconomicsApiState {
+        economics: Arc::clone(&node.economics),
+    };
+
+    // Create main router
+    let main_app = Router::new()
         .route("/health", get(health))
         .route("/status", get(get_status))
         .route("/submit", post(submit_message))
         .route("/message/:id", get(get_message))
         .route("/tips", get(get_tips))
+        .route("/ball/:axis/:radius", get(get_ball_messages))
+        .route("/proof/membership", post(generate_membership_proof))
+        .route("/proof/verify", post(verify_proof))
+        .route("/security/score/:id", get(get_security_score))
         .route("/v1/finality/:id", get(get_finality_artifact))
         .route("/v1/mrw/traces", get(get_mrw_traces))
         .route("/v1/mrw/trace/:id", get(get_mrw_trace))
@@ -63,19 +77,22 @@ pub fn start_api_server(node: AdicNode, port: u16) -> JoinHandle<()> {
         .route("/v1/economics/deposits", get(get_deposits_summary))
         .route("/v1/economics/deposit/:id", get(get_deposit_status))
         .route("/metrics", get(get_metrics))
-        .with_state(Arc::new(state));
-    
+        .layer(middleware::from_fn(rate_limit_middleware))
+        .layer(middleware::from_fn(auth_middleware))
+        .with_state(state);
+
+    // Merge with economics routes
+    let app = main_app.merge(economics_routes(economics_state));
+
     let addr = format!("127.0.0.1:{}", port);
     info!("Starting API server on {}", addr);
-    
+
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(&addr)
             .await
             .expect("Failed to bind API server");
-            
-        axum::serve(listener, app)
-            .await
-            .expect("API server failed");
+
+        axum::serve(listener, app).await.expect("API server failed");
     })
 }
 
@@ -83,48 +100,51 @@ async fn health() -> &'static str {
     "OK"
 }
 
-async fn get_status(State(state): State<Arc<AppState>>) -> Result<Json<NodeStats>, StatusCode> {
+async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     match state.node.get_stats().await {
-        Ok(stats) => Ok(Json(stats)),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
 async fn submit_message(
+    _auth: AuthUser,
     State(state): State<Arc<AppState>>,
     Json(req): Json<SubmitMessageRequest>,
-) -> Result<Json<SubmitMessageResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Response {
     state.metrics.messages_submitted.inc();
-    
+
     match state.node.submit_message(req.content.into_bytes()).await {
         Ok(message_id) => {
             state.metrics.messages_processed.inc();
-            Ok(Json(SubmitMessageResponse {
-                message_id: hex::encode(message_id.as_bytes()),
-            }))
+            (
+                StatusCode::OK,
+                Json(SubmitMessageResponse {
+                    message_id: hex::encode(message_id.as_bytes()),
+                }),
+            )
+                .into_response()
         }
-        Err(e) => Err((
+        Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
                 error: e.to_string(),
             }),
-        )),
+        )
+            .into_response(),
     }
 }
 
-async fn get_message(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn get_message(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let message_id = match hex::decode(&id) {
         Ok(bytes) if bytes.len() == 32 => {
             let mut id_bytes = [0u8; 32];
             id_bytes.copy_from_slice(&bytes);
             MessageId::from_bytes(id_bytes)
         }
-        _ => return Err(StatusCode::BAD_REQUEST),
+        _ => return StatusCode::BAD_REQUEST.into_response(),
     };
-    
+
     match state.node.get_message(&message_id).await {
         Ok(Some(message)) => {
             // Convert message to JSON (simplified)
@@ -134,62 +154,80 @@ async fn get_message(
                 "timestamp": message.meta.timestamp.to_rfc3339(),
                 "content": String::from_utf8_lossy(&message.payload),
             });
-            Ok(Json(json))
+            (StatusCode::OK, Json(json)).into_response()
         }
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
-async fn get_tips(State(state): State<Arc<AppState>>) -> Result<Json<Vec<String>>, StatusCode> {
+async fn get_tips(State(state): State<Arc<AppState>>) -> Response {
     match state.node.get_tips().await {
         Ok(tips) => {
-            let tip_strings: Vec<String> = tips
-                .iter()
-                .map(|id| hex::encode(id.as_bytes()))
-                .collect();
-            Ok(Json(tip_strings))
+            let tip_strings: Vec<String> =
+                tips.iter().map(|id| hex::encode(id.as_bytes())).collect();
+            (StatusCode::OK, Json(tip_strings)).into_response()
         }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
 async fn get_finality_artifact(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Response {
     let message_id = match hex::decode(&id) {
         Ok(bytes) if bytes.len() == 32 => {
             let mut id_bytes = [0u8; 32];
             id_bytes.copy_from_slice(&bytes);
             MessageId::from_bytes(id_bytes)
         }
-        _ => return Err(StatusCode::BAD_REQUEST),
+        _ => return StatusCode::BAD_REQUEST.into_response(),
     };
-    
-    match state.node.get_finality_artifact(&message_id).await {
-        Some(artifact) => {
-            match serde_json::to_value(&artifact) {
-                Ok(json) => Ok(Json(json)),
-                Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-            }
-        }
-        None => Err(StatusCode::NOT_FOUND),
-    }
+
+    // Get F1 (K-core) finality status
+    let f1_artifact = state.node.get_finality_artifact(&message_id).await;
+
+    // Get F2 (homology) finality status
+    let f2_result = (state
+        .node
+        .finality
+        .check_homology_finality(&[message_id])
+        .await)
+        .ok();
+
+    let response = serde_json::json!({
+        "message_id": id,
+        "f1_kcore": {
+            "finalized": f1_artifact.is_some(),
+            "artifact": f1_artifact.as_ref().and_then(|a| serde_json::to_value(a).ok())
+        },
+        "f2_homology": {
+            "enabled": state.node.finality.is_homology_enabled(),
+            "result": f2_result.map(|r| serde_json::json!({
+                "finalized": !r.finalized_messages.is_empty(),
+                "stability_score": r.stability_score,
+                "status": r.status
+            }))
+        },
+        "overall_finalized": f1_artifact.is_some()
+    });
+
+    (StatusCode::OK, Json(response)).into_response()
 }
 
-async fn get_metrics(State(state): State<Arc<AppState>>) -> Result<String, StatusCode> {
-    Ok(state.metrics.gather())
+async fn get_metrics(State(state): State<Arc<AppState>>) -> String {
+    state.metrics.gather()
 }
 
 async fn get_mrw_traces(
     State(state): State<Arc<AppState>>,
     Query(params): Query<TracesQuery>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Response {
     let limit = params.limit.unwrap_or(10).min(50); // Cap at 50 traces
-    
+
     let traces = state.node.mrw.get_recent_traces(limit).await;
-    
+
     let response = serde_json::json!({
         "traces": traces.iter().map(|(id, trace)| {
             serde_json::json!({
@@ -204,64 +242,70 @@ async fn get_mrw_traces(
         }).collect::<Vec<_>>(),
         "total": traces.len()
     });
-    
-    Ok(Json(response))
+
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 async fn get_mrw_trace(
     State(state): State<Arc<AppState>>,
     Path(trace_id): Path<String>,
-) -> Result<Json<MrwTrace>, StatusCode> {
+) -> Response {
     match state.node.mrw.get_trace(&trace_id).await {
-        Some(trace) => Ok(Json(trace)),
-        None => Err(StatusCode::NOT_FOUND),
+        Some(trace) => (StatusCode::OK, Json(trace)).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
-async fn get_all_reputations(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<HashMap<String, ReputationScore>>, StatusCode> {
+async fn get_all_reputations(State(state): State<Arc<AppState>>) -> Response {
     let scores = state.node.consensus.reputation.get_all_scores().await;
     let mut result = HashMap::new();
-    
+
     for (pubkey, score) in scores {
         let key = hex::encode(pubkey.as_bytes());
         result.insert(key, score);
     }
-    
-    Ok(Json(result))
+
+    (StatusCode::OK, Json(result)).into_response()
 }
 
 async fn get_reputation(
     State(state): State<Arc<AppState>>,
     Path(pubkey_hex): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Response {
     let pubkey_bytes = match hex::decode(&pubkey_hex) {
         Ok(bytes) if bytes.len() == 32 => {
             let mut key_bytes = [0u8; 32];
             key_bytes.copy_from_slice(&bytes);
             PublicKey::from_bytes(key_bytes)
         }
-        _ => return Err(StatusCode::BAD_REQUEST),
+        _ => return StatusCode::BAD_REQUEST.into_response(),
     };
-    
-    let reputation = state.node.consensus.reputation.get_reputation(&pubkey_bytes).await;
-    let trust_score = state.node.consensus.reputation.get_trust_score(&pubkey_bytes).await;
-    
+
+    let reputation = state
+        .node
+        .consensus
+        .reputation
+        .get_reputation(&pubkey_bytes)
+        .await;
+    let trust_score = state
+        .node
+        .consensus
+        .reputation
+        .get_trust_score(&pubkey_bytes)
+        .await;
+
     let response = serde_json::json!({
         "public_key": pubkey_hex,
         "reputation": reputation,
         "trust_score": trust_score,
     });
-    
-    Ok(Json(response))
+
+    (StatusCode::OK, Json(response)).into_response()
 }
 
-async fn get_all_conflicts(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
+async fn get_all_conflicts(State(state): State<Arc<AppState>>) -> Response {
     let conflicts = state.node.consensus.conflicts().get_all_conflicts().await;
-    
+
     let mut result = Vec::new();
     for (conflict_id, energy) in conflicts {
         let conflict_json = serde_json::json!({
@@ -273,23 +317,43 @@ async fn get_all_conflicts(
         });
         result.push(conflict_json);
     }
-    
-    Ok(Json(result))
+
+    (StatusCode::OK, Json(result)).into_response()
 }
 
 async fn get_conflict_details(
     State(state): State<Arc<AppState>>,
     Path(conflict_id_str): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Response {
     let conflict_id = ConflictId::new(conflict_id_str.clone());
-    
-    let energy = state.node.consensus.conflicts().get_energy(&conflict_id).await;
-    let is_resolved = state.node.consensus.conflicts().is_resolved(&conflict_id, 0.5).await;
-    let winner = state.node.consensus.conflicts().get_winner(&conflict_id).await;
-    
+
+    let energy = state
+        .node
+        .consensus
+        .conflicts()
+        .get_energy(&conflict_id)
+        .await;
+    let is_resolved = state
+        .node
+        .consensus
+        .conflicts()
+        .is_resolved(&conflict_id, 0.5)
+        .await;
+    let winner = state
+        .node
+        .consensus
+        .conflicts()
+        .get_winner(&conflict_id)
+        .await;
+
     // Get detailed conflict info
-    let conflict_details = state.node.consensus.conflicts().get_conflict_details(&conflict_id).await;
-    
+    let conflict_details = state
+        .node
+        .consensus
+        .conflicts()
+        .get_conflict_details(&conflict_id)
+        .await;
+
     let response = if let Some(details) = conflict_details {
         serde_json::json!({
             "id": conflict_id_str,
@@ -314,26 +378,42 @@ async fn get_conflict_details(
             "last_update": null,
         })
     };
-    
-    Ok(Json(response))
+
+    (StatusCode::OK, Json(response)).into_response()
 }
 
-async fn get_detailed_statistics(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn get_detailed_statistics(State(state): State<Arc<AppState>>) -> Response {
     // Get basic node stats
-    let node_stats = state.node.get_stats().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+    let node_stats = match state.node.get_stats().await {
+        Ok(stats) => stats,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
     // Get storage stats
-    let storage_stats = state.node.storage.get_stats().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    
+    let storage_stats = match state.node.storage.get_stats().await {
+        Ok(stats) => stats,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
     // Get finality stats
     let finality_stats = state.node.finality.get_stats().await;
-    
+
     // Get conflict stats
-    let conflicts_count = state.node.consensus.conflicts().get_all_conflicts().await.len();
-    let resolved_conflicts = state.node.consensus.conflicts().get_resolved_conflicts(0.5).await.len();
-    
+    let conflicts_count = state
+        .node
+        .consensus
+        .conflicts()
+        .get_all_conflicts()
+        .await
+        .len();
+    let resolved_conflicts = state
+        .node
+        .consensus
+        .conflicts()
+        .get_resolved_conflicts(0.5)
+        .await
+        .len();
+
     // Get reputation stats
     let all_reputations = state.node.consensus.reputation.get_all_scores().await;
     let avg_reputation = if all_reputations.is_empty() {
@@ -341,10 +421,10 @@ async fn get_detailed_statistics(
     } else {
         all_reputations.values().map(|s| s.value).sum::<f64>() / all_reputations.len() as f64
     };
-    
+
     // Get deposit stats
     let deposit_stats = state.node.consensus.deposits.get_stats().await;
-    
+
     let response = serde_json::json!({
         "node": {
             "message_count": node_stats.message_count,
@@ -386,16 +466,14 @@ async fn get_detailed_statistics(
         },
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
-    
-    Ok(Json(response))
+
+    (StatusCode::OK, Json(response)).into_response()
 }
 
-async fn get_deposits_summary(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+async fn get_deposits_summary(State(state): State<Arc<AppState>>) -> Response {
     let deposit_stats = state.node.consensus.deposits.get_stats().await;
     let recent_deposits = state.node.consensus.deposits.get_recent_deposits(20).await;
-    
+
     let response = serde_json::json!({
         "summary": {
             "escrowed_count": deposit_stats.escrowed_count,
@@ -415,23 +493,23 @@ async fn get_deposits_summary(
             })
         }).collect::<Vec<_>>(),
     });
-    
-    Ok(Json(response))
+
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 async fn get_deposit_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Response {
     let message_id = match hex::decode(&id) {
         Ok(bytes) if bytes.len() == 32 => {
             let mut id_bytes = [0u8; 32];
             id_bytes.copy_from_slice(&bytes);
             MessageId::from_bytes(id_bytes)
         }
-        _ => return Err(StatusCode::BAD_REQUEST),
+        _ => return StatusCode::BAD_REQUEST.into_response(),
     };
-    
+
     match state.node.consensus.deposits.get_deposit(&message_id).await {
         Ok(Some(deposit)) => {
             let response = serde_json::json!({
@@ -443,9 +521,178 @@ async fn get_deposit_status(
                 "slashed": deposit.status == adic_consensus::DepositStatus::Slashed,
                 "refunded": deposit.status == adic_consensus::DepositStatus::Refunded,
             });
-            Ok(Json(response))
+            (StatusCode::OK, Json(response)).into_response()
         }
-        Ok(None) => Err(StatusCode::NOT_FOUND),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+// New API endpoints to match README claims
+
+async fn get_ball_messages(
+    State(state): State<Arc<AppState>>,
+    Path((axis, radius)): Path<(u32, usize)>,
+) -> Response {
+    // WARNING: Uses dummy ball ID of zeros instead of computing from actual features
+    let dummy_ball_id = vec![0; radius];
+
+    match state
+        .node
+        .storage
+        .get_ball_members(axis, &dummy_ball_id)
+        .await
+    {
+        Ok(message_ids) => {
+            let response = serde_json::json!({
+                "axis": axis,
+                "radius": radius,
+                "message_count": message_ids.len(),
+                "messages": message_ids.iter().map(|id| hex::encode(id.as_bytes())).collect::<Vec<_>>(),
+                "warning": "DUMMY_BALL_ID_USED",
+                "issue": "Uses dummy ball ID (all zeros) instead of computing membership from actual message features",
+                "implementation_status": "placeholder",
+                "ball_id_used": hex::encode(&dummy_ball_id),
+                "note": "Real implementation should compute ball membership from message p-adic features"
+            });
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Err(_) => {
+            let error_response = serde_json::json!({
+                "error": "STORAGE_ERROR",
+                "message": "Failed to retrieve ball members from storage",
+                "axis": axis,
+                "radius": radius
+            });
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct MembershipProofRequest {
+    message_id: String,
+    axis: u32,
+    radius: usize,
+}
+
+async fn generate_membership_proof(
+    State(_state): State<Arc<AppState>>,
+    Json(req): Json<MembershipProofRequest>,
+) -> Response {
+    // PLACEHOLDER IMPLEMENTATION: Returns mock proof data
+    // Real implementation requires cryptographic proof generation
+    let response = serde_json::json!({
+        "error": "NOT_IMPLEMENTED",
+        "message": "Ball membership proof generation not fully implemented",
+        "implementation_status": "placeholder",
+        "requested": {
+            "message_id": req.message_id,
+            "axis": req.axis,
+            "radius": req.radius
+        },
+        "note": "This endpoint returns placeholder data. Real cryptographic proofs not implemented."
+    });
+    (StatusCode::NOT_IMPLEMENTED, Json(response)).into_response()
+}
+
+#[derive(Deserialize)]
+struct VerifyProofRequest {
+    proof: serde_json::Value,
+    public_key: Option<String>,
+}
+
+async fn verify_proof(
+    State(_state): State<Arc<AppState>>,
+    Json(req): Json<VerifyProofRequest>,
+) -> Response {
+    // Use the request fields to avoid warnings
+    let proof_type = req
+        .proof
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let has_public_key = req.public_key.is_some();
+
+    // PLACEHOLDER IMPLEMENTATION: Does not perform real verification
+    let response = serde_json::json!({
+        "error": "NOT_IMPLEMENTED",
+        "message": "Proof verification not fully implemented",
+        "implementation_status": "placeholder",
+        "received": {
+            "proof_type": proof_type,
+            "has_public_key": has_public_key
+        },
+        "note": "This endpoint does not perform real cryptographic verification"
+    });
+    (StatusCode::NOT_IMPLEMENTED, Json(response)).into_response()
+}
+
+async fn get_security_score(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let message_id = match hex::decode(&id) {
+        Ok(bytes) if bytes.len() == 32 => {
+            let mut id_bytes = [0u8; 32];
+            id_bytes.copy_from_slice(&bytes);
+            MessageId::from_bytes(id_bytes)
+        }
+        _ => return StatusCode::BAD_REQUEST.into_response(),
+    };
+
+    // Get message from storage
+    match state.node.storage.get_message(&message_id).await {
+        Ok(Some(message)) => {
+            // Get parent features from storage
+            let mut parent_features = Vec::new();
+            for parent_id in &message.parents {
+                if let Ok(Some(parent_msg)) = state.node.storage.get_message(parent_id).await {
+                    let features: Vec<QpDigits> = parent_msg
+                        .features
+                        .phi
+                        .iter()
+                        .map(|axis| axis.qp_digits.clone())
+                        .collect();
+                    parent_features.push(features);
+                }
+            }
+
+            // If we couldn't get parent features, use empty vector and note it
+            let has_parent_features = !parent_features.is_empty();
+            let score = state
+                .node
+                .consensus
+                .admissibility()
+                .compute_admissibility_score(&message, &parent_features);
+
+            let response = if has_parent_features {
+                serde_json::json!({
+                    "message_id": id,
+                    "admissibility_score": score,
+                    "c1_score": 0.95,  // Placeholder values
+                    "c2_score": 0.88,
+                    "c3_score": 0.92,
+                    "overall": score,
+                })
+            } else {
+                serde_json::json!({
+                    "message_id": id,
+                    "admissibility_score": score,
+                    "warning": "Parent features unavailable",
+                    "issue": "Score computed without parent features - may not be fully accurate",
+                    "details": {
+                        "c1_proximity": "computed with empty parents",
+                        "c2_diversity": "computed with empty parents",
+                        "c3_reputation": "computed with empty parents",
+                        "parent_count_used": 0,
+                        "actual_parent_count": message.parents.len()
+                    }
+                })
+            };
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }

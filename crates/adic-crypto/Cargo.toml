@@ -7,12 +7,18 @@ license.workspace = true
 
 [dependencies]
 adic-types = { path = "../adic-types" }
+adic-math = { path = "../adic-math" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 blake3 = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+aes-gcm = "0.10"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 
 [dev-dependencies]
 hex = { workspace = true }
 chrono = { workspace = true }
+adic-consensus = { path = "../adic-consensus" }
+tokio = { workspace = true, features = ["full"] }

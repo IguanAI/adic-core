@@ -11,35 +11,35 @@ impl AdicAmount {
     pub const ZERO: Self = Self(0);
     pub const MAX_SUPPLY: Self = Self(1_000_000_000 * ADIC_BASE_UNIT); // 10^9 ADIC
     pub const GENESIS_SUPPLY: Self = Self(300_000_000 * ADIC_BASE_UNIT); // 3×10^8 ADIC
-    
+
     pub fn from_adic(adic: f64) -> Self {
         Self((adic * ADIC_BASE_UNIT as f64) as u64)
     }
-    
+
     pub fn from_base_units(units: u64) -> Self {
         Self(units)
     }
-    
+
     pub fn to_adic(&self) -> f64 {
         self.0 as f64 / ADIC_BASE_UNIT as f64
     }
-    
+
     pub fn to_base_units(&self) -> u64 {
         self.0
     }
-    
+
     pub fn checked_add(&self, other: Self) -> Option<Self> {
         self.0.checked_add(other.0).map(Self)
     }
-    
+
     pub fn checked_sub(&self, other: Self) -> Option<Self> {
         self.0.checked_sub(other.0).map(Self)
     }
-    
+
     pub fn saturating_add(&self, other: Self) -> Self {
         Self(self.0.saturating_add(other.0).min(Self::MAX_SUPPLY.0))
     }
-    
+
     pub fn saturating_sub(&self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
     }
@@ -58,31 +58,31 @@ impl AccountAddress {
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
-    
+
     pub fn from_public_key(pubkey: &adic_types::PublicKey) -> Self {
         Self(*pubkey.as_bytes())
     }
-    
+
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
-    
+
     pub fn treasury() -> Self {
         Self([0xFF; 32])
     }
-    
+
     pub fn liquidity_pool() -> Self {
         let mut bytes = [0xEE; 32];
         bytes[0] = 0x01;
         Self(bytes)
     }
-    
+
     pub fn community_grants() -> Self {
         let mut bytes = [0xDD; 32];
         bytes[0] = 0x02;
         Self(bytes)
     }
-    
+
     pub fn genesis_pool() -> Self {
         let mut bytes = [0xCC; 32];
         bytes[0] = 0x03;
@@ -98,9 +98,9 @@ impl fmt::Display for AccountAddress {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AllocationConfig {
-    pub treasury_percent: f64,        // 20%
-    pub liquidity_percent: f64,       // 30%
-    pub genesis_percent: f64,          // 50%
+    pub treasury_percent: f64,  // 20%
+    pub liquidity_percent: f64, // 30%
+    pub genesis_percent: f64,   // 50%
     pub treasury_multisig_threshold: u32,
     pub treasury_multisig_keys: Vec<AccountAddress>,
 }
@@ -119,8 +119,8 @@ impl Default for AllocationConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmissionSchedule {
-    pub initial_rate: f64,      // 1% per year
-    pub half_life_years: f64,   // 6 years
+    pub initial_rate: f64,    // 1% per year
+    pub half_life_years: f64, // 6 years
     pub start_timestamp: i64,
     pub last_emission_timestamp: i64,
 }

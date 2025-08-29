@@ -18,10 +18,6 @@ impl ConflictId {
     pub fn is_none(&self) -> bool {
         self.0.is_empty()
     }
-    
-    pub fn to_string(&self) -> String {
-        self.0.clone()
-    }
 }
 
 impl std::fmt::Display for ConflictId {
@@ -85,23 +81,23 @@ impl AdicMessage {
             signature: Signature::empty(),
             payload,
         };
-        
+
         msg.id = msg.compute_id();
         msg
     }
 
     pub fn compute_id(&self) -> MessageId {
         let mut data = Vec::new();
-        
+
         for parent in &self.parents {
             data.extend_from_slice(parent.as_bytes());
         }
-        
+
         data.extend_from_slice(&serde_json::to_vec(&self.features).unwrap());
         data.extend_from_slice(&serde_json::to_vec(&self.meta).unwrap());
         data.extend_from_slice(self.proposer_pk.as_bytes());
         data.extend_from_slice(&self.payload);
-        
+
         MessageId::new(&data)
     }
 
@@ -116,29 +112,29 @@ impl AdicMessage {
     pub fn is_genesis(&self) -> bool {
         self.parents.is_empty()
     }
-    
+
     /// Get the message bytes for signing (excludes the signature field)
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut data = Vec::new();
-        
+
         // Include ID
         data.extend_from_slice(self.id.as_bytes());
-        
+
         // Include parents
         for parent in &self.parents {
             data.extend_from_slice(parent.as_bytes());
         }
-        
+
         // Include serialized features and meta
         data.extend_from_slice(&serde_json::to_vec(&self.features).unwrap());
         data.extend_from_slice(&serde_json::to_vec(&self.meta).unwrap());
-        
+
         // Include proposer public key
         data.extend_from_slice(self.proposer_pk.as_bytes());
-        
+
         // Include payload
         data.extend_from_slice(&self.payload);
-        
+
         data
     }
 }
@@ -158,7 +154,7 @@ mod tests {
         let payload = b"test payload".to_vec();
 
         let msg = AdicMessage::new(parents.clone(), features, meta, pk, payload);
-        
+
         assert_eq!(msg.parent_count(), 2);
         assert!(!msg.is_genesis());
         assert!(msg.verify_id());
@@ -168,7 +164,7 @@ mod tests {
     fn test_conflict_id() {
         let conflict = ConflictId::new("conflict-123".to_string());
         assert!(!conflict.is_none());
-        
+
         let none = ConflictId::none();
         assert!(none.is_none());
     }

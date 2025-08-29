@@ -1,24 +1,35 @@
-use adic_types::{MessageId, AdicMessage};
+use adic_types::{AdicMessage, MessageId};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+// Type aliases for complex types
+type MessageIdList = Vec<MessageId>;
+type AxisValueIndex = HashMap<Vec<u8>, MessageIdList>;
+type AxisIndex = HashMap<u32, AxisValueIndex>;
+
 /// Index for efficient message queries
 pub struct MessageIndex {
     /// Index by timestamp (epoch seconds -> message IDs)
-    by_timestamp: Arc<RwLock<HashMap<i64, Vec<MessageId>>>>,
-    
+    by_timestamp: Arc<RwLock<HashMap<i64, MessageIdList>>>,
+
     /// Index by author (public key bytes -> message IDs)
-    by_author: Arc<RwLock<HashMap<[u8; 32], Vec<MessageId>>>>,
-    
+    by_author: Arc<RwLock<HashMap<[u8; 32], MessageIdList>>>,
+
     /// Index by axis values (axis -> value -> message IDs)
-    by_axis_value: Arc<RwLock<HashMap<u32, HashMap<Vec<u8>, Vec<MessageId>>>>>,
-    
+    by_axis_value: Arc<RwLock<AxisIndex>>,
+
     /// Depth index (message ID -> depth from genesis)
     depths: Arc<RwLock<HashMap<MessageId, u32>>>,
-    
+
     /// Descendant count cache
     descendant_counts: Arc<RwLock<HashMap<MessageId, usize>>>,
+}
+
+impl Default for MessageIndex {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MessageIndex {
@@ -35,16 +46,22 @@ impl MessageIndex {
     /// Add a message to the index
     pub async fn add_message(&self, message: &AdicMessage, parent_depths: Vec<u32>) {
         let msg_id = message.id;
-        
+
         // Index by timestamp
         let timestamp = message.meta.timestamp.timestamp();
         let mut by_time = self.by_timestamp.write().await;
-        by_time.entry(timestamp).or_insert_with(Vec::new).push(msg_id);
+        by_time
+            .entry(timestamp)
+            .or_insert_with(Vec::new)
+            .push(msg_id);
         drop(by_time);
 
         // Index by author
         let mut by_auth = self.by_author.write().await;
-        by_auth.entry(*message.proposer_pk.as_bytes()).or_insert_with(Vec::new).push(msg_id);
+        by_auth
+            .entry(*message.proposer_pk.as_bytes())
+            .or_insert_with(Vec::new)
+            .push(msg_id);
         drop(by_auth);
 
         // Index by axis values
@@ -65,18 +82,19 @@ impl MessageIndex {
         } else {
             parent_depths.iter().max().unwrap() + 1
         };
-        
+
         let mut depths = self.depths.write().await;
         depths.insert(msg_id, depth);
-        
+
         // Update descendant counts for all ancestors
-        self.update_descendant_counts(msg_id, &message.parents).await;
+        self.update_descendant_counts(msg_id, &message.parents)
+            .await;
     }
 
     /// Remove a message from the index
     pub async fn remove_message(&self, message: &AdicMessage) {
         let msg_id = message.id;
-        
+
         // Remove from timestamp index
         let timestamp = message.meta.timestamp.timestamp();
         let mut by_time = self.by_timestamp.write().await;
@@ -115,7 +133,7 @@ impl MessageIndex {
         // Remove from depth index
         let mut depths = self.depths.write().await;
         depths.remove(&msg_id);
-        
+
         // Update descendant counts
         self.decrement_descendant_counts(&message.parents).await;
     }
@@ -124,13 +142,13 @@ impl MessageIndex {
     pub async fn get_by_timestamp_range(&self, start: i64, end: i64) -> Vec<MessageId> {
         let by_time = self.by_timestamp.read().await;
         let mut results = Vec::new();
-        
+
         for (&timestamp, messages) in by_time.iter() {
             if timestamp >= start && timestamp <= end {
                 results.extend(messages.iter().copied());
             }
         }
-        
+
         results
     }
 
@@ -165,18 +183,18 @@ impl MessageIndex {
     /// Update descendant counts for ancestors
     async fn update_descendant_counts(&self, _msg_id: MessageId, parents: &[MessageId]) {
         let mut counts = self.descendant_counts.write().await;
-        
+
         // BFS to update all ancestors
         let mut queue = VecDeque::from(parents.to_vec());
         let mut visited = HashSet::new();
-        
+
         while let Some(ancestor) = queue.pop_front() {
             if !visited.insert(ancestor) {
                 continue;
             }
-            
+
             *counts.entry(ancestor).or_insert(0) += 1;
-            
+
             // Note: In practice, we'd need access to parent relationships
             // This is simplified for the example
         }
@@ -185,7 +203,7 @@ impl MessageIndex {
     /// Decrement descendant counts for ancestors
     async fn decrement_descendant_counts(&self, parents: &[MessageId]) {
         let mut counts = self.descendant_counts.write().await;
-        
+
         for parent in parents {
             if let Some(count) = counts.get_mut(parent) {
                 *count = count.saturating_sub(1);
@@ -200,6 +218,12 @@ pub struct TipManager {
     tip_scores: Arc<RwLock<HashMap<MessageId, f64>>>,
 }
 
+impl Default for TipManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TipManager {
     pub fn new() -> Self {
         Self {
@@ -212,7 +236,7 @@ impl TipManager {
     pub async fn add_tip(&self, id: MessageId, score: f64) {
         let mut tips = self.tips.write().await;
         tips.insert(id);
-        
+
         let mut scores = self.tip_scores.write().await;
         scores.insert(id, score);
     }
@@ -221,12 +245,12 @@ impl TipManager {
     pub async fn remove_tip(&self, id: &MessageId) -> bool {
         let mut tips = self.tips.write().await;
         let removed = tips.remove(id);
-        
+
         if removed {
             let mut scores = self.tip_scores.write().await;
             scores.remove(id);
         }
-        
+
         removed
     }
 
@@ -251,7 +275,7 @@ impl TipManager {
             return false;
         }
         drop(tips);
-        
+
         let mut scores = self.tip_scores.write().await;
         scores.insert(*id, score);
         true
@@ -286,7 +310,7 @@ impl TipManager {
     pub async fn clear(&self) {
         let mut tips = self.tips.write().await;
         tips.clear();
-        
+
         let mut scores = self.tip_scores.write().await;
         scores.clear();
     }
@@ -295,13 +319,13 @@ impl TipManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adic_types::{AdicFeatures, AdicMeta, AxisPhi, QpDigits, PublicKey};
+    use adic_types::{AdicFeatures, AdicMeta, AxisPhi, PublicKey, QpDigits};
     use chrono::Utc;
 
     #[tokio::test]
     async fn test_message_index() {
         let index = MessageIndex::new();
-        
+
         let message = AdicMessage::new(
             vec![],
             AdicFeatures::new(vec![
@@ -333,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn test_tip_manager() {
         let manager = TipManager::new();
-        
+
         let id1 = MessageId::new(b"tip1");
         let id2 = MessageId::new(b"tip2");
         let id3 = MessageId::new(b"tip3");

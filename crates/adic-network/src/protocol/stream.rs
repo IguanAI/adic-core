@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{RwLock, mpsc, Semaphore};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, info};
 
-use adic_types::{Result, MessageId, AdicError};
+use adic_types::{AdicError, MessageId, Result};
 use libp2p::PeerId;
 
 #[derive(Debug, Clone)]
@@ -103,7 +103,7 @@ pub enum StreamEvent {
 impl StreamProtocol {
     pub fn new(config: StreamConfig) -> Self {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
-        
+
         Self {
             config: config.clone(),
             active_transfers: Arc::new(RwLock::new(Vec::new())),
@@ -120,60 +120,70 @@ impl StreamProtocol {
         to_height: u64,
         data: Vec<u8>,
     ) -> Result<()> {
-        let _permit = self.stream_semaphore.acquire().await
+        let _permit = self
+            .stream_semaphore
+            .acquire()
+            .await
             .map_err(|e| AdicError::Network(format!("Failed to acquire semaphore: {}", e)))?;
-        
-        let request = StreamRequest::Snapshot { from_height, to_height };
+
+        let request = StreamRequest::Snapshot {
+            from_height,
+            to_height,
+        };
         let mut transfer = StreamTransfer::new(request.clone(), peer);
         transfer.total_bytes = data.len();
-        
-        self.event_sender.send(StreamEvent::TransferStarted(peer, request)).ok();
-        
+
+        self.event_sender
+            .send(StreamEvent::TransferStarted(peer, request))
+            .ok();
+
         // Add to active transfers
         {
             let mut transfers = self.active_transfers.write().await;
             transfers.push(transfer.clone());
         }
-        
+
         // Compress if needed
         let compressed_data = if data.len() > self.config.compression_threshold {
             self.compress_data(&data)?
         } else {
             data
         };
-        
+
         // Send in chunks
         for chunk in compressed_data.chunks(self.config.chunk_size) {
             // In real implementation, send chunk via network
             transfer.chunks_sent += 1;
             transfer.transferred_bytes += chunk.len();
-            
-            self.event_sender.send(StreamEvent::TransferProgress(
-                peer,
-                transfer.progress()
-            )).ok();
-            
+
+            self.event_sender
+                .send(StreamEvent::TransferProgress(peer, transfer.progress()))
+                .ok();
+
             // Simulate network delay
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        
+
         // Remove from active transfers
         {
             let mut transfers = self.active_transfers.write().await;
             transfers.retain(|t| t.peer != peer);
         }
-        
-        self.event_sender.send(StreamEvent::TransferCompleted(
+
+        self.event_sender
+            .send(StreamEvent::TransferCompleted(
+                peer,
+                transfer.transferred_bytes,
+            ))
+            .ok();
+
+        info!(
+            "Snapshot sent to {} ({} bytes, {:.2} MB/s)",
             peer,
-            transfer.transferred_bytes
-        )).ok();
-        
-        info!("Snapshot sent to {} ({} bytes, {:.2} MB/s)", 
-            peer, 
             transfer.transferred_bytes,
             transfer.throughput_mbps()
         );
-        
+
         Ok(())
     }
 
@@ -183,42 +193,49 @@ impl StreamProtocol {
         from_height: u64,
         to_height: u64,
     ) -> Result<Vec<u8>> {
-        let _permit = self.stream_semaphore.acquire().await
+        let _permit = self
+            .stream_semaphore
+            .acquire()
+            .await
             .map_err(|e| AdicError::Network(format!("Failed to acquire semaphore: {}", e)))?;
-        
-        let request = StreamRequest::Snapshot { from_height, to_height };
+
+        let request = StreamRequest::Snapshot {
+            from_height,
+            to_height,
+        };
         let transfer = StreamTransfer::new(request.clone(), peer);
-        
-        self.event_sender.send(StreamEvent::TransferStarted(peer, request)).ok();
-        
+
+        self.event_sender
+            .send(StreamEvent::TransferStarted(peer, request))
+            .ok();
+
         // Add to active transfers
         {
             let mut transfers = self.active_transfers.write().await;
             transfers.push(transfer.clone());
         }
-        
+
         // In real implementation, receive chunks from network
         // For now, simulate receiving compressed data
         let compressed_data = Vec::new();
-        
+
         // Decompress the received data
         let received_data = if !compressed_data.is_empty() {
             self.decompress_data(&compressed_data)?
         } else {
             Vec::new()
         };
-        
+
         // Remove from active transfers
         {
             let mut transfers = self.active_transfers.write().await;
             transfers.retain(|t| t.peer != peer);
         }
-        
-        self.event_sender.send(StreamEvent::TransferCompleted(
-            peer,
-            received_data.len()
-        )).ok();
-        
+
+        self.event_sender
+            .send(StreamEvent::TransferCompleted(peer, received_data.len()))
+            .ok();
+
         Ok(received_data)
     }
 
@@ -228,22 +245,27 @@ impl StreamProtocol {
         message_ids: Vec<MessageId>,
         include_proofs: bool,
     ) -> Result<()> {
-        let _permit = self.stream_semaphore.acquire().await
+        let _permit = self
+            .stream_semaphore
+            .acquire()
+            .await
             .map_err(|e| AdicError::Network(format!("Failed to acquire semaphore: {}", e)))?;
-        
-        let request = StreamRequest::BulkMessages { 
-            message_ids: message_ids.clone(), 
-            include_proofs 
+
+        let request = StreamRequest::BulkMessages {
+            message_ids: message_ids.clone(),
+            include_proofs,
         };
-        
+
         let _transfer = StreamTransfer::new(request.clone(), peer);
-        
-        self.event_sender.send(StreamEvent::TransferStarted(peer, request)).ok();
-        
+
+        self.event_sender
+            .send(StreamEvent::TransferStarted(peer, request))
+            .ok();
+
         // In real implementation, stream messages
-        
+
         info!("Streamed {} messages to {}", message_ids.len(), peer);
-        
+
         Ok(())
     }
 
@@ -253,7 +275,11 @@ impl StreamProtocol {
             .compress_vec(data)
             .map_err(|e| AdicError::Serialization(format!("Compression failed: {}", e)))?;
 
-        debug!("Compressed {} bytes to {} bytes", data.len(), compressed.len());
+        debug!(
+            "Compressed {} bytes to {} bytes",
+            data.len(),
+            compressed.len()
+        );
         Ok(compressed)
     }
 
@@ -263,7 +289,11 @@ impl StreamProtocol {
             .decompress_vec(data)
             .map_err(|e| AdicError::Serialization(format!("Decompression failed: {}", e)))?;
 
-        debug!("Decompressed {} bytes to {} bytes", data.len(), decompressed.len());
+        debug!(
+            "Decompressed {} bytes to {} bytes",
+            data.len(),
+            decompressed.len()
+        );
         Ok(decompressed)
     }
 
@@ -274,14 +304,16 @@ impl StreamProtocol {
 
     pub async fn get_transfer_progress(&self, peer: &PeerId) -> Option<f64> {
         let transfers = self.active_transfers.read().await;
-        transfers.iter()
+        transfers
+            .iter()
             .find(|t| t.peer == *peer)
             .map(|t| t.progress())
     }
 
     pub async fn get_transfer_stats(&self, peer: &PeerId) -> Option<(f64, f64)> {
         let transfers = self.active_transfers.read().await;
-        transfers.iter()
+        transfers
+            .iter()
             .find(|t| t.peer == *peer)
             .map(|t| (t.progress(), t.throughput_mbps()))
     }
@@ -290,12 +322,14 @@ impl StreamProtocol {
         let mut transfers = self.active_transfers.write().await;
         let initial_len = transfers.len();
         transfers.retain(|t| t.peer != *peer);
-        
+
         if transfers.len() < initial_len {
-            self.event_sender.send(StreamEvent::TransferFailed(
-                *peer,
-                "Transfer cancelled".to_string()
-            )).ok();
+            self.event_sender
+                .send(StreamEvent::TransferFailed(
+                    *peer,
+                    "Transfer cancelled".to_string(),
+                ))
+                .ok();
             true
         } else {
             false
@@ -315,7 +349,7 @@ mod tests {
     async fn test_stream_protocol_creation() {
         let config = StreamConfig::default();
         let protocol = StreamProtocol::new(config);
-        
+
         assert_eq!(protocol.active_transfer_count().await, 0);
     }
 
@@ -324,11 +358,14 @@ mod tests {
         let config = StreamConfig::default();
         let _protocol = StreamProtocol::new(config);
         let peer = PeerId::random();
-        
+
         // Start a simulated transfer
-        let request = StreamRequest::Snapshot { from_height: 0, to_height: 100 };
+        let request = StreamRequest::Snapshot {
+            from_height: 0,
+            to_height: 100,
+        };
         let transfer = StreamTransfer::new(request, peer);
-        
+
         assert_eq!(transfer.progress(), 0.0);
         assert!(transfer.throughput_mbps() >= 0.0);
     }
@@ -337,11 +374,11 @@ mod tests {
     async fn test_compression() {
         let config = StreamConfig::default();
         let protocol = StreamProtocol::new(config);
-        
+
         let data = vec![0u8; 10000];
         let compressed = protocol.compress_data(&data).unwrap();
         assert!(compressed.len() < data.len());
-        
+
         let decompressed = protocol.decompress_data(&compressed).unwrap();
         assert_eq!(decompressed, data);
     }

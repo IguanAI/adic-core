@@ -19,3 +19,4 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
+adic-storage = { path = "../adic-storage" }

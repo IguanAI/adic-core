@@ -1,8 +1,6 @@
-use adic_economics::{
-    EconomicsEngine, AdicAmount, AccountAddress,
-};
+use adic_economics::{AccountAddress, AdicAmount, EconomicsEngine};
 use axum::{
-    extract::{Path, State, Query},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
     routing::{get, post},
@@ -95,21 +93,18 @@ pub fn economics_routes(state: EconomicsApiState) -> Router {
 async fn get_supply(
     State(state): State<Arc<EconomicsApiState>>,
 ) -> Result<Json<SupplyResponse>, StatusCode> {
-    match state.economics.supply.get_metrics().await {
-        metrics => {
-            Ok(Json(SupplyResponse {
-                total_supply: metrics.total_supply.to_string(),
-                circulating_supply: metrics.circulating_supply.to_string(),
-                treasury_balance: metrics.treasury_balance.to_string(),
-                liquidity_balance: metrics.liquidity_balance.to_string(),
-                genesis_balance: metrics.genesis_balance.to_string(),
-                burned_amount: metrics.burned_amount.to_string(),
-                emission_issued: metrics.emission_issued.to_string(),
-                max_supply: AdicAmount::MAX_SUPPLY.to_string(),
-                genesis_supply: AdicAmount::GENESIS_SUPPLY.to_string(),
-            }))
-        }
-    }
+    let metrics = state.economics.supply.get_metrics().await;
+    Ok(Json(SupplyResponse {
+        total_supply: metrics.total_supply.to_string(),
+        circulating_supply: metrics.circulating_supply.to_string(),
+        treasury_balance: metrics.treasury_balance.to_string(),
+        liquidity_balance: metrics.liquidity_balance.to_string(),
+        genesis_balance: metrics.genesis_balance.to_string(),
+        burned_amount: metrics.burned_amount.to_string(),
+        emission_issued: metrics.emission_issued.to_string(),
+        max_supply: AdicAmount::MAX_SUPPLY.to_string(),
+        genesis_supply: AdicAmount::GENESIS_SUPPLY.to_string(),
+    }))
 }
 
 async fn get_balance(
@@ -117,21 +112,29 @@ async fn get_balance(
     State(state): State<Arc<EconomicsApiState>>,
 ) -> Result<Json<BalanceResponse>, StatusCode> {
     let address = parse_address(&address).map_err(|_| StatusCode::BAD_REQUEST)?;
-    
-    let balance = state.economics.balances.get_balance(address).await
+
+    let balance = state
+        .economics
+        .balances
+        .get_balance(address)
+        .await
         .map_err(|e| {
             error!("Failed to get balance: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    
-    let locked = state.economics.balances.get_locked_balance(address).await
+
+    let locked = state
+        .economics
+        .balances
+        .get_locked_balance(address)
+        .await
         .map_err(|e| {
             error!("Failed to get locked balance: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    
+
     let unlocked = balance.saturating_sub(locked);
-    
+
     Ok(Json(BalanceResponse {
         address: format!("{}", address),
         balance: balance.to_string(),
@@ -153,11 +156,11 @@ async fn get_emissions(
 ) -> Result<Json<EmissionResponse>, StatusCode> {
     let metrics = state.economics.emission.get_metrics().await;
     let current_rate = state.economics.emission.get_current_emission_rate().await;
-    
+
     let projected_1 = state.economics.emission.get_projected_emission(1.0).await;
     let projected_5 = state.economics.emission.get_projected_emission(5.0).await;
     let projected_10 = state.economics.emission.get_projected_emission(10.0).await;
-    
+
     Ok(Json(EmissionResponse {
         total_emitted: metrics.total_emitted.to_string(),
         current_rate,
@@ -171,27 +174,34 @@ async fn get_emissions(
 async fn get_treasury(
     State(state): State<Arc<EconomicsApiState>>,
 ) -> Result<Json<TreasuryResponse>, StatusCode> {
-    let balance = state.economics.treasury.get_treasury_balance().await
+    let balance = state
+        .economics
+        .treasury
+        .get_treasury_balance()
+        .await
         .map_err(|e| {
             error!("Failed to get treasury balance: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    
+
     let proposals = state.economics.treasury.get_active_proposals().await;
-    
-    let proposal_infos: Vec<ProposalInfo> = proposals.into_iter().map(|p| {
-        ProposalInfo {
-            id: hex::encode(&p.id[..8]),
-            recipient: format!("{}", p.recipient),
-            amount: p.amount.to_string(),
-            reason: p.reason,
-            proposer: format!("{}", p.proposer),
-            approvals: p.approvals.len() as u32,
-            threshold_required: 2, // This should come from config
-            expires_at: p.expires_at,
-        }
-    }).collect();
-    
+
+    let proposal_infos: Vec<ProposalInfo> = proposals
+        .into_iter()
+        .map(|p| {
+            ProposalInfo {
+                id: hex::encode(&p.id[..8]),
+                recipient: format!("{}", p.recipient),
+                amount: p.amount.to_string(),
+                reason: p.reason,
+                proposer: format!("{}", p.proposer),
+                approvals: p.approvals.len() as u32,
+                threshold_required: 2, // This should come from config
+                expires_at: p.expires_at,
+            }
+        })
+        .collect();
+
     Ok(Json(TreasuryResponse {
         balance: balance.to_string(),
         active_proposals: proposal_infos,
@@ -223,12 +233,11 @@ async fn get_genesis(
 async fn initialize_genesis(
     State(state): State<Arc<EconomicsApiState>>,
 ) -> Result<Json<GenesisResponse>, StatusCode> {
-    state.economics.initialize_genesis().await
-        .map_err(|e| {
-            error!("Failed to initialize genesis: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    
+    state.economics.initialize_genesis().await.map_err(|e| {
+        error!("Failed to initialize genesis: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
     get_genesis(State(state)).await
 }
 
@@ -241,10 +250,9 @@ fn parse_address(s: &str) -> Result<AccountAddress, String> {
         "genesis" => return Ok(AccountAddress::genesis_pool()),
         _ => {}
     }
-    
+
     // Try to parse as hex
-    if s.starts_with("0x") {
-        let hex_str = &s[2..];
+    if let Some(hex_str) = s.strip_prefix("0x") {
         let bytes = hex::decode(hex_str).map_err(|e| e.to_string())?;
         if bytes.len() != 32 {
             return Err("Address must be 32 bytes".to_string());
@@ -264,13 +272,19 @@ mod tests {
     #[test]
     fn test_parse_address() {
         // Test special addresses
-        assert_eq!(parse_address("treasury").unwrap(), AccountAddress::treasury());
-        assert_eq!(parse_address("liquidity").unwrap(), AccountAddress::liquidity_pool());
-        
+        assert_eq!(
+            parse_address("treasury").unwrap(),
+            AccountAddress::treasury()
+        );
+        assert_eq!(
+            parse_address("liquidity").unwrap(),
+            AccountAddress::liquidity_pool()
+        );
+
         // Test hex address
-        let hex_addr = "0x" .to_string() + &"00".repeat(32);
+        let hex_addr = "0x".to_string() + &"00".repeat(32);
         assert!(parse_address(&hex_addr).is_ok());
-        
+
         // Test invalid
         assert!(parse_address("invalid").is_err());
         assert!(parse_address("0x123").is_err());

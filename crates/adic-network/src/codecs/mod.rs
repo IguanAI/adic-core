@@ -1,5 +1,5 @@
-pub mod message;
 pub mod compression;
+pub mod message;
 
-pub use message::{MessageCodec, EncodedMessage};
-pub use compression::{Compressor, CompressionType};
+pub use compression::{CompressionType, Compressor};
+pub use message::{EncodedMessage, MessageCodec};

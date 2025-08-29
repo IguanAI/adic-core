@@ -1,7 +1,7 @@
-use adic_types::{AdicMessage, MessageId};
 use adic_crypto::CryptoEngine;
-use std::collections::HashSet;
+use adic_types::{AdicMessage, MessageId};
 use chrono::Utc;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone)]
 pub struct ValidationResult {
@@ -43,6 +43,12 @@ pub struct MessageValidator {
     crypto: CryptoEngine,
 }
 
+impl Default for MessageValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MessageValidator {
     pub fn new() -> Self {
         Self {
@@ -79,15 +85,18 @@ impl MessageValidator {
 
         true
     }
-    
+
     fn verify_signature(&self, message: &AdicMessage, result: &mut ValidationResult) -> bool {
         if message.signature.is_empty() {
             result.add_error("Message signature is empty".to_string());
             return false;
         }
-        
+
         // Verify signature using CryptoEngine
-        match self.crypto.verify_signature(message, &message.proposer_pk, &message.signature) {
+        match self
+            .crypto
+            .verify_signature(message, &message.proposer_pk, &message.signature)
+        {
             Ok(is_valid) => {
                 if !is_valid {
                     result.add_error("Invalid message signature".to_string());
@@ -99,7 +108,7 @@ impl MessageValidator {
                 return false;
             }
         }
-        
+
         true
     }
 
@@ -177,7 +186,7 @@ impl MessageValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adic_types::{AdicFeatures, AxisPhi, QpDigits, AdicMeta, PublicKey, Signature};
+    use adic_types::{AdicFeatures, AdicMeta, AxisPhi, PublicKey, QpDigits, Signature};
 
     fn create_valid_message() -> AdicMessage {
         let parents = vec![MessageId::new(b"parent1")];
@@ -188,27 +197,30 @@ mod tests {
         ]);
         let meta = AdicMeta::new(Utc::now());
         let pk = PublicKey::from_bytes([0; 32]);
-        
+
         // Create message without signature first
-        let msg = AdicMessage::new(parents, features, meta, pk, vec![1, 2, 3]);
+
         // For testing, we'll need to mock or skip signature verification
-        msg
+        AdicMessage::new(parents, features, meta, pk, vec![1, 2, 3])
     }
 
     #[test]
     fn test_validate_valid_message() {
         let validator = MessageValidator::new();
         let mut message = create_valid_message();
-        
+
         // For testing purposes, we create a dummy valid signature
         // In a real scenario, this would be properly signed by the crypto engine
         message.signature = Signature::new(vec![1; 64]); // Non-empty signature
-        
+
         let result = validator.validate_message(&message);
         // Due to signature verification, this will fail without a proper mock
         // So we test that at least the structure validation works
         assert!(!result.errors.is_empty()); // Expect signature error
-        assert!(result.errors.iter().any(|e| e.contains("signature") || e.contains("Signature")));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.contains("signature") || e.contains("Signature")));
     }
 
     #[test]
@@ -216,7 +228,7 @@ mod tests {
         let validator = MessageValidator::new();
         let mut message = create_valid_message();
         message.signature = Signature::empty();
-        
+
         let result = validator.validate_message(&message);
         assert!(!result.is_valid);
         assert!(result.errors.iter().any(|e| e.contains("signature")));
@@ -228,7 +240,7 @@ mod tests {
         let mut message = create_valid_message();
         let parent = MessageId::new(b"parent");
         message.parents = vec![parent, parent];
-        
+
         let result = validator.validate_message(&message);
         assert!(!result.is_valid);
         assert!(result.errors.iter().any(|e| e.contains("duplicate")));
@@ -238,12 +250,12 @@ mod tests {
     fn test_validate_acyclicity() {
         let validator = MessageValidator::new();
         let message = create_valid_message();
-        
+
         let mut ancestors = HashSet::new();
         ancestors.insert(message.id);
-        
+
         assert!(!validator.validate_acyclicity(&message, &ancestors));
-        
+
         let empty_ancestors = HashSet::new();
         assert!(validator.validate_acyclicity(&message, &empty_ancestors));
     }

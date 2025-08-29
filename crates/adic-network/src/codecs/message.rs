@@ -1,6 +1,6 @@
-use serde::{Serialize, Deserialize};
-use adic_types::{AdicMessage, MessageId, Result, AdicError};
-use super::compression::{CompressionLevel, compress, decompress};
+use super::compression::{compress, decompress, CompressionLevel};
+use adic_types::{AdicError, AdicMessage, MessageId, Result};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncodedMessage {
@@ -29,37 +29,34 @@ impl MessageCodec {
             compression: CompressionLevel::None,
         }
     }
-    
+
     pub fn with_encoding(encoding: EncodingType) -> Self {
         Self {
             encoding,
             compression: CompressionLevel::None,
         }
     }
-    
+
     pub fn set_compression(&mut self, level: CompressionLevel) {
         self.compression = level;
     }
-    
+
     pub fn encode(&self, message: &AdicMessage) -> Result<Vec<u8>> {
         // First encode the message
         let encoded = match self.encoding {
-            EncodingType::Json => {
-                serde_json::to_vec(message)
-                    .map_err(|e| AdicError::Serialization(format!("JSON encoding failed: {}", e)))?
-            }
+            EncodingType::Json => serde_json::to_vec(message)
+                .map_err(|e| AdicError::Serialization(format!("JSON encoding failed: {}", e)))?,
             EncodingType::Protobuf => {
                 // Would need protobuf definitions
                 // For now, use JSON
-                serde_json::to_vec(message)
-                    .map_err(|e| AdicError::Serialization(format!("Protobuf encoding failed: {}", e)))?
+                serde_json::to_vec(message).map_err(|e| {
+                    AdicError::Serialization(format!("Protobuf encoding failed: {}", e))
+                })?
             }
-            EncodingType::Bincode => {
-                bincode::serialize(message)
-                    .map_err(|e| AdicError::Serialization(format!("Bincode encoding failed: {}", e)))?
-            }
+            EncodingType::Bincode => bincode::serialize(message)
+                .map_err(|e| AdicError::Serialization(format!("Bincode encoding failed: {}", e)))?,
         };
-        
+
         // Then optionally compress
         if self.compression != CompressionLevel::None {
             compress(&encoded, self.compression)
@@ -67,7 +64,7 @@ impl MessageCodec {
             Ok(encoded)
         }
     }
-    
+
     pub fn decode(&self, data: &[u8]) -> Result<AdicMessage> {
         // First decompress if needed
         let decompressed = if self.compression != CompressionLevel::None {
@@ -75,31 +72,28 @@ impl MessageCodec {
         } else {
             data.to_vec()
         };
-        
+
         // Then decode the message
         match self.encoding {
-            EncodingType::Json => {
-                serde_json::from_slice(&decompressed)
-                    .map_err(|e| AdicError::Serialization(format!("JSON decoding failed: {}", e)))
-            }
+            EncodingType::Json => serde_json::from_slice(&decompressed)
+                .map_err(|e| AdicError::Serialization(format!("JSON decoding failed: {}", e))),
             EncodingType::Protobuf => {
                 // Would need protobuf definitions
                 // For now, use JSON
-                serde_json::from_slice(&decompressed)
-                    .map_err(|e| AdicError::Serialization(format!("Protobuf decoding failed: {}", e)))
+                serde_json::from_slice(&decompressed).map_err(|e| {
+                    AdicError::Serialization(format!("Protobuf decoding failed: {}", e))
+                })
             }
-            EncodingType::Bincode => {
-                bincode::deserialize(&decompressed)
-                    .map_err(|e| AdicError::Serialization(format!("Bincode decoding failed: {}", e)))
-            }
+            EncodingType::Bincode => bincode::deserialize(&decompressed)
+                .map_err(|e| AdicError::Serialization(format!("Bincode decoding failed: {}", e))),
         }
     }
-    
+
     pub fn encode_static(message: &AdicMessage, encoding: EncodingType) -> Result<Vec<u8>> {
         let codec = Self::with_encoding(encoding);
         codec.encode(message)
     }
-    
+
     pub fn decode_static(data: &[u8], encoding: EncodingType) -> Result<AdicMessage> {
         let codec = Self::with_encoding(encoding);
         codec.decode(data)
@@ -117,7 +111,7 @@ mod tests {
     use super::*;
     use adic_types::{AdicFeatures, AdicMeta, PublicKey};
     use chrono::Utc;
-    
+
     #[test]
     fn test_message_codec_new() {
         let codec = MessageCodec::new();
@@ -128,19 +122,19 @@ mod tests {
             PublicKey::from_bytes([0; 32]),
             vec![1, 2, 3],
         );
-        
+
         let encoded = codec.encode(&message).unwrap();
         let decoded = codec.decode(&encoded).unwrap();
-        
+
         assert_eq!(decoded.id, message.id);
         assert_eq!(decoded.payload, message.payload);
     }
-    
+
     #[test]
     fn test_message_codec_with_compression() {
         let mut codec = MessageCodec::new();
         codec.set_compression(CompressionLevel::Fast);
-        
+
         let message = AdicMessage::new(
             vec![],
             AdicFeatures::new(vec![]),
@@ -148,18 +142,18 @@ mod tests {
             PublicKey::from_bytes([0; 32]),
             vec![1; 1000], // Compressible data
         );
-        
+
         let encoded = codec.encode(&message).unwrap();
         let decoded = codec.decode(&encoded).unwrap();
-        
+
         assert_eq!(decoded.id, message.id);
         assert_eq!(decoded.payload, message.payload);
     }
-    
+
     #[test]
     fn test_message_codec_bincode() {
         let codec = MessageCodec::with_encoding(EncodingType::Bincode);
-        
+
         let message = AdicMessage::new(
             vec![],
             AdicFeatures::new(vec![]),
@@ -167,10 +161,10 @@ mod tests {
             PublicKey::from_bytes([0; 32]),
             vec![1, 2, 3],
         );
-        
+
         let encoded = codec.encode(&message).unwrap();
         let decoded = codec.decode(&encoded).unwrap();
-        
+
         assert_eq!(decoded.id, message.id);
         assert_eq!(decoded.payload, message.payload);
     }

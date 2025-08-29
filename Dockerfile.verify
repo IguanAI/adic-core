@@ -1,0 +1,35 @@
+# Minimal verification that README instructions work on clean Ubuntu
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install dependencies exactly as documented in README
+RUN apt-get update && \
+    apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    protobuf-compiler \
+    curl \
+    git
+
+# Install Rust as documented
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /app
+COPY . .
+
+# Test that it builds with just the documented dependencies
+RUN cargo build --release && \
+    ./target/release/adic --help && \
+    echo "✅ Build successful with documented dependencies!"
+
+# Quick smoke test of commands
+RUN ./target/release/adic keygen --output test.key && \
+    ./target/release/adic init --params v1 && \
+    ./target/release/adic test --count 2 && \
+    echo "✅ All commands work!"
+
+CMD ["echo", "Verification complete - all README instructions work!"]

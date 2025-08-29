@@ -4,11 +4,13 @@ use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-mod config;
-mod node;
 mod api;
+mod auth;
 mod cli;
+mod config;
+mod economics_api;
 mod metrics;
+mod node;
 
 #[derive(Parser)]
 #[command(name = "adic")]
@@ -52,6 +54,10 @@ enum Commands {
         /// Output directory for configuration
         #[arg(short, long, default_value = ".")]
         output: PathBuf,
+
+        /// Parameter preset to use (v1, v2, testnet, mainnet)
+        #[arg(long)]
+        params: Option<String>,
     },
 
     /// Generate a new keypair
@@ -73,7 +79,7 @@ enum Commands {
 async fn main() -> Result<()> {
     // Load .env file if it exists (ignore if it doesn't)
     let _ = dotenv::dotenv();
-    
+
     let cli = Cli::parse();
 
     // Initialize logging
@@ -82,7 +88,7 @@ async fn main() -> Result<()> {
         1 => "debug",
         _ => "trace",
     };
-    
+
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| format!("adic={}", log_level)),
@@ -91,9 +97,14 @@ async fn main() -> Result<()> {
         .init();
 
     match cli.command {
-        Commands::Start { data_dir, port, api_port, validator } => {
+        Commands::Start {
+            data_dir,
+            port,
+            api_port,
+            validator,
+        } => {
             // Priority order: CLI args > ENV vars > Config file > Defaults
-            
+
             // 1. Start with config file or defaults
             let mut config = if let Some(config_path) = cli.config {
                 config::NodeConfig::from_file(&config_path)?
@@ -103,12 +114,12 @@ async fn main() -> Result<()> {
             } else {
                 config::NodeConfig::default()
             };
-            
+
             // 2. Apply environment variable overrides (medium priority)
             // Note: from_file already calls apply_env_overrides, but we call again
             // in case we loaded from default
             config.apply_env_overrides();
-            
+
             // 3. Apply CLI argument overrides (highest priority)
             // Only override if CLI args were explicitly provided (not defaults)
             // Check if args differ from clap defaults to know if user specified them
@@ -125,7 +136,7 @@ async fn main() -> Result<()> {
             if validator {
                 config.node.validator = validator;
             }
-            
+
             info!("Starting ADIC node...");
             info!("Data directory: {:?}", config.node.data_dir);
             info!("P2P port: {}", config.network.p2p_port);
@@ -134,64 +145,114 @@ async fn main() -> Result<()> {
 
             // Create and start node
             let node = node::AdicNode::new(config.clone()).await?;
-            
+
             info!("Node initialized successfully");
             info!("Node ID: {}", node.node_id());
-            
+
             // Start API server using config port
             let api_handle = api::start_api_server(node.clone(), config.api.port);
-            
+
             // Start the node
             let node_handle = tokio::spawn(async move {
                 if let Err(e) = node.run().await {
                     warn!("Node error: {}", e);
                 }
             });
-            
+
             // Wait for shutdown signal
             tokio::signal::ctrl_c().await?;
             info!("Shutting down gracefully...");
-            
+
             // Cancel tasks
             api_handle.abort();
             node_handle.abort();
-            
+
             Ok(())
         }
 
-        Commands::Init { output } => {
+        Commands::Init { output, params } => {
             info!("Initializing new node configuration...");
-            
+
             // Create output directory if it doesn't exist
             std::fs::create_dir_all(&output)?;
-            
-            let config = config::NodeConfig::default();
+
+            let mut config = config::NodeConfig::default();
+
+            // Apply parameter preset if specified
+            if let Some(preset) = params {
+                match preset.as_str() {
+                    "v1" => {
+                        info!("Using v1 parameters (p=3, d=3)");
+                        config.consensus.p = 3;
+                        config.consensus.d = 3;
+                        config.consensus.rho = vec![2, 2, 1];
+                        config.consensus.k = 20;
+                        config.consensus.depth_star = 12;
+                    }
+                    "v2" => {
+                        info!("Using v2 parameters (enhanced performance)");
+                        config.consensus.p = 5;
+                        config.consensus.d = 2;
+                        config.consensus.rho = vec![3, 2];
+                        config.consensus.k = 15;
+                        config.consensus.depth_star = 8;
+                    }
+                    "testnet" => {
+                        info!("Using testnet parameters (low security, high speed)");
+                        config.consensus.p = 3;
+                        config.consensus.d = 2;
+                        config.consensus.rho = vec![1, 1];
+                        config.consensus.k = 3;
+                        config.consensus.depth_star = 3;
+                        config.consensus.r_sum_min = 1.0;
+                    }
+                    "mainnet" => {
+                        info!("Using mainnet parameters (high security)");
+                        config.consensus.p = 7;
+                        config.consensus.d = 4;
+                        config.consensus.rho = vec![3, 3, 2, 2];
+                        config.consensus.k = 50;
+                        config.consensus.depth_star = 20;
+                        config.consensus.r_sum_min = 10.0;
+                    }
+                    _ => {
+                        warn!("Unknown parameter preset '{}', using defaults", preset);
+                    }
+                }
+            }
+
             let config_path = output.join("adic-config.toml");
             config.save_to_file(&config_path)?;
             info!("Configuration saved to: {:?}", config_path);
-            
+
             // Also generate a keypair
             let keypair = adic_crypto::Keypair::generate();
             let key_path = output.join("node.key");
             std::fs::write(&key_path, keypair.to_bytes())?;
             info!("Keypair saved to: {:?}", key_path);
-            info!("Public key: {}", hex::encode(keypair.public_key().as_bytes()));
-            
+            info!(
+                "Public key: {}",
+                hex::encode(keypair.public_key().as_bytes())
+            );
+
             Ok(())
         }
 
         Commands::Keygen { output } => {
             info!("Generating new keypair...");
             let keypair = adic_crypto::Keypair::generate();
-            
+
             if let Some(path) = output {
                 std::fs::write(&path, keypair.to_bytes())?;
                 info!("Keypair saved to: {:?}", path);
             } else {
                 println!("Private key: {}", hex::encode(keypair.to_bytes()));
             }
-            println!("Public key: {}", hex::encode(keypair.public_key().as_bytes()));
-            
+            println!(
+                "Public key: {}",
+                hex::encode(keypair.public_key().as_bytes())
+            );
+
             Ok(())
         }
 

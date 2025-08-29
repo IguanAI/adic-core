@@ -1,16 +1,18 @@
-pub mod message;
-pub mod id;
-pub mod features;
-pub mod keys;
-pub mod error;
 pub mod encoders;
+pub mod error;
+pub mod features;
+pub mod id;
+pub mod keys;
+pub mod message;
 
-pub use message::{AdicMessage, AdicMeta, ConflictId};
-pub use id::MessageId;
-pub use features::{AdicFeatures, AxisPhi, QpDigits, AxisId};
-pub use keys::{PublicKey, Signature};
+pub use encoders::{
+    EncoderData, EncoderSet, FeatureEncoder, RegionCodeEncoder, TimeEpochEncoder, TopicHashEncoder,
+};
 pub use error::{AdicError, Result};
-pub use encoders::{FeatureEncoder, TimeEpochEncoder, TopicHashEncoder, RegionCodeEncoder, EncoderSet, EncoderData};
+pub use features::{AdicFeatures, AxisId, AxisPhi, QpDigits};
+pub use id::MessageId;
+pub use keys::{PublicKey, Signature};
+pub use message::{AdicMessage, AdicMeta, ConflictId};
 
 /// Default precision for p-adic digit representations
 /// This determines how many p-adic digits are used to represent values
@@ -35,7 +37,7 @@ pub struct AdicParams {
     pub lambda: f64,
     pub beta: f64,
     pub mu: f64,
-    pub gamma: f64,  // Reputation update factor (0 < gamma < 1)
+    pub gamma: f64, // Reputation update factor (0 < gamma < 1)
 }
 
 impl Default for AdicParams {
@@ -54,7 +56,7 @@ impl Default for AdicParams {
             lambda: 1.0,
             beta: 0.5,
             mu: 1.0,
-            gamma: 0.9,  // Default reputation update factor
+            gamma: 0.9, // Default reputation update factor
         }
     }
 }

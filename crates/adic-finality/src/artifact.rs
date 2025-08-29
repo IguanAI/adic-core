@@ -72,9 +72,9 @@ impl FinalityArtifact {
 
     pub fn is_valid(&self) -> bool {
         // Check basic validity
-        self.witness.diversity_ok &&
-        self.witness.depth >= self.params.depth_star &&
-        self.witness.reputation_sum >= self.params.r_sum_min
+        self.witness.diversity_ok
+            && self.witness.depth >= self.params.depth_star
+            && self.witness.reputation_sum >= self.params.r_sum_min
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -113,12 +113,7 @@ mod tests {
             core_size: 25,
         };
 
-        let artifact = FinalityArtifact::new(
-            intent_id,
-            FinalityGate::F1KCore,
-            params,
-            witness,
-        );
+        let artifact = FinalityArtifact::new(intent_id, FinalityGate::F1KCore, params, witness);
 
         assert_eq!(artifact.intent_id, intent_id);
         assert_eq!(artifact.gate, FinalityGate::F1KCore);
@@ -143,16 +138,11 @@ mod tests {
             core_size: 25,
         };
 
-        let artifact = FinalityArtifact::new(
-            intent_id,
-            FinalityGate::F1KCore,
-            params,
-            witness,
-        );
+        let artifact = FinalityArtifact::new(intent_id, FinalityGate::F1KCore, params, witness);
 
         let json = artifact.to_json().unwrap();
         let restored = FinalityArtifact::from_json(&json).unwrap();
-        
+
         assert_eq!(artifact.intent_id, restored.intent_id);
         assert_eq!(artifact.gate, restored.gate);
     }

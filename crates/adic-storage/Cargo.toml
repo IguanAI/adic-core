@@ -22,7 +22,8 @@ hex = "0.4"
 [dev-dependencies]
 tempfile = "3.10"
 tokio-test = "0.4"
+adic-crypto = { path = "../adic-crypto" }
 
 [features]
-default = []
+default = ["rocksdb"]
 rocksdb = ["dep:rocksdb"]

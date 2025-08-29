@@ -34,6 +34,9 @@ pub enum AdicError {
 
     #[error("Consensus violation: {0}")]
     ConsensusViolation(String),
+
+    #[error("Homology computation error: {0}")]
+    HomologyError(String),
 }
 
 impl From<serde_json::Error> for AdicError {

@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{RwLock, mpsc, Semaphore};
-use serde::{Serialize, Deserialize};
-use tracing::{debug, warn, info};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, RwLock, Semaphore};
+use tracing::{debug, info, warn};
 
-use adic_types::{AdicMessage, MessageId, Result, AdicError};
+use adic_types::{AdicError, AdicMessage, MessageId, Result};
 use libp2p::PeerId;
 
 #[derive(Debug, Clone)]
@@ -124,7 +124,7 @@ pub enum SyncEvent {
 impl SyncProtocol {
     pub fn new(config: SyncConfig) -> Self {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
-        
+
         Self {
             config: config.clone(),
             state: Arc::new(RwLock::new(SyncState::new())),
@@ -137,30 +137,33 @@ impl SyncProtocol {
     pub async fn request_frontier(&self, peer: PeerId) -> Result<u64> {
         let mut state = self.state.write().await;
         let request_id = state.generate_request_id();
-        
-        state.pending_requests.insert(
-            request_id,
-            (SyncRequest::GetFrontier, peer, Instant::now())
-        );
-        
+
+        state
+            .pending_requests
+            .insert(request_id, (SyncRequest::GetFrontier, peer, Instant::now()));
+
         debug!("Requesting frontier from peer {}", peer);
         Ok(request_id)
     }
 
-    pub async fn request_messages(
-        &self,
-        peer: PeerId,
-        message_ids: Vec<MessageId>,
-    ) -> Result<u64> {
+    pub async fn request_messages(&self, peer: PeerId, message_ids: Vec<MessageId>) -> Result<u64> {
         let mut state = self.state.write().await;
         let request_id = state.generate_request_id();
-        
+
         state.pending_requests.insert(
             request_id,
-            (SyncRequest::GetMessages(message_ids.clone()), peer, Instant::now())
+            (
+                SyncRequest::GetMessages(message_ids.clone()),
+                peer,
+                Instant::now(),
+            ),
         );
-        
-        debug!("Requesting {} messages from peer {}", message_ids.len(), peer);
+
+        debug!(
+            "Requesting {} messages from peer {}",
+            message_ids.len(),
+            peer
+        );
         Ok(request_id)
     }
 
@@ -173,13 +176,24 @@ impl SyncProtocol {
     ) -> Result<u64> {
         let mut state = self.state.write().await;
         let request_id = state.generate_request_id();
-        
+
         state.pending_requests.insert(
             request_id,
-            (SyncRequest::GetRange { from, to, max_messages }, peer, Instant::now())
+            (
+                SyncRequest::GetRange {
+                    from,
+                    to,
+                    max_messages,
+                },
+                peer,
+                Instant::now(),
+            ),
         );
-        
-        debug!("Requesting range from {} to {} from peer {}", from, to, peer);
+
+        debug!(
+            "Requesting range from {} to {} from peer {}",
+            from, to, peer
+        );
         Ok(request_id)
     }
 
@@ -193,18 +207,28 @@ impl SyncProtocol {
                 // In a real implementation, fetch from storage
                 SyncResponse::Messages(vec![])
             }
-            SyncRequest::GetRange { from: _, to: _, max_messages: _ } => {
+            SyncRequest::GetRange {
+                from: _,
+                to: _,
+                max_messages: _,
+            } => {
                 // In a real implementation, fetch from storage
                 SyncResponse::Range {
                     messages: vec![],
                     has_more: false,
                 }
             }
-            SyncRequest::GetAncestors { message_id: _, depth: _ } => {
+            SyncRequest::GetAncestors {
+                message_id: _,
+                depth: _,
+            } => {
                 // In a real implementation, traverse DAG
                 SyncResponse::Ancestors(vec![])
             }
-            SyncRequest::GetDescendants { message_id: _, depth: _ } => {
+            SyncRequest::GetDescendants {
+                message_id: _,
+                depth: _,
+            } => {
                 // In a real implementation, traverse DAG
                 SyncResponse::Descendants(vec![])
             }
@@ -219,24 +243,26 @@ impl SyncProtocol {
         }
     }
 
-    pub async fn handle_response(
-        &self,
-        request_id: u64,
-        response: SyncResponse,
-    ) -> Result<()> {
+    pub async fn handle_response(&self, request_id: u64, response: SyncResponse) -> Result<()> {
         let mut state = self.state.write().await;
-        
+
         if let Some((request, peer, _)) = state.pending_requests.remove(&request_id) {
             match response {
                 SyncResponse::Frontier(frontier) => {
                     state.frontier = frontier.iter().cloned().collect();
-                    self.event_sender.send(SyncEvent::FrontierUpdated(frontier)).ok();
+                    self.event_sender
+                        .send(SyncEvent::FrontierUpdated(frontier))
+                        .ok();
                 }
                 SyncResponse::Messages(messages) => {
-                    self.event_sender.send(SyncEvent::MessagesReceived(messages)).ok();
+                    self.event_sender
+                        .send(SyncEvent::MessagesReceived(messages))
+                        .ok();
                 }
                 SyncResponse::Range { messages, has_more } => {
-                    self.event_sender.send(SyncEvent::MessagesReceived(messages)).ok();
+                    self.event_sender
+                        .send(SyncEvent::MessagesReceived(messages))
+                        .ok();
                     if has_more {
                         // Request next batch
                         debug!("More messages available, requesting next batch");
@@ -244,12 +270,13 @@ impl SyncProtocol {
                 }
                 SyncResponse::Error(err) => {
                     warn!("Sync request {} failed: {}", request_id, err);
-                    self.handle_retry(&mut state, request_id, request, peer).await?;
+                    self.handle_retry(&mut state, request_id, request, peer)
+                        .await?;
                 }
                 _ => {}
             }
         }
-        
+
         Ok(())
     }
 
@@ -263,69 +290,82 @@ impl SyncProtocol {
         let retry_count = state.retry_count.entry(request_id).or_insert(0);
         *retry_count += 1;
         let current_retry_count = *retry_count;
-        
+
         if current_retry_count <= self.config.retry_attempts {
-            state.pending_requests.insert(
-                request_id,
-                (request, peer, Instant::now())
+            state
+                .pending_requests
+                .insert(request_id, (request, peer, Instant::now()));
+            debug!(
+                "Retrying request {} (attempt {})",
+                request_id, current_retry_count
             );
-            debug!("Retrying request {} (attempt {})", request_id, current_retry_count);
         } else {
             state.retry_count.remove(&request_id);
-            self.event_sender.send(SyncEvent::SyncFailed(
-                peer,
-                format!("Request {} failed after {} attempts", request_id, current_retry_count)
-            )).ok();
+            self.event_sender
+                .send(SyncEvent::SyncFailed(
+                    peer,
+                    format!(
+                        "Request {} failed after {} attempts",
+                        request_id, current_retry_count
+                    ),
+                ))
+                .ok();
         }
-        
+
         Ok(())
     }
 
     pub async fn start_incremental_sync(&self, peer: PeerId) -> Result<()> {
-        let permit = self.download_semaphore.acquire().await
+        let permit = self
+            .download_semaphore
+            .acquire()
+            .await
             .map_err(|e| AdicError::Network(format!("Failed to acquire semaphore: {}", e)))?;
-        
+
         {
             let mut state = self.state.write().await;
             state.syncing_from.insert(peer, Instant::now());
         }
-        
+
         self.event_sender.send(SyncEvent::SyncStarted(peer)).ok();
-        
+
         // Request frontier
         let _frontier_request_id = self.request_frontier(peer).await?;
-        
+
         // Wait for frontier response
         tokio::time::sleep(self.config.request_timeout).await;
-        
+
         // In a real implementation, process frontier and request missing messages
-        
+
         drop(permit);
-        
+
         self.event_sender.send(SyncEvent::SyncCompleted(peer)).ok();
-        
+
         {
             let mut state = self.state.write().await;
             state.syncing_from.remove(&peer);
         }
-        
+
         Ok(())
     }
 
-    pub async fn start_checkpoint_sync(
-        &self,
-        peer: PeerId,
-        checkpoint_height: u64,
-    ) -> Result<()> {
+    pub async fn start_checkpoint_sync(&self, peer: PeerId, checkpoint_height: u64) -> Result<()> {
         let mut state = self.state.write().await;
         let request_id = state.generate_request_id();
-        
+
         state.pending_requests.insert(
             request_id,
-            (SyncRequest::GetCheckpoint(checkpoint_height), peer, Instant::now())
+            (
+                SyncRequest::GetCheckpoint(checkpoint_height),
+                peer,
+                Instant::now(),
+            ),
         );
-        
-        info!("Starting checkpoint sync from height {} with peer {}", checkpoint_height, peer);
+
+        info!(
+            "Starting checkpoint sync from height {} with peer {}",
+            checkpoint_height, peer
+        );
         Ok(())
     }
 
@@ -333,17 +373,20 @@ impl SyncProtocol {
         let mut state = self.state.write().await;
         let now = Instant::now();
         let timeout = self.config.request_timeout;
-        
-        let stale_requests: Vec<u64> = state.pending_requests
+
+        let stale_requests: Vec<u64> = state
+            .pending_requests
             .iter()
             .filter(|(_, (_, _, timestamp))| now.duration_since(*timestamp) > timeout)
             .map(|(id, _)| *id)
             .collect();
-        
+
         for request_id in stale_requests {
             if let Some((request, peer, _)) = state.pending_requests.remove(&request_id) {
                 warn!("Request {} timed out for peer {}", request_id, peer);
-                self.handle_retry(&mut state, request_id, request, peer).await.ok();
+                self.handle_retry(&mut state, request_id, request, peer)
+                    .await
+                    .ok();
             }
         }
     }
@@ -381,7 +424,7 @@ mod tests {
     async fn test_sync_protocol_creation() {
         let config = SyncConfig::default();
         let protocol = SyncProtocol::new(config);
-        
+
         assert!(!protocol.is_syncing().await);
         assert_eq!(protocol.syncing_peers().await.len(), 0);
     }
@@ -391,10 +434,10 @@ mod tests {
         let config = SyncConfig::default();
         let protocol = SyncProtocol::new(config);
         let peer = PeerId::random();
-        
+
         let request_id1 = protocol.request_frontier(peer).await.unwrap();
         let request_id2 = protocol.request_frontier(peer).await.unwrap();
-        
+
         assert_ne!(request_id1, request_id2);
     }
 }

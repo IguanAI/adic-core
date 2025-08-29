@@ -1,7 +1,9 @@
-pub mod kcore;
 pub mod artifact;
 pub mod engine;
+pub mod homology;
+pub mod kcore;
 
-pub use kcore::{KCoreAnalyzer, KCoreResult};
 pub use artifact::{FinalityArtifact, FinalityGate, FinalityWitness};
-pub use engine::{FinalityEngine, FinalityConfig};
+pub use engine::{FinalityConfig, FinalityEngine};
+pub use homology::{HomologyAnalyzer, HomologyResult};
+pub use kcore::{KCoreAnalyzer, KCoreResult};

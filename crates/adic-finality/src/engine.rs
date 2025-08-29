@@ -1,5 +1,6 @@
 use crate::{
     artifact::{FinalityArtifact, FinalityGate, FinalityParams, FinalityWitness},
+    homology::{HomologyAnalyzer, HomologyResult},
     kcore::{KCoreAnalyzer, KCoreResult, MessageGraph},
 };
 use adic_consensus::ConsensusEngine;
@@ -36,6 +37,7 @@ impl From<&AdicParams> for FinalityConfig {
 pub struct FinalityEngine {
     config: FinalityConfig,
     analyzer: KCoreAnalyzer,
+    homology: HomologyAnalyzer,
     graph: Arc<RwLock<MessageGraph>>,
     finalized: Arc<RwLock<HashMap<MessageId, FinalityArtifact>>>,
     pending: Arc<RwLock<VecDeque<MessageId>>>,
@@ -50,10 +52,12 @@ impl FinalityEngine {
             config.min_diversity,
             config.min_reputation,
         );
+        let homology = HomologyAnalyzer::new(consensus.params().clone());
 
         Self {
             config,
             analyzer,
+            homology,
             graph: Arc::new(RwLock::new(MessageGraph::new())),
             finalized: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(RwLock::new(VecDeque::new())),
@@ -72,16 +76,28 @@ impl FinalityEngine {
         let mut graph = self.graph.write().await;
         graph.add_message(
             id,
-            parents,
+            parents.clone(),
             crate::kcore::MessageInfo {
                 reputation,
                 ball_ids,
             },
         );
 
+        // Add to homology complex for F2 analysis
+        self.homology
+            .add_simplex(
+                {
+                    let mut vertices = vec![id];
+                    vertices.extend(parents);
+                    vertices
+                },
+                reputation,
+            )
+            .await?;
+
         let mut pending = self.pending.write().await;
         pending.push_back(id);
-        
+
         // Keep window size limited
         while pending.len() > self.config.window_size {
             pending.pop_front();
@@ -125,18 +141,22 @@ impl FinalityEngine {
                     if let Some(proposer) = self.consensus.deposits.get_proposer(&msg_id).await {
                         self.consensus.deposits.refund(&msg_id).await?;
                         // Calculate diversity from distinct balls
-                        let diversity = artifact.witness.distinct_balls.values().sum::<usize>() as f64;
+                        let diversity =
+                            artifact.witness.distinct_balls.values().sum::<usize>() as f64;
                         let depth = artifact.witness.depth;
-                        
-                        self.consensus.reputation.good_update(&proposer, diversity, depth).await;
+
+                        self.consensus
+                            .reputation
+                            .good_update(&proposer, diversity, depth)
+                            .await;
                     } else {
                         tracing::warn!("Could not find proposer for finalized message {}", msg_id);
                     }
-                    
+
                     let mut finalized = self.finalized.write().await;
                     finalized.insert(msg_id, artifact);
                     newly_finalized.push(msg_id);
-                    
+
                     tracing::info!("Message {:?} finalized", msg_id);
                 }
                 Ok(_) => {}
@@ -166,7 +186,10 @@ impl FinalityEngine {
         let witness = FinalityWitness {
             kcore_root: result.kcore_root,
             depth: result.depth,
-            diversity_ok: result.distinct_balls.values().all(|&c| c >= self.config.min_diversity),
+            diversity_ok: result
+                .distinct_balls
+                .values()
+                .all(|&c| c >= self.config.min_diversity),
             reputation_sum: result.total_reputation,
             distinct_balls: result.distinct_balls,
             core_size: result.core_size,
@@ -182,15 +205,25 @@ impl FinalityEngine {
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(interval));
-            
+
             loop {
                 interval.tick().await;
-                
+
                 if let Err(e) = engine.check_finality().await {
                     tracing::error!("Finality check error: {}", e);
                 }
             }
         });
+    }
+
+    /// Check F2 homology finality status
+    pub async fn check_homology_finality(&self, messages: &[MessageId]) -> Result<HomologyResult> {
+        self.homology.check_finality(messages).await
+    }
+
+    /// Check if F2 homology finality is enabled
+    pub fn is_homology_enabled(&self) -> bool {
+        self.homology.is_enabled()
     }
 
     /// Get statistics about finality
@@ -211,6 +244,7 @@ impl Clone for FinalityEngine {
         Self {
             config: self.config.clone(),
             analyzer: self.analyzer.clone(),
+            homology: HomologyAnalyzer::new(self.consensus.params().clone()), // Create new instance with same params
             graph: Arc::clone(&self.graph),
             finalized: Arc::clone(&self.finalized),
             pending: Arc::clone(&self.pending),
@@ -232,20 +266,19 @@ mod tests {
     use adic_types::{AdicParams, PublicKey};
 
     fn make_ball_ids(axis_vals: &[(u32, &[u8])]) -> HashMap<u32, Vec<u8>> {
-        axis_vals
-            .iter()
-            .map(|(a, v)| (*a, v.to_vec()))
-            .collect()
+        axis_vals.iter().map(|(a, v)| (*a, v.to_vec())).collect()
     }
 
     #[tokio::test]
     async fn test_finality_engine_basic_flow() {
         // Configure very permissive thresholds so simple chains can finalize
-        let mut params = AdicParams::default();
-        params.k = 1;              // minimal core size
-        params.depth_star = 0;     // allow depth 0
-        params.q = 1;              // diversity of 1 per axis
-        params.r_sum_min = 0.0;    // no reputation threshold
+        let params = AdicParams {
+            k: 1,           // minimal core size
+            depth_star: 0,  // allow depth 0
+            q: 1,           // diversity of 1 per axis
+            r_sum_min: 0.0, // no reputation threshold
+            ..Default::default()
+        };
 
         let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
         let finality_cfg = FinalityConfig::from(&params);
@@ -286,14 +319,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_finality_config_from_params() {
-        let mut params = AdicParams::default();
-        params.k = 7;
-        params.depth_star = 10;
-        params.q = 3;
-        params.r_sum_min = 5.0;
+        let params = AdicParams {
+            k: 7,
+            depth_star: 10,
+            q: 3,
+            r_sum_min: 5.0,
+            ..Default::default()
+        };
 
         let config = FinalityConfig::from(&params);
-        
+
         assert_eq!(config.k, 7);
         assert_eq!(config.min_depth, 10);
         assert_eq!(config.min_diversity, 3);
@@ -308,7 +343,7 @@ mod tests {
         let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
         let mut finality_cfg = FinalityConfig::from(&params);
         finality_cfg.window_size = 5; // Small window for testing
-        
+
         let engine = FinalityEngine::new(finality_cfg, consensus);
 
         // Add more messages than window size
@@ -349,11 +384,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_finality_engine_with_deposits() {
-        let mut params = AdicParams::default();
-        params.k = 1;
-        params.depth_star = 0;
-        params.q = 1;
-        params.r_sum_min = 0.0;
+        let params = AdicParams {
+            k: 1,
+            depth_star: 0,
+            q: 1,
+            r_sum_min: 0.0,
+            ..Default::default()
+        };
 
         let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
         let finality_cfg = FinalityConfig::from(&params);
@@ -361,10 +398,10 @@ mod tests {
 
         let root = MessageId::new(b"root");
         let proposer = PublicKey::from_bytes([1; 32]);
-        
+
         // Escrow deposit for the message
         consensus.deposits.escrow(root, proposer).await.unwrap();
-        
+
         // Add message to finality engine
         engine
             .add_message(
@@ -375,7 +412,7 @@ mod tests {
             )
             .await
             .unwrap();
-        
+
         // Add child to trigger finality
         let child = MessageId::new(b"child");
         engine
@@ -391,11 +428,11 @@ mod tests {
         // Check finality
         let finalized = engine.check_finality().await.unwrap();
         assert!(!finalized.is_empty());
-        
+
         // Deposit should be refunded
         let deposit_state = consensus.deposits.get_state(&root).await;
         assert_eq!(deposit_state, Some(adic_consensus::DepositState::Refunded));
-        
+
         // Reputation should be updated
         let reputation = consensus.reputation.get_reputation(&proposer).await;
         assert!(reputation > 1.0);
@@ -419,7 +456,7 @@ mod tests {
         };
 
         let artifact = engine.create_artifact(msg_id, kcore_result);
-        
+
         assert_eq!(artifact.intent_id, msg_id);
         assert_eq!(artifact.gate, FinalityGate::F1KCore);
         assert_eq!(artifact.params.k, finality_cfg.k);
@@ -443,7 +480,7 @@ mod tests {
             .unwrap();
 
         let cloned = engine.clone();
-        
+
         // Both should see the same pending messages
         let original_pending = engine.pending.read().await;
         let cloned_pending = cloned.pending.read().await;
@@ -452,11 +489,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_finality_checks() {
-        let mut params = AdicParams::default();
-        params.k = 1;
-        params.depth_star = 0;
-        params.q = 1;
-        params.r_sum_min = 0.0;
+        let params = AdicParams {
+            k: 1,
+            depth_star: 0,
+            q: 1,
+            r_sum_min: 0.0,
+            ..Default::default()
+        };
 
         let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
         let finality_cfg = FinalityConfig::from(&params);
@@ -471,7 +510,7 @@ mod tests {
             .add_message(root, vec![], 1.0, make_ball_ids(&[(0, &[0])]))
             .await
             .unwrap();
-            
+
         engine
             .add_message(middle, vec![root], 1.0, make_ball_ids(&[(0, &[1])]))
             .await
@@ -479,7 +518,7 @@ mod tests {
 
         // First check might finalize root
         let finalized1 = engine.check_finality().await.unwrap();
-        
+
         engine
             .add_message(tip, vec![middle], 1.0, make_ball_ids(&[(0, &[2])]))
             .await
@@ -487,18 +526,20 @@ mod tests {
 
         // Second check might finalize middle
         let finalized2 = engine.check_finality().await.unwrap();
-        
+
         // At least one should be finalized
         assert!(finalized1.len() + finalized2.len() > 0);
     }
 
-    #[tokio::test] 
+    #[tokio::test]
     async fn test_finality_no_consensus_proposer() {
-        let mut params = AdicParams::default();
-        params.k = 1;
-        params.depth_star = 0;
-        params.q = 1;
-        params.r_sum_min = 0.0;
+        let params = AdicParams {
+            k: 1,
+            depth_star: 0,
+            q: 1,
+            r_sum_min: 0.0,
+            ..Default::default()
+        };
 
         let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
         let finality_cfg = FinalityConfig::from(&params);
@@ -506,13 +547,13 @@ mod tests {
 
         let root = MessageId::new(b"root");
         let child = MessageId::new(b"child");
-        
+
         // Add messages without escrowing deposits
         engine
             .add_message(root, vec![], 1.0, make_ball_ids(&[(0, &[0])]))
             .await
             .unwrap();
-            
+
         engine
             .add_message(child, vec![root], 1.0, make_ball_ids(&[(0, &[1])]))
             .await
@@ -530,7 +571,7 @@ mod tests {
             pending_count: 5,
             total_messages: 15,
         };
-        
+
         assert_eq!(stats.finalized_count, 10);
         assert_eq!(stats.pending_count, 5);
         assert_eq!(stats.total_messages, 15);
@@ -546,7 +587,7 @@ mod tests {
             check_interval_ms: 500,
             window_size: 2000,
         };
-        
+
         assert_eq!(config.k, 5);
         assert_eq!(config.min_depth, 10);
         assert_eq!(config.min_diversity, 3);

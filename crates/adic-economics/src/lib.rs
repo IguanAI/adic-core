@@ -1,17 +1,17 @@
-pub mod supply;
-pub mod genesis;
-pub mod emission;
 pub mod balance;
-pub mod treasury;
+pub mod emission;
+pub mod genesis;
 pub mod storage;
+pub mod supply;
+pub mod treasury;
 pub mod types;
 
-pub use supply::{TokenSupply, SupplyMetrics};
-pub use genesis::{GenesisAllocator, GenesisAllocation};
-pub use emission::{EmissionController, EmissionMetrics};
 pub use balance::BalanceManager;
+pub use emission::{EmissionController, EmissionMetrics};
+pub use genesis::{GenesisAllocation, GenesisAllocator};
+pub use supply::{SupplyMetrics, TokenSupply};
 pub use treasury::{TreasuryManager, TreasuryProposal};
-pub use types::{AdicAmount, AccountAddress, AllocationConfig, EmissionSchedule};
+pub use types::{AccountAddress, AdicAmount, AllocationConfig, EmissionSchedule};
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -30,11 +30,23 @@ impl EconomicsEngine {
         let balances = Arc::new(BalanceManager::new(storage.clone()));
         let treasury = Arc::new(TreasuryManager::new(balances.clone()));
         let emission = Arc::new(EmissionController::new(supply.clone(), balances.clone()));
-        let genesis = Arc::new(GenesisAllocator::new(
-            supply.clone(),
-            balances.clone(),
-            treasury.clone(),
-        ));
+        // Set up default multisig keys for genesis
+        let genesis_config = AllocationConfig {
+            treasury_percent: 0.20,
+            liquidity_percent: 0.30,
+            genesis_percent: 0.50,
+            treasury_multisig_threshold: 2,
+            treasury_multisig_keys: vec![
+                AccountAddress::from_bytes([0xAA; 32]),
+                AccountAddress::from_bytes([0xBB; 32]),
+                AccountAddress::from_bytes([0xCC; 32]),
+            ],
+        };
+
+        let genesis = Arc::new(
+            GenesisAllocator::new(supply.clone(), balances.clone(), treasury.clone())
+                .with_config(genesis_config),
+        );
 
         Ok(Self {
             supply,
@@ -50,9 +62,9 @@ impl EconomicsEngine {
         if self.genesis.is_allocated().await {
             return Ok(());
         }
-        
+
         // Set up default multisig keys
-        let config = AllocationConfig {
+        let _config = AllocationConfig {
             treasury_percent: 0.20,
             liquidity_percent: 0.30,
             genesis_percent: 0.50,
@@ -63,15 +75,9 @@ impl EconomicsEngine {
                 AccountAddress::from_bytes([0xCC; 32]),
             ],
         };
-        
-        // Use the existing genesis allocator with config
-        let allocator = GenesisAllocator::new(
-            self.supply.clone(),
-            self.balances.clone(),
-            self.treasury.clone(),
-        ).with_config(config);
-        
-        allocator.allocate_genesis().await
+
+        // Use the genesis allocator that was configured during initialization
+        self.genesis.allocate_genesis().await
     }
 
     pub async fn get_total_supply(&self) -> AdicAmount {

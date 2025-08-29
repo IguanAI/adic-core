@@ -3,8 +3,12 @@ FROM rust:1.75-slim as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
+    build-essential \
     pkg-config \
     libssl-dev \
+    libclang-dev \
+    protobuf-compiler \
+    cmake \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory

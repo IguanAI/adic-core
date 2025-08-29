@@ -1,38 +1,37 @@
+pub mod libp2p_wrapper;
+
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use std::collections::HashMap;
 
-use libp2p::{
-    core::{muxing::StreamMuxerBox, transport::Boxed, upgrade},
-    identity::Keypair,
-    noise, yamux,
-    Transport, PeerId, Multiaddr,
-};
-use quinn::{Endpoint, ServerConfig, ClientConfig, Connection};
-use tokio::sync::{RwLock, Semaphore};
+use libp2p::{identity::Keypair, Multiaddr, PeerId};
+use quinn::{ClientConfig, Connection, Endpoint, ServerConfig};
 use thiserror::Error;
-use tracing::{debug, error, info};
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
+use tracing::{debug, error, info, warn};
 
-use adic_types::{Result, AdicError};
+use crate::protocol::discovery::DiscoveryMessage;
+use adic_types::{AdicError, AdicMessage, Result};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Error)]
 pub enum TransportError {
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
-    
+
     #[error("Transport initialization failed: {0}")]
     InitializationFailed(String),
-    
+
     #[error("Invalid address: {0}")]
     InvalidAddress(String),
-    
+
     #[error("Connection pool exhausted")]
     PoolExhausted,
-    
+
     #[error("QUIC error: {0}")]
     QuicError(#[from] quinn::ConnectionError),
-    
+
     #[error("Libp2p error: {0}")]
     Libp2pError(String),
 }
@@ -41,6 +40,21 @@ impl From<TransportError> for AdicError {
     fn from(e: TransportError) -> Self {
         AdicError::Network(e.to_string())
     }
+}
+
+/// Unified network message type that can carry both regular messages and discovery messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum NetworkMessage {
+    /// Regular ADIC message for consensus/data
+    AdicMessage(AdicMessage),
+    /// Peer discovery protocol message
+    Discovery(DiscoveryMessage),
+    /// Handshake message
+    Handshake {
+        peer_id: Vec<u8>,
+        version: u32,
+        listening_port: Option<u16>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -53,12 +67,14 @@ pub struct TransportConfig {
     pub max_idle_timeout: Duration,
     pub mtu_discovery: bool,
     pub initial_mtu: u16,
+    pub use_production_tls: bool,
+    pub ca_cert_path: Option<String>,
 }
 
 impl Default for TransportConfig {
     fn default() -> Self {
         Self {
-            libp2p_listen_addrs: vec!["/ip4/0.0.0.0/tcp/9000".parse().unwrap()],
+            libp2p_listen_addrs: vec![], // Empty by default - enable only when explicitly configured
             quic_listen_addr: "0.0.0.0:9001".parse().unwrap(),
             max_connections: 1000,
             connection_timeout: Duration::from_secs(10),
@@ -66,6 +82,8 @@ impl Default for TransportConfig {
             max_idle_timeout: Duration::from_secs(60),
             mtu_discovery: true,
             initial_mtu: 1200,
+            use_production_tls: true, // SECURITY: Default to production TLS
+            ca_cert_path: None,
         }
     }
 }
@@ -75,10 +93,18 @@ pub enum PriorityLane {
     Consensus = 0,
     Data = 1,
     Discovery = 2,
+    Normal = 3,
 }
 
+pub struct ConnectionWithPermit {
+    pub connection: Arc<Connection>,
+    _permit: OwnedSemaphorePermit,
+}
+
+#[derive(Clone)]
 pub struct ConnectionPool {
-    connections: Arc<RwLock<HashMap<PeerId, Arc<Connection>>>>,
+    connections: Arc<RwLock<HashMap<PeerId, ConnectionWithPermit>>>,
+    outgoing: Arc<RwLock<HashSet<PeerId>>>, // Track which connections we initiated
     semaphore: Arc<Semaphore>,
     max_connections: usize,
 }
@@ -87,34 +113,61 @@ impl ConnectionPool {
     pub fn new(max_connections: usize) -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
+            outgoing: Arc::new(RwLock::new(HashSet::new())),
             semaphore: Arc::new(Semaphore::new(max_connections)),
             max_connections,
         }
     }
 
     pub async fn add_connection(&self, peer_id: PeerId, conn: Connection) -> Result<()> {
-        let permit = self.semaphore.acquire().await
+        self.add_connection_with_direction(peer_id, conn, false)
+            .await
+    }
+
+    pub async fn add_outgoing_connection(&self, peer_id: PeerId, conn: Connection) -> Result<()> {
+        self.add_connection_with_direction(peer_id, conn, true)
+            .await
+    }
+
+    async fn add_connection_with_direction(
+        &self,
+        peer_id: PeerId,
+        conn: Connection,
+        is_outgoing: bool,
+    ) -> Result<()> {
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
             .map_err(|_| TransportError::PoolExhausted)?;
-        
+
         let mut connections = self.connections.write().await;
-        connections.insert(peer_id, Arc::new(conn));
-        std::mem::forget(permit); // Keep the permit alive
-        
+        connections.insert(
+            peer_id,
+            ConnectionWithPermit {
+                connection: Arc::new(conn),
+                _permit: permit, // Permit is now owned and will be dropped with the connection
+            },
+        );
+
+        if is_outgoing {
+            let mut outgoing = self.outgoing.write().await;
+            outgoing.insert(peer_id);
+        }
+
         Ok(())
     }
 
     pub async fn get_connection(&self, peer_id: &PeerId) -> Option<Arc<Connection>> {
         let connections = self.connections.read().await;
-        connections.get(peer_id).cloned()
+        connections.get(peer_id).map(|cwp| cwp.connection.clone())
     }
 
     pub async fn remove_connection(&self, peer_id: &PeerId) -> Option<Arc<Connection>> {
         let mut connections = self.connections.write().await;
-        let conn = connections.remove(peer_id);
-        if conn.is_some() {
-            self.semaphore.add_permits(1);
-        }
-        conn
+        connections.remove(peer_id).map(|cwp| cwp.connection)
+        // Permit is automatically released when ConnectionWithPermit is dropped
     }
 
     pub async fn connection_count(&self) -> usize {
@@ -125,14 +178,32 @@ impl ConnectionPool {
     pub async fn is_full(&self) -> bool {
         self.connection_count().await >= self.max_connections
     }
+
+    pub async fn get_all_connections(&self) -> Vec<(PeerId, Arc<Connection>)> {
+        let connections = self.connections.read().await;
+        connections
+            .iter()
+            .map(|(k, v)| (*k, v.connection.clone()))
+            .collect()
+    }
+
+    pub async fn get_outgoing_connections(&self) -> Vec<(PeerId, Arc<Connection>)> {
+        let connections = self.connections.read().await;
+        let outgoing = self.outgoing.read().await;
+        connections
+            .iter()
+            .filter(|(peer_id, _)| outgoing.contains(peer_id))
+            .map(|(k, v)| (*k, v.connection.clone()))
+            .collect()
+    }
 }
 
 pub struct HybridTransport {
     config: TransportConfig,
-    keypair: Keypair,
+    _keypair: Keypair,
     peer_id: PeerId,
-    libp2p_transport: Option<Boxed<(PeerId, StreamMuxerBox)>>,
-    quic_endpoint: Option<Endpoint>,
+    libp2p_transport: Option<Arc<libp2p_wrapper::LibP2PTransportWrapper>>,
+    quic_endpoint: Option<Arc<Endpoint>>,
     connection_pool: ConnectionPool,
 }
 
@@ -140,10 +211,10 @@ impl HybridTransport {
     pub fn new(config: TransportConfig, keypair: Keypair) -> Self {
         let peer_id = PeerId::from(keypair.public());
         let max_connections = config.max_connections;
-        
+
         Self {
             config,
-            keypair,
+            _keypair: keypair,
             peer_id,
             libp2p_transport: None,
             quic_endpoint: None,
@@ -152,108 +223,271 @@ impl HybridTransport {
     }
 
     pub async fn initialize(&mut self) -> Result<()> {
-        self.init_libp2p_transport()?;
+        info!("HybridTransport::initialize - Starting initialization");
+        // Skip libp2p initialization if no addresses configured
+        if !self.config.libp2p_listen_addrs.is_empty() {
+            info!("HybridTransport::initialize - Initializing libp2p transport");
+            self.init_libp2p_transport()?;
+            info!("HybridTransport::initialize - Libp2p transport initialized");
+        } else {
+            info!("HybridTransport::initialize - Skipping libp2p transport (no listen addresses configured)");
+        }
+        info!("HybridTransport::initialize - Initializing QUIC transport");
         self.init_quic_transport().await?;
-        
-        info!("Transport layer initialized with peer ID: {}", self.peer_id);
+        if self.quic_endpoint.is_some() {
+            info!("HybridTransport::initialize - QUIC transport initialized");
+        } else {
+            warn!(
+                "HybridTransport::initialize - QUIC transport disabled (permission denied); proceeding without QUIC"
+            );
+        }
+
+        info!(
+            "Hybrid transport layer initialized with peer ID: {}",
+            self.peer_id
+        );
+        info!("  - LibP2P: enabled");
+        info!(
+            "  - QUIC: {}",
+            if self.quic_endpoint.is_some() {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+
+        // NOTE: Accept loop is handled by NetworkEngine to avoid conflicts
+        // The NetworkEngine's start_accept_loop() manages all incoming QUIC connections
+        info!("HybridTransport::initialize - Accept loop will be managed by NetworkEngine");
+
+        info!("HybridTransport::initialize - Initialization complete");
         Ok(())
     }
 
     fn init_libp2p_transport(&mut self) -> Result<()> {
-        // Create TCP transport
-        let tcp = libp2p::tcp::tokio::Transport::new(
-            libp2p::tcp::Config::default().nodelay(true)
-        );
+        debug!("init_libp2p_transport - Starting");
+        // Create a new keypair for libp2p (or reuse the existing one)
+        let keypair = Keypair::generate_ed25519();
+        debug!("init_libp2p_transport - Creating wrapper");
+        let wrapper = Arc::new(libp2p_wrapper::LibP2PTransportWrapper::new(&keypair)?);
+        debug!("init_libp2p_transport - Wrapper created");
 
-        // Build the transport stack
-        let transport = tcp
-            .upgrade(upgrade::Version::V1)
-            .authenticate(noise::Config::new(&self.keypair).unwrap())
-            .multiplex(yamux::Config::default())
-            .boxed();
+        // Start listening on configured addresses
+        for addr in &self.config.libp2p_listen_addrs {
+            let wrapper_clone = wrapper.clone();
+            let addr = addr.clone();
+            tokio::spawn(async move {
+                if let Err(e) = wrapper_clone.listen_on(addr).await {
+                    error!("Failed to listen on libp2p address: {}", e);
+                }
+            });
+        }
 
-        self.libp2p_transport = Some(transport);
-        
-        debug!("Libp2p transport initialized");
+        self.libp2p_transport = Some(wrapper);
         Ok(())
     }
 
-    async fn init_quic_transport(&mut self) -> Result<()> {
-        let server_config = self.build_server_config()?;
-        let endpoint = Endpoint::server(server_config, self.config.quic_listen_addr)
-            .map_err(|e| TransportError::InitializationFailed(e.to_string()))?;
+    // NOTE: This method is commented out to prevent conflicts with NetworkEngine's accept loop
+    // The NetworkEngine handles all incoming QUIC connections to avoid race conditions
+    // and potential deadlocks from multiple accept loops on the same endpoint.
+    #[allow(dead_code)]
+    fn start_accept_loop(&self) {
+        // This method is intentionally disabled.
+        // All connection acceptance is handled by NetworkEngine::start_accept_loop()
+        warn!("HybridTransport::start_accept_loop called but is disabled - NetworkEngine handles connections");
+    }
 
-        self.quic_endpoint = Some(endpoint);
-        
-        debug!("QUIC transport initialized on {}", self.config.quic_listen_addr);
+    // Temporarily disabled - libp2p transport is not Send+Sync
+    // fn init_libp2p_transport(&mut self) -> Result<()> {
+    //     // Create TCP transport
+    //     let tcp = libp2p::tcp::tokio::Transport::new(
+    //         libp2p::tcp::Config::default().nodelay(true)
+    //     );
+
+    //     // Build the transport stack
+    //     let transport = tcp
+    //         .upgrade(upgrade::Version::V1)
+    //         .authenticate(noise::Config::new(&self.keypair).unwrap())
+    //         .multiplex(yamux::Config::default())
+    //         .boxed();
+
+    //     self.libp2p_transport = Some(transport);
+
+    //     debug!("Libp2p transport initialized");
+    //     Ok(())
+    // }
+
+    async fn init_quic_transport(&mut self) -> Result<()> {
+        // Allow tests or constrained environments to disable QUIC explicitly
+        if std::env::var("ADIC_DISABLE_QUIC")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
+            warn!("init_quic_transport - ADIC_DISABLE_QUIC is set; skipping QUIC initialization");
+            self.quic_endpoint = None;
+            return Ok(());
+        }
+        info!("init_quic_transport - Starting QUIC initialization");
+        info!("init_quic_transport - Building server config");
+        let server_config = self.build_server_config()?;
+        info!(
+            "init_quic_transport - Server config built, creating endpoint on {}",
+            self.config.quic_listen_addr
+        );
+        info!("init_quic_transport - About to call Endpoint::server()...");
+        match Endpoint::server(server_config, self.config.quic_listen_addr) {
+            Ok(endpoint) => {
+                info!("init_quic_transport - Endpoint created successfully");
+                self.quic_endpoint = Some(Arc::new(endpoint));
+                info!("init_quic_transport - Endpoint stored in self.quic_endpoint");
+            }
+            Err(e) => {
+                // In restricted sandboxes (e.g., CI/seccomp), binding UDP sockets may be denied.
+                // Gracefully degrade by disabling QUIC instead of failing initialization.
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    warn!(
+                        "init_quic_transport - Permission denied creating QUIC endpoint ({}). Disabling QUIC for this run.",
+                        e
+                    );
+                    self.quic_endpoint = None;
+                    return Ok(());
+                } else {
+                    return Err(TransportError::InitializationFailed(e.to_string()).into());
+                }
+            }
+        }
+
+        debug!(
+            "init_quic_transport - QUIC transport initialized on {}",
+            self.config.quic_listen_addr
+        );
         Ok(())
     }
 
     fn build_server_config(&self) -> Result<ServerConfig> {
+        debug!("build_server_config - Starting");
+        // Install default crypto provider if not already installed
+        debug!("build_server_config - Installing crypto provider");
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        debug!("build_server_config - Generating self-signed certificate");
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .map_err(|e| TransportError::InitializationFailed(e.to_string()))?;
-        
+        debug!("build_server_config - Certificate generated");
+
         let cert_der = cert.cert.der().to_vec();
         let priv_key_der = cert.key_pair.serialize_der();
-        
-        let priv_key = rustls::pki_types::PrivateKeyDer::try_from(priv_key_der)
-            .map_err(|e| TransportError::InitializationFailed(format!("Invalid private key: {:?}", e)))?;
+
+        let priv_key = rustls::pki_types::PrivateKeyDer::try_from(priv_key_der).map_err(|e| {
+            TransportError::InitializationFailed(format!("Invalid private key: {:?}", e))
+        })?;
         let cert_chain = vec![rustls::pki_types::CertificateDer::from(cert_der)];
 
-        let server_config = ServerConfig::with_single_cert(cert_chain, priv_key.into())
+        debug!("build_server_config - Creating server config with certificate");
+        let server_config = ServerConfig::with_single_cert(cert_chain, priv_key)
             .map_err(|e| TransportError::InitializationFailed(e.to_string()))?;
+        debug!("build_server_config - Server config created successfully");
 
         Ok(server_config)
     }
 
     pub async fn connect_quic(&self, addr: SocketAddr) -> Result<Connection> {
-        let endpoint = self.quic_endpoint.as_ref()
+        let endpoint = self
+            .quic_endpoint
+            .as_ref()
             .ok_or_else(|| TransportError::InitializationFailed("QUIC not initialized".into()))?;
 
         let client_config = self.build_client_config()?;
         let connecting = endpoint
             .connect_with(client_config, addr, "localhost")
             .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
-        
-        let connection = connecting.await
-            .map_err(|e| TransportError::QuicError(e))?;
+
+        let connection = connecting.await.map_err(TransportError::QuicError)?;
 
         debug!("QUIC connection established to {}", addr);
         Ok(connection)
     }
 
     fn build_client_config(&self) -> Result<ClientConfig> {
-        // For development, use a simple insecure client config
-        // In production, proper certificate verification should be implemented
-        let crypto = rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(SkipServerVerification::new()))
-            .with_no_client_auth();
+        // Install default crypto provider if not already installed
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let crypto = if self.config.use_production_tls {
+            // Production: Use proper CA verification
+            let mut roots = rustls::RootCertStore::empty();
+
+            if let Some(ca_path) = &self.config.ca_cert_path {
+                // Load custom CA certificate
+                let ca_file = std::fs::read(ca_path).map_err(|e| {
+                    TransportError::InitializationFailed(format!("Failed to read CA cert: {}", e))
+                })?;
+                let ca_certs: Vec<_> = rustls_pemfile::certs(&mut ca_file.as_slice())
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|e| {
+                        TransportError::InitializationFailed(format!(
+                            "Failed to parse CA cert: {}",
+                            e
+                        ))
+                    })?;
+                for cert in ca_certs {
+                    roots.add(cert).map_err(|e| {
+                        TransportError::InitializationFailed(format!(
+                            "Failed to add CA cert: {}",
+                            e
+                        ))
+                    })?;
+                }
+            } else {
+                // Use system root certificates
+                roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            }
+
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth()
+        } else {
+            // Development mode: Still use verification but with custom verifier for self-signed certs
+            error!("⚠️  WARNING: TLS certificate verification is DISABLED!");
+            error!("⚠️  This is EXTREMELY UNSAFE and should NEVER be used in production!");
+            error!("⚠️  Set use_production_tls=true for secure operation.");
+            warn!("Using development TLS mode - not suitable for production!");
+            rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(SkipServerVerification::new()))
+                .with_no_client_auth()
+        };
 
         let client_config = ClientConfig::new(Arc::new(
-            quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
-                .map_err(|e| TransportError::InitializationFailed(format!("Failed to create QUIC config: {}", e)))?
+            quinn::crypto::rustls::QuicClientConfig::try_from(crypto).map_err(|e| {
+                TransportError::InitializationFailed(format!("Failed to create QUIC config: {}", e))
+            })?,
         ));
         Ok(client_config)
     }
 
     pub async fn accept_quic(&self) -> Result<Connection> {
-        let endpoint = self.quic_endpoint.as_ref()
+        let endpoint = self
+            .quic_endpoint
+            .as_ref()
             .ok_or_else(|| TransportError::InitializationFailed("QUIC not initialized".into()))?;
 
-        let connecting = endpoint.accept().await
+        let connecting = endpoint
+            .accept()
+            .await
             .ok_or_else(|| TransportError::ConnectionFailed("No incoming connection".into()))?;
 
-        let connection = connecting.await
-            .map_err(|e| TransportError::QuicError(e))?;
-        
-        debug!("QUIC connection accepted from {}", connection.remote_address());
+        let connection = connecting.await.map_err(TransportError::QuicError)?;
+
+        debug!(
+            "QUIC connection accepted from {}",
+            connection.remote_address()
+        );
         Ok(connection)
     }
 
-    pub fn libp2p_transport(&self) -> Option<&Boxed<(PeerId, StreamMuxerBox)>> {
-        self.libp2p_transport.as_ref()
-    }
+    // pub fn libp2p_transport(&self) -> Option<&Boxed<(PeerId, StreamMuxerBox)>> {
+    //     self.libp2p_transport.as_ref()
+    // }
 
     pub fn peer_id(&self) -> &PeerId {
         &self.peer_id
@@ -263,6 +497,18 @@ impl HybridTransport {
         &self.connection_pool
     }
 
+    pub fn quic_endpoint(&self) -> Option<Arc<Endpoint>> {
+        self.quic_endpoint.clone()
+    }
+
+    pub async fn local_quic_port(&self) -> Option<u16> {
+        if let Some(endpoint) = &self.quic_endpoint {
+            endpoint.local_addr().ok().map(|addr| addr.port())
+        } else {
+            None
+        }
+    }
+
     pub async fn send_with_priority(
         &self,
         peer_id: &PeerId,
@@ -270,33 +516,91 @@ impl HybridTransport {
         priority: PriorityLane,
     ) -> Result<()> {
         if let Some(conn) = self.connection_pool.get_connection(peer_id).await {
-            let mut stream = conn.open_uni().await
+            let mut stream = conn
+                .open_uni()
+                .await
                 .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
-            
+
             // Build message with header
             let mut message = Vec::new();
             message.push(priority as u8);
             message.extend_from_slice(&(data.len() as u32).to_be_bytes());
             message.extend_from_slice(data);
-            
+
             // Write all data at once
-            stream.write_all(&message).await
+            stream
+                .write_all(&message)
+                .await
                 .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
-            
-            stream.finish()
+
+            stream
+                .finish()
                 .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
-            
+
             Ok(())
         } else {
             Err(TransportError::ConnectionFailed("Peer not connected".into()).into())
         }
     }
 
-    pub async fn shutdown(&mut self) -> Result<()> {
-        if let Some(endpoint) = self.quic_endpoint.take() {
-            endpoint.close(0u32.into(), b"shutting down");
+    /// Send a discovery message to a specific peer
+    pub async fn send_discovery_message(
+        &self,
+        peer_id: &PeerId,
+        message: DiscoveryMessage,
+    ) -> Result<()> {
+        let network_msg = NetworkMessage::Discovery(message);
+        let data = serde_json::to_vec(&network_msg).map_err(|e| {
+            TransportError::ConnectionFailed(format!(
+                "Failed to serialize discovery message: {}",
+                e
+            ))
+        })?;
+
+        self.send_with_priority(peer_id, &data, PriorityLane::Discovery)
+            .await
+    }
+
+    /// Send an ADIC message to a specific peer
+    pub async fn send_adic_message(&self, peer_id: &PeerId, message: AdicMessage) -> Result<()> {
+        let network_msg = NetworkMessage::AdicMessage(message);
+        let data = serde_json::to_vec(&network_msg).map_err(|e| {
+            TransportError::ConnectionFailed(format!("Failed to serialize ADIC message: {}", e))
+        })?;
+
+        self.send_with_priority(peer_id, &data, PriorityLane::Normal)
+            .await
+    }
+
+    /// Broadcast a discovery message to all connected peers
+    pub async fn broadcast_discovery_message(&self, message: DiscoveryMessage) -> Result<()> {
+        let connections = self.connection_pool.get_all_connections().await;
+        for (peer_id, _) in connections {
+            if let Err(e) = self.send_discovery_message(&peer_id, message.clone()).await {
+                warn!(
+                    "Failed to send discovery message to peer {}: {}",
+                    peer_id, e
+                );
+            }
         }
-        
+        Ok(())
+    }
+
+    pub async fn shutdown(&mut self) -> Result<()> {
+        info!("Starting transport shutdown...");
+
+        if let Some(endpoint) = self.quic_endpoint.take() {
+            info!("Closing QUIC endpoint...");
+            endpoint.close(0u32.into(), b"shutting down");
+            info!("QUIC endpoint closed");
+        } else {
+            info!("No QUIC endpoint to close");
+        }
+
+        // Wait for the endpoint to actually close
+        info!("Waiting for endpoint cleanup...");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
         info!("Transport layer shutdown complete");
         Ok(())
     }
@@ -324,7 +628,7 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
-    
+
     fn verify_tls12_signature(
         &self,
         _message: &[u8],
@@ -333,7 +637,7 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
-    
+
     fn verify_tls13_signature(
         &self,
         _message: &[u8],
@@ -342,7 +646,7 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
-    
+
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         vec![
             rustls::SignatureScheme::RSA_PKCS1_SHA256,
@@ -359,24 +663,5 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_transport_initialization() {
-        let keypair = Keypair::generate_ed25519();
-        let config = TransportConfig::default();
-        let mut transport = HybridTransport::new(config, keypair);
-        
-        assert!(transport.initialize().await.is_ok());
-        assert!(transport.libp2p_transport.is_some());
-        assert!(transport.quic_endpoint.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_connection_pool() {
-        let pool = ConnectionPool::new(10);
-        assert_eq!(pool.connection_count().await, 0);
-        assert!(!pool.is_full().await);
-    }
-}
+#[path = "transport_tests.rs"]
+mod transport_tests;

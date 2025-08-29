@@ -1,5 +1,5 @@
-use crate::backend::{StorageBackend, StorageError, StorageStats, Result};
-use adic_types::{MessageId, AdicMessage, PublicKey};
+use crate::backend::{Result, StorageBackend, StorageError, StorageStats};
+use adic_types::{AdicMessage, MessageId, PublicKey};
 use std::sync::Arc;
 
 /// Configuration for storage engine
@@ -13,8 +13,17 @@ pub struct StorageConfig {
 
 impl Default for StorageConfig {
     fn default() -> Self {
+        // Default to RocksDB for persistence if available
+        #[cfg(feature = "rocksdb")]
+        let backend_type = BackendType::RocksDB {
+            path: std::env::var("ADIC_DATA_DIR").unwrap_or_else(|_| "./data/storage".to_string()),
+        };
+
+        #[cfg(not(feature = "rocksdb"))]
+        let backend_type = BackendType::Memory;
+
         Self {
-            backend_type: BackendType::Memory,
+            backend_type,
             cache_size: 10000,
             flush_interval_ms: 5000,
             max_batch_size: 100,
@@ -26,7 +35,9 @@ impl Default for StorageConfig {
 pub enum BackendType {
     Memory,
     #[cfg(feature = "rocksdb")]
-    RocksDB { path: String },
+    RocksDB {
+        path: String,
+    },
 }
 
 /// High-level storage engine that wraps backend implementations
@@ -39,16 +50,15 @@ impl StorageEngine {
     /// Create a new storage engine with the given configuration
     pub fn new(config: StorageConfig) -> Result<Self> {
         let backend: Arc<dyn StorageBackend> = match &config.backend_type {
-            BackendType::Memory => {
-                Arc::new(crate::memory::MemoryBackend::new())
-            }
+            BackendType::Memory => Arc::new(crate::memory::MemoryBackend::new()),
             #[cfg(feature = "rocksdb")]
-            BackendType::RocksDB { path } => {
-                Arc::new(crate::rocks::RocksBackend::new(path)?)
-            }
+            BackendType::RocksDB { path } => Arc::new(crate::rocks::RocksBackend::new(path)?),
         };
 
-        Ok(Self { backend, _config: config })
+        Ok(Self {
+            backend,
+            _config: config,
+        })
     }
 
     /// Store a message and update related indices
@@ -80,7 +90,7 @@ impl StorageEngine {
 
         // Commit transaction
         self.backend.commit_transaction().await?;
-        
+
         Ok(())
     }
 
@@ -157,15 +167,13 @@ impl StorageEngine {
         ball_id: &[u8],
         message_id: &MessageId,
     ) -> Result<()> {
-        self.backend.add_to_ball_index(axis, ball_id, message_id).await
+        self.backend
+            .add_to_ball_index(axis, ball_id, message_id)
+            .await
     }
 
     /// Get all messages in a specific ball
-    pub async fn get_ball_members(
-        &self,
-        axis: u32,
-        ball_id: &[u8],
-    ) -> Result<Vec<MessageId>> {
+    pub async fn get_ball_members(&self, axis: u32, ball_id: &[u8]) -> Result<Vec<MessageId>> {
         self.backend.get_ball_members(axis, ball_id).await
     }
 
@@ -249,7 +257,10 @@ mod tests {
         assert!(tips.contains(&message.id));
 
         // Test metadata
-        engine.put_metadata(&message.id, "test_key", b"test_value").await.unwrap();
+        engine
+            .put_metadata(&message.id, "test_key", b"test_value")
+            .await
+            .unwrap();
         let metadata = engine.get_metadata(&message.id, "test_key").await.unwrap();
         assert_eq!(metadata, Some(b"test_value".to_vec()));
 
@@ -260,9 +271,12 @@ mod tests {
         assert_eq!(rep, Some(0.5));
 
         // Test finalization
-        engine.finalize_message(&message.id, b"artifact").await.unwrap();
+        engine
+            .finalize_message(&message.id, b"artifact")
+            .await
+            .unwrap();
         assert!(engine.is_finalized(&message.id).await.unwrap());
-        
+
         // Should no longer be a tip after finalization
         let tips = engine.get_tips().await.unwrap();
         assert!(!tips.contains(&message.id));

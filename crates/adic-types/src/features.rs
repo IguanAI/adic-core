@@ -17,20 +17,20 @@ impl QpDigits {
         let mut digits = Vec::with_capacity(precision);
         let mut v = value.clone();
         let p_big = BigUint::from(p);
-        
+
         for _ in 0..precision {
-            let digit = (&v % &p_big).to_u32_digits().get(0).copied().unwrap_or(0) as u8;
+            let digit = (&v % &p_big).to_u32_digits().first().copied().unwrap_or(0) as u8;
             digits.push(digit);
             v /= &p_big;
             if v.is_zero() {
                 break;
             }
         }
-        
+
         while digits.len() < precision {
             digits.push(0);
         }
-        
+
         Self { digits, p }
     }
 
@@ -115,7 +115,7 @@ mod tests {
         let digits = QpDigits::from_u64(42, 3, 5);
         assert_eq!(digits.p, 3);
         assert_eq!(digits.digits.len(), 5);
-        
+
         let ball_id = digits.ball_id(2);
         assert_eq!(ball_id.len(), 2);
     }
@@ -125,7 +125,7 @@ mod tests {
         let phi1 = AxisPhi::new(0, QpDigits::from_u64(10, 3, 4));
         let phi2 = AxisPhi::new(1, QpDigits::from_u64(20, 3, 4));
         let features = AdicFeatures::new(vec![phi1, phi2]);
-        
+
         assert_eq!(features.dimension(), 2);
         assert!(features.get_axis(AxisId(0)).is_some());
         assert!(features.get_axis(AxisId(2)).is_none());

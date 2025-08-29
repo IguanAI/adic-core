@@ -1,11 +1,11 @@
-pub mod padic;
-pub mod valuation;
 pub mod ball;
 pub mod distance;
+pub mod padic;
+pub mod valuation;
 
-pub use padic::{vp, vp_diff};
 pub use ball::{ball_id, balls_are_distinct, count_distinct_balls};
 pub use distance::{padic_distance, proximity_score};
+pub use padic::{vp, vp_diff};
 pub use valuation::PadicValuation;
 
 #[cfg(test)]
@@ -26,7 +26,7 @@ mod tests {
         let y = QpDigits::from_u64(11, 3, 5);
         let diff = vp_diff(&x, &y);
         // diff is u32, so it's always >= 0
-        assert!(diff < u32::MAX);  // Just check it's a valid value
+        assert!(diff < u32::MAX); // Just check it's a valid value
     }
 
     #[test]

@@ -3,19 +3,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use libp2p::{
-    kad::{
-        Behaviour as Kademlia, Config as KademliaConfig,
-        store::MemoryStore,
-    },
     identity::Keypair,
-    PeerId, Multiaddr, StreamProtocol,
+    kad::{store::MemoryStore, Behaviour as Kademlia, Config as KademliaConfig},
+    Multiaddr, PeerId, StreamProtocol,
 };
-use tokio::sync::{RwLock, mpsc};
-use serde::{Serialize, Deserialize};
-use tracing::{debug, warn, info};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, RwLock};
+use tracing::{debug, info, warn};
 
-use adic_types::{Result, PublicKey, AdicError, features::QpDigits};
 use adic_math::distance::padic_distance;
+use adic_types::{features::QpDigits, AdicError, PublicKey, Result};
 
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
@@ -103,16 +100,16 @@ impl PeerManager {
         deposit_verifier: Arc<dyn DepositVerifier>,
     ) -> Self {
         let local_peer_id = PeerId::from(keypair.public());
-        
+
         // Create Kademlia with default protocol name
         let protocol = StreamProtocol::new("/ipfs/kad/1.0.0");
         let mut kad_config = KademliaConfig::new(protocol);
         kad_config.set_query_timeout(Duration::from_secs(30));
         let store = MemoryStore::new(local_peer_id);
         let kademlia = Kademlia::with_config(local_peer_id, store, kad_config);
-        
+
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
-        
+
         Self {
             local_peer_id,
             peers: Arc::new(RwLock::new(HashMap::new())),
@@ -130,22 +127,24 @@ impl PeerManager {
 
     pub async fn add_peer(&self, peer_info: PeerInfo) -> Result<()> {
         let mut peers = self.peers.write().await;
-        
+
         if peers.len() >= self.max_peers {
             // Find and remove lowest scoring peer
             if let Some(worst_peer) = self.find_worst_peer(&peers).await {
                 peers.remove(&worst_peer);
-                self.event_sender.send(PeerEvent::PeerDisconnected(worst_peer))
+                self.event_sender
+                    .send(PeerEvent::PeerDisconnected(worst_peer))
                     .map_err(|e| AdicError::Network(format!("Failed to send event: {}", e)))?;
             }
         }
-        
+
         let peer_id = peer_info.peer_id;
         peers.insert(peer_id, peer_info);
-        
-        self.event_sender.send(PeerEvent::PeerConnected(peer_id))
+
+        self.event_sender
+            .send(PeerEvent::PeerConnected(peer_id))
             .map_err(|e| AdicError::Network(format!("Failed to send event: {}", e)))?;
-        
+
         info!("Added peer: {}", peer_id);
         Ok(())
     }
@@ -153,13 +152,14 @@ impl PeerManager {
     pub async fn remove_peer(&self, peer_id: &PeerId) -> Option<PeerInfo> {
         let mut peers = self.peers.write().await;
         let peer = peers.remove(peer_id);
-        
+
         if peer.is_some() {
-            self.event_sender.send(PeerEvent::PeerDisconnected(*peer_id))
+            self.event_sender
+                .send(PeerEvent::PeerDisconnected(*peer_id))
                 .ok();
             info!("Removed peer: {}", peer_id);
         }
-        
+
         peer
     }
 
@@ -171,9 +171,10 @@ impl PeerManager {
     pub async fn update_peer_score(&self, peer_id: &PeerId, delta: f64) {
         let mut peers = self.peers.write().await;
         if let Some(peer) = peers.get_mut(peer_id) {
-            peer.reputation_score = (peer.reputation_score + delta).max(0.0).min(100.0);
-            
-            self.event_sender.send(PeerEvent::PeerScoreUpdated(*peer_id, peer.reputation_score))
+            peer.reputation_score = (peer.reputation_score + delta).clamp(0.0, 100.0);
+
+            self.event_sender
+                .send(PeerEvent::PeerScoreUpdated(*peer_id, peer.reputation_score))
                 .ok();
         }
     }
@@ -193,7 +194,7 @@ impl PeerManager {
             } else {
                 peer.message_stats.messages_received += 1;
                 peer.message_stats.bytes_received += bytes;
-                
+
                 if let Some(is_valid) = valid {
                     if is_valid {
                         peer.message_stats.messages_validated += 1;
@@ -202,100 +203,108 @@ impl PeerManager {
                     }
                 }
             }
-            
+
             peer.last_seen = Instant::now();
         }
     }
 
     pub async fn calculate_peer_score(&self, peer_info: &PeerInfo) -> f64 {
         let mut score = 0.0;
-        
+
         // Latency score (lower is better)
         if let Some(latency) = peer_info.latency_ms {
             let latency_score = 1.0 / (1.0 + latency as f64 / 100.0);
             score += latency_score * self.scoring.latency_weight;
         }
-        
+
         // Bandwidth score (higher is better)
         if let Some(bandwidth) = peer_info.bandwidth_mbps {
             let bandwidth_score = bandwidth.min(100.0) / 100.0;
             score += bandwidth_score * self.scoring.bandwidth_weight;
         }
-        
+
         // Reputation score
         let reputation_score = peer_info.reputation_score / 100.0;
         score += reputation_score * self.scoring.reputation_weight;
-        
+
         // Uptime score
         let uptime = peer_info.last_seen.elapsed().as_secs();
         let uptime_score = 1.0 - (uptime as f64 / 3600.0).min(1.0);
         score += uptime_score * self.scoring.uptime_weight;
-        
+
         // Validity score
-        let total_messages = peer_info.message_stats.messages_validated + peer_info.message_stats.messages_invalid;
+        let total_messages =
+            peer_info.message_stats.messages_validated + peer_info.message_stats.messages_invalid;
         if total_messages > 0 {
-            let validity_score = peer_info.message_stats.messages_validated as f64 / total_messages as f64;
+            let validity_score =
+                peer_info.message_stats.messages_validated as f64 / total_messages as f64;
             score += validity_score * self.scoring.validity_weight;
         }
-        
+
         score
     }
 
     pub fn local_peer_id(&self) -> &PeerId {
         &self.local_peer_id
     }
-    
+
     pub async fn ensure_min_peers(&self) {
         let peers = self.peers.read().await;
-        let connected_count = peers.values()
+        let connected_count = peers
+            .values()
             .filter(|p| p.connection_state == ConnectionState::Connected)
             .count();
-        
+
         if connected_count < self.min_peers {
-            info!("Connected peers ({}) below minimum ({}), discovering more", 
-                  connected_count, self.min_peers);
-            
+            info!(
+                "Connected peers ({}) below minimum ({}), discovering more",
+                connected_count, self.min_peers
+            );
+
             // Trigger peer discovery via Kademlia
             let mut kad = self.kademlia.write().await;
             let _ = kad.bootstrap();
         }
     }
-    
+
     pub async fn handle_handshake(&self, peer: PeerId) -> Result<()> {
         // Set handshake timeout
         let timeout_result = tokio::time::timeout(
             self.handshake_timeout,
-            self.perform_handshake_internal(peer)
-        ).await;
-        
+            self.perform_handshake_internal(peer),
+        )
+        .await;
+
         match timeout_result {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(e),
             Err(_) => Err(AdicError::Network(format!(
-                "Handshake timeout with peer {}", peer
-            )))
+                "Handshake timeout with peer {}",
+                peer
+            ))),
         }
     }
-    
+
     async fn perform_handshake_internal(&self, peer: PeerId) -> Result<()> {
         // Actual handshake logic would go here
         debug!("Performing handshake with peer {}", peer);
         Ok(())
     }
-    
+
     pub async fn select_peers_weighted(&self, count: usize) -> Vec<PeerId> {
         let peers = self.peers.read().await;
         let mut peer_scores: Vec<(PeerId, f64)> = Vec::new();
-        
+
         for (peer_id, peer_info) in peers.iter() {
             if peer_info.connection_state == ConnectionState::Connected {
                 let score = self.calculate_peer_score(peer_info).await;
                 peer_scores.push((*peer_id, score));
             }
         }
-        
+
         peer_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        peer_scores.into_iter()
+        peer_scores
+            .into_iter()
             .take(count)
             .map(|(peer_id, _)| peer_id)
             .collect()
@@ -308,16 +317,17 @@ impl PeerManager {
     ) -> Vec<PeerId> {
         let peers = self.peers.read().await;
         let mut peer_distances: Vec<(PeerId, f64)> = Vec::new();
-        
+
         for (peer_id, peer_info) in peers.iter() {
             if let Some(ref location) = peer_info.padic_location {
                 let distance = padic_distance(location, target);
                 peer_distances.push((*peer_id, distance));
             }
         }
-        
+
         peer_distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        peer_distances.into_iter()
+        peer_distances
+            .into_iter()
             .take(count)
             .map(|(peer_id, _)| peer_id)
             .collect()
@@ -326,7 +336,7 @@ impl PeerManager {
     async fn find_worst_peer(&self, peers: &HashMap<PeerId, PeerInfo>) -> Option<PeerId> {
         let mut worst_peer = None;
         let mut worst_score = f64::MAX;
-        
+
         for (peer_id, peer_info) in peers.iter() {
             let score = self.calculate_peer_score(peer_info).await;
             if score < worst_score {
@@ -334,32 +344,36 @@ impl PeerManager {
                 worst_peer = Some(*peer_id);
             }
         }
-        
+
         worst_peer
     }
 
-    pub async fn perform_handshake(
-        &self,
-        peer_id: &PeerId,
-        deposit_proof: &[u8],
-    ) -> Result<bool> {
+    pub async fn perform_handshake(&self, peer_id: &PeerId, deposit_proof: &[u8]) -> Result<bool> {
         // Verify deposit
-        if !self.deposit_verifier.verify_deposit(peer_id, deposit_proof).await {
+        if !self
+            .deposit_verifier
+            .verify_deposit(peer_id, deposit_proof)
+            .await
+        {
             warn!("Peer {} failed deposit verification", peer_id);
             return Ok(false);
         }
-        
+
         // Generate and verify PoW challenge
         let challenge = self.deposit_verifier.generate_pow_challenge().await;
         // In a real implementation, send challenge and receive response
         // For now, we'll simulate this
         let response = vec![0u8; 32]; // Placeholder
-        
-        if !self.deposit_verifier.verify_pow_response(&challenge, &response).await {
+
+        if !self
+            .deposit_verifier
+            .verify_pow_response(&challenge, &response)
+            .await
+        {
             warn!("Peer {} failed PoW verification", peer_id);
             return Ok(false);
         }
-        
+
         debug!("Handshake successful with peer {}", peer_id);
         Ok(true)
     }
@@ -368,23 +382,26 @@ impl PeerManager {
         let mut peers = self.peers.write().await;
         let now = Instant::now();
         let mut to_remove = Vec::new();
-        
+
         for (peer_id, peer_info) in peers.iter() {
             if now.duration_since(peer_info.last_seen) > self.peer_timeout {
                 to_remove.push(*peer_id);
             }
         }
-        
+
         for peer_id in to_remove {
             peers.remove(&peer_id);
-            self.event_sender.send(PeerEvent::PeerDisconnected(peer_id)).ok();
+            self.event_sender
+                .send(PeerEvent::PeerDisconnected(peer_id))
+                .ok();
             info!("Removed stale peer: {}", peer_id);
         }
     }
 
     pub async fn get_connected_peers(&self) -> Vec<PeerId> {
         let peers = self.peers.read().await;
-        peers.iter()
+        peers
+            .iter()
             .filter(|(_, info)| info.connection_state == ConnectionState::Connected)
             .map(|(id, _)| *id)
             .collect()
@@ -397,7 +414,8 @@ impl PeerManager {
 
     pub async fn connected_peer_count(&self) -> usize {
         let peers = self.peers.read().await;
-        peers.iter()
+        peers
+            .iter()
             .filter(|(_, info)| info.connection_state == ConnectionState::Connected)
             .count()
     }
@@ -418,12 +436,12 @@ mod tests {
     async fn test_peer_manager_creation() {
         use crate::deposit_verifier::RealDepositVerifier;
         use adic_consensus::DepositManager;
-        
+
         let keypair = Keypair::generate_ed25519();
         let deposit_mgr = Arc::new(DepositManager::new(1.0));
         let verifier: Arc<dyn DepositVerifier> = Arc::new(RealDepositVerifier::new(deposit_mgr));
         let manager = PeerManager::new(&keypair, 100, verifier);
-        
+
         assert_eq!(manager.peer_count().await, 0);
         assert_eq!(manager.connected_peer_count().await, 0);
     }
@@ -432,12 +450,12 @@ mod tests {
     async fn test_peer_scoring() {
         use crate::deposit_verifier::RealDepositVerifier;
         use adic_consensus::DepositManager;
-        
+
         let keypair = Keypair::generate_ed25519();
         let deposit_mgr = Arc::new(DepositManager::new(1.0));
         let verifier: Arc<dyn DepositVerifier> = Arc::new(RealDepositVerifier::new(deposit_mgr));
         let manager = PeerManager::new(&keypair, 100, verifier);
-        
+
         let peer_info = PeerInfo {
             peer_id: PeerId::random(),
             addresses: vec![],
@@ -454,7 +472,7 @@ mod tests {
             },
             padic_location: None,
         };
-        
+
         let score = manager.calculate_peer_score(&peer_info).await;
         assert!(score > 0.0 && score <= 1.0);
     }

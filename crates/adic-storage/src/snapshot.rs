@@ -1,5 +1,5 @@
-use crate::backend::{StorageBackend, StorageError, Result};
-use adic_types::{MessageId, AdicMessage};
+use crate::backend::{Result, StorageBackend, StorageError};
+use adic_types::{AdicMessage, MessageId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ impl Snapshot {
         // Collect all messages
         let message_ids = backend.list_messages().await?;
         let mut messages = Vec::with_capacity(message_ids.len());
-        
+
         for id in &message_ids {
             if let Some(msg) = backend.get_message(id).await? {
                 messages.push(msg);
@@ -141,10 +141,10 @@ impl Snapshot {
     /// Calculate hash of messages for integrity
     fn calculate_hash(messages: &[AdicMessage]) -> Vec<u8> {
         use sha2::{Digest, Sha256};
-        
+
         let mut hasher = Sha256::new();
         for msg in messages {
-            hasher.update(&msg.id.as_bytes());
+            hasher.update(msg.id.as_bytes());
         }
         hasher.finalize().to_vec()
     }
@@ -159,11 +159,11 @@ impl Snapshot {
     pub async fn save_to_file(&self, path: &Path) -> Result<()> {
         let data = bincode::serialize(self)
             .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-        
+
         let mut file = fs::File::create(path).await?;
         file.write_all(&data).await?;
         file.flush().await?;
-        
+
         Ok(())
     }
 
@@ -172,14 +172,16 @@ impl Snapshot {
         let mut file = fs::File::open(path).await?;
         let mut data = Vec::new();
         file.read_to_end(&mut data).await?;
-        
+
         let snapshot: Self = bincode::deserialize(&data)
             .map_err(|e| StorageError::SerializationError(e.to_string()))?;
-        
+
         if !snapshot.verify() {
-            return Err(StorageError::BackendError("Snapshot verification failed".into()));
+            return Err(StorageError::BackendError(
+                "Snapshot verification failed".into(),
+            ));
         }
-        
+
         Ok(snapshot)
     }
 }
@@ -205,12 +207,17 @@ impl SnapshotManager {
 
         // Create snapshot
         let snapshot = Snapshot::create(backend).await?;
-        
+
         // Generate filename with timestamp including nanoseconds for uniqueness
         let filename = format!(
             "snapshot_{}_{}.bin",
             snapshot.metadata.created_at.timestamp(),
-            snapshot.metadata.created_at.timestamp_nanos_opt().unwrap_or(0) % 1_000_000
+            snapshot
+                .metadata
+                .created_at
+                .timestamp_nanos_opt()
+                .unwrap_or(0)
+                % 1_000_000
         );
         let path = self.snapshot_dir.join(filename);
 
@@ -226,7 +233,7 @@ impl SnapshotManager {
     /// List available snapshots
     pub async fn list_snapshots(&self) -> Result<Vec<(PathBuf, SnapshotMetadata)>> {
         let mut snapshots = Vec::new();
-        
+
         let mut entries = fs::read_dir(&self.snapshot_dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
@@ -236,10 +243,10 @@ impl SnapshotManager {
                 }
             }
         }
-        
+
         // Sort by creation time (newest first)
         snapshots.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
-        
+
         Ok(snapshots)
     }
 
@@ -254,11 +261,7 @@ impl SnapshotManager {
     }
 
     /// Restore from a specific snapshot file
-    pub async fn restore_from_file(
-        &self,
-        path: &Path,
-        backend: &dyn StorageBackend,
-    ) -> Result<()> {
+    pub async fn restore_from_file(&self, path: &Path, backend: &dyn StorageBackend) -> Result<()> {
         let snapshot = Snapshot::load_from_file(path).await?;
         snapshot.restore(backend).await
     }
@@ -266,17 +269,17 @@ impl SnapshotManager {
     /// Clean up old snapshots beyond max_snapshots limit
     async fn cleanup_old_snapshots(&self) -> Result<()> {
         let mut snapshots = self.list_snapshots().await?;
-        
+
         if snapshots.len() > self.max_snapshots {
             // Sort by created_at (newest first)
             snapshots.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
-            
+
             // Delete oldest snapshots (those beyond max_snapshots)
             for (path, _) in snapshots.iter().skip(self.max_snapshots) {
                 fs::remove_file(path).await?;
             }
         }
-        
+
         Ok(())
     }
 
@@ -299,14 +302,14 @@ impl SnapshotManager {
 mod tests {
     use super::*;
     use crate::memory::MemoryBackend;
-    use adic_types::{AdicFeatures, AdicMeta, AxisPhi, QpDigits, PublicKey};
+    use adic_types::{AdicFeatures, AdicMeta, AxisPhi, PublicKey, QpDigits};
     use chrono::Utc;
     use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_snapshot_create_restore() {
         let backend = MemoryBackend::new();
-        
+
         // Add test data
         let message = AdicMessage::new(
             vec![],
@@ -315,25 +318,25 @@ mod tests {
             PublicKey::from_bytes([0; 32]),
             vec![1, 2, 3],
         );
-        
+
         backend.put_message(&message).await.unwrap();
         backend.add_tip(&message.id).await.unwrap();
-        
+
         // Create snapshot
         let snapshot = Snapshot::create(&backend).await.unwrap();
         assert_eq!(snapshot.messages.len(), 1);
         assert!(snapshot.tips.contains(&message.id));
         assert!(snapshot.verify());
-        
+
         // Test restore to new backend
         let new_backend = MemoryBackend::new();
         snapshot.restore(&new_backend).await.unwrap();
-        
+
         // Verify restored data
         let restored = new_backend.get_message(&message.id).await.unwrap();
         assert!(restored.is_some());
         assert_eq!(restored.unwrap().id, message.id);
-        
+
         let tips = new_backend.get_tips().await.unwrap();
         assert!(tips.contains(&message.id));
     }
@@ -341,7 +344,10 @@ mod tests {
     fn create_test_message(content: String) -> AdicMessage {
         AdicMessage::new(
             vec![],
-            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(content.len() as u64, 3, 5))]),
+            AdicFeatures::new(vec![AxisPhi::new(
+                0,
+                QpDigits::from_u64(content.len() as u64, 3, 5),
+            )]),
             AdicMeta::new(Utc::now()),
             PublicKey::from_bytes([content.bytes().next().unwrap_or(0); 32]),
             content.into_bytes(),
@@ -352,9 +358,9 @@ mod tests {
     async fn test_snapshot_manager() {
         let temp_dir = TempDir::new().unwrap();
         let manager = SnapshotManager::new(temp_dir.path().to_path_buf(), 3);
-        
+
         let backend = MemoryBackend::new();
-        
+
         // Create test message
         let message = AdicMessage::new(
             vec![],
@@ -364,30 +370,30 @@ mod tests {
             vec![],
         );
         backend.put_message(&message).await.unwrap();
-        
+
         // Create snapshot
         let path = manager.create_snapshot(&backend).await.unwrap();
         assert!(path.exists());
-        
+
         // List snapshots
         let snapshots = manager.list_snapshots().await.unwrap();
         assert_eq!(snapshots.len(), 1);
-        
+
         // Load latest
         let latest = manager.load_latest().await.unwrap();
         assert!(latest.is_some());
         assert_eq!(latest.unwrap().messages.len(), 1);
-        
+
         // Test cleanup (create more than max_snapshots)
         for i in 0..4 {
             // Add a message to make snapshots different
             let msg = create_test_message(format!("test{}", i + 1));
             backend.put_message(&msg).await.unwrap();
-            
+
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             manager.create_snapshot(&backend).await.unwrap();
         }
-        
+
         let snapshots = manager.list_snapshots().await.unwrap();
         println!("Final snapshots count: {}", snapshots.len());
         assert_eq!(snapshots.len(), 3); // Should be limited to max_snapshots

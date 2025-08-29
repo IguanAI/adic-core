@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 918c064244c0e66dec41a6e2cd9b09f0e05f1b5c4280681b0bea5e6f1432a873 # shrinks to a = QpDigits(p=2, digits=[1]), b = QpDigits(p=2, digits=[1, 0])

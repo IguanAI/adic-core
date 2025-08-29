@@ -1,4 +1,4 @@
-use crate::features::{QpDigits, AxisPhi, AxisId};
+use crate::features::{AxisId, AxisPhi, QpDigits};
 use blake3::Hasher;
 use chrono::{DateTime, Utc};
 use num_bigint::BigUint;
@@ -56,12 +56,12 @@ impl TopicHashEncoder {
         let mut hasher = Hasher::new();
         hasher.update(topic.as_bytes());
         let hash = hasher.finalize();
-        
+
         let mut value = BigUint::from_bytes_be(hash.as_bytes());
         let p_big = BigUint::from(p);
         let max_value = p_big.pow(precision as u32);
-        value = value % max_value;
-        
+        value %= max_value;
+
         QpDigits::new(&value, p, precision)
     }
 }
@@ -71,12 +71,12 @@ impl FeatureEncoder for TopicHashEncoder {
         let mut hasher = Hasher::new();
         hasher.update(value);
         let hash = hasher.finalize();
-        
+
         let mut hash_value = BigUint::from_bytes_be(hash.as_bytes());
         let p_big = BigUint::from(p);
         let max_value = p_big.pow(precision as u32);
-        hash_value = hash_value % max_value;
-        
+        hash_value %= max_value;
+
         QpDigits::new(&hash_value, p, precision)
     }
 
@@ -113,7 +113,7 @@ impl RegionCodeEncoder {
                 (hash.as_bytes()[0] as u64) % 100 + 7
             }
         };
-        
+
         QpDigits::from_u64(value, p, precision)
     }
 }
@@ -158,11 +158,8 @@ impl EncoderSet {
                     "region_code" => data.region.as_bytes().to_vec(),
                     _ => vec![],
                 };
-                
-                AxisPhi::new(
-                    encoder.axis_id().0,
-                    encoder.encode(&value, p, precision),
-                )
+
+                AxisPhi::new(encoder.axis_id().0, encoder.encode(&value, p, precision))
             })
             .collect()
     }
@@ -203,7 +200,7 @@ mod tests {
         let topic1 = encoder.encode_topic("test_topic", 3, 5);
         let topic2 = encoder.encode_topic("test_topic", 3, 5);
         assert_eq!(topic1, topic2);
-        
+
         let topic3 = encoder.encode_topic("different", 3, 5);
         assert_ne!(topic1, topic3);
     }
@@ -214,7 +211,7 @@ mod tests {
         let us = encoder.encode_region("US", 3, 5);
         let eu = encoder.encode_region("EU", 3, 5);
         assert_ne!(us, eu);
-        
+
         let unknown = encoder.encode_region("UNKNOWN", 3, 5);
         assert_ne!(unknown, us);
     }
@@ -222,15 +219,11 @@ mod tests {
     #[test]
     fn test_encoder_set() {
         let encoders = EncoderSet::default_phase0();
-        let data = EncoderData::new(
-            1234567890,
-            "test".to_string(),
-            "US".to_string(),
-        );
-        
+        let data = EncoderData::new(1234567890, "test".to_string(), "US".to_string());
+
         let encoded = encoders.encode_all(&data, 3, 5);
         assert_eq!(encoded.len(), 3);
-        
+
         for phi in encoded {
             assert_eq!(phi.qp_digits.p, 3);
             assert_eq!(phi.qp_digits.digits.len(), 5);

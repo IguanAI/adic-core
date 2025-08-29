@@ -72,3 +72,17 @@ MANIFEST
 *.bak
 *.backup
 *.tmp
+
+# Data directories
+data/
+*/data/
+**/data/
+*.db
+*.rocksdb
+rocksdb/
+
+# Test files in root
+/test_*.rs
+/test-*.sh
+/*.key
+node.key

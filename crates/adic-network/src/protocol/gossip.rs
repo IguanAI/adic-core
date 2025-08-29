@@ -4,18 +4,17 @@ use std::time::{Duration, Instant};
 
 use libp2p::{
     gossipsub::{
-        Behaviour as Gossipsub, Event as GossipsubEvent,
-        MessageAuthenticity, ValidationMode,
-        IdentTopic as Topic, ConfigBuilder, TopicHash,
+        Behaviour as Gossipsub, ConfigBuilder, Event as GossipsubEvent, IdentTopic as Topic,
+        MessageAuthenticity, TopicHash, ValidationMode,
     },
     identity::Keypair,
     PeerId,
 };
-use tokio::sync::{RwLock, mpsc};
-use serde::{Serialize, Deserialize};
-use tracing::{debug, warn, info};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, RwLock};
+use tracing::{debug, info, warn};
 
-use adic_types::{AdicMessage, MessageId, Result, AdicError};
+use adic_types::{AdicError, AdicMessage, MessageId, Result};
 
 #[derive(Debug, Clone)]
 pub struct GossipConfig {
@@ -71,7 +70,7 @@ pub struct GossipProtocol {
 
 #[derive(Debug, Clone)]
 pub enum GossipEvent {
-    MessageReceived(GossipMessage, PeerId),
+    MessageReceived(Box<GossipMessage>, PeerId),
     MessageValidated(MessageId, bool),
     PeerSubscribed(PeerId, TopicHash),
     PeerUnsubscribed(PeerId, TopicHash),
@@ -94,22 +93,23 @@ impl MessageCache {
 
     fn insert(&mut self, message: AdicMessage) {
         let now = Instant::now();
-        
+
         // Clean old entries
-        self.messages.retain(|_, (_, timestamp)| {
-            now.duration_since(*timestamp) < self.ttl
-        });
-        
+        self.messages
+            .retain(|_, (_, timestamp)| now.duration_since(*timestamp) < self.ttl);
+
         // Remove oldest if at capacity
         if self.messages.len() >= self.max_size {
-            if let Some(oldest_id) = self.messages.iter()
+            if let Some(oldest_id) = self
+                .messages
+                .iter()
                 .min_by_key(|(_, (_, ts))| *ts)
                 .map(|(id, _)| *id)
             {
                 self.messages.remove(&oldest_id);
             }
         }
-        
+
         self.messages.insert(message.id, (message, now));
     }
 
@@ -178,7 +178,8 @@ impl GossipProtocol {
         let gossipsub = Gossipsub::new(
             MessageAuthenticity::Signed(keypair.clone()),
             gossipsub_config,
-        ).map_err(|e| AdicError::Network(format!("Failed to create gossipsub: {}", e)))?;
+        )
+        .map_err(|e| AdicError::Network(format!("Failed to create gossipsub: {}", e)))?;
 
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
 
@@ -186,7 +187,10 @@ impl GossipProtocol {
             gossipsub: Arc::new(RwLock::new(gossipsub)),
             config,
             topics: Arc::new(RwLock::new(HashMap::new())),
-            message_cache: Arc::new(RwLock::new(MessageCache::new(10000, Duration::from_secs(300)))),
+            message_cache: Arc::new(RwLock::new(MessageCache::new(
+                10000,
+                Duration::from_secs(300),
+            ))),
             validation_queue: Arc::new(RwLock::new(ValidationQueue::new(1000))),
             event_sender,
             event_receiver: Arc::new(RwLock::new(event_receiver)),
@@ -194,15 +198,46 @@ impl GossipProtocol {
     }
 
     pub async fn subscribe(&self, topic_name: &str) -> Result<()> {
+        debug!(
+            "GossipProtocol::subscribe - Starting for topic {}",
+            topic_name
+        );
         let topic = Topic::new(topic_name);
-        
+
+        debug!(
+            "GossipProtocol::subscribe - Acquiring gossipsub write lock for {}",
+            topic_name
+        );
         let mut gossipsub = self.gossipsub.write().await;
-        gossipsub.subscribe(&topic)
-            .map_err(|e| AdicError::Network(format!("Failed to subscribe to topic {}: {:?}", topic_name, e)))?;
-        
+        debug!(
+            "GossipProtocol::subscribe - Got gossipsub write lock, subscribing to {}",
+            topic_name
+        );
+        gossipsub.subscribe(&topic).map_err(|e| {
+            AdicError::Network(format!(
+                "Failed to subscribe to topic {}: {:?}",
+                topic_name, e
+            ))
+        })?;
+        debug!(
+            "GossipProtocol::subscribe - Subscribed via gossipsub, now updating topics for {}",
+            topic_name
+        );
+
+        drop(gossipsub); // Explicitly release the lock before acquiring the next one
+
+        debug!(
+            "GossipProtocol::subscribe - Acquiring topics write lock for {}",
+            topic_name
+        );
         let mut topics = self.topics.write().await;
+        debug!(
+            "GossipProtocol::subscribe - Got topics write lock for {}",
+            topic_name
+        );
         topics.insert(topic_name.to_string(), topic);
-        
+        debug!("GossipProtocol::subscribe - Inserted topic {}", topic_name);
+
         info!("Subscribed to topic: {}", topic_name);
         Ok(())
     }
@@ -211,9 +246,13 @@ impl GossipProtocol {
         let mut topics = self.topics.write().await;
         if let Some(topic) = topics.remove(topic_name) {
             let mut gossipsub = self.gossipsub.write().await;
-            gossipsub.unsubscribe(&topic)
-                .map_err(|e| AdicError::Network(format!("Failed to unsubscribe from topic {}: {:?}", topic_name, e)))?;
-            
+            gossipsub.unsubscribe(&topic).map_err(|e| {
+                AdicError::Network(format!(
+                    "Failed to unsubscribe from topic {}: {:?}",
+                    topic_name, e
+                ))
+            })?;
+
             info!("Unsubscribed from topic: {}", topic_name);
         }
         Ok(())
@@ -221,17 +260,33 @@ impl GossipProtocol {
 
     pub async fn publish_message(&self, message: GossipMessage, topic_name: &str) -> Result<()> {
         let topics = self.topics.read().await;
-        let topic = topics.get(topic_name)
+        let topic = topics
+            .get(topic_name)
             .ok_or_else(|| AdicError::Network(format!("Topic {} not found", topic_name)))?;
-        
+
         let data = serde_json::to_vec(&message)
             .map_err(|e| AdicError::Serialization(format!("Failed to serialize message: {}", e)))?;
-        
+
         let mut gossipsub = self.gossipsub.write().await;
-        gossipsub.publish(topic.clone(), data)
-            .map_err(|e| AdicError::Network(format!("Failed to publish message: {:?}", e)))?;
-        
-        debug!("Published message to topic: {}", topic_name);
+        match gossipsub.publish(topic.clone(), data) {
+            Ok(_) => {
+                debug!("Published message to topic: {}", topic_name);
+            }
+            Err(libp2p::gossipsub::PublishError::InsufficientPeers) => {
+                debug!(
+                    "No peers available to publish message to topic: {}",
+                    topic_name
+                );
+                // This is OK - we might be the first node or operating in standalone mode
+            }
+            Err(e) => {
+                return Err(AdicError::Network(format!(
+                    "Failed to publish message: {:?}",
+                    e
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -240,66 +295,80 @@ impl GossipProtocol {
         let message_size = serde_json::to_vec(&message)
             .map_err(|e| AdicError::Serialization(format!("Failed to serialize: {}", e)))?
             .len();
-            
+
         if message_size > self.config.max_transmit_size {
             return Err(AdicError::Network(format!(
-                "Message size {} exceeds max size {}", 
+                "Message size {} exceeds max size {}",
                 message_size, self.config.max_transmit_size
             )));
         }
-        
+
         // Cache the message
         {
             let mut cache = self.message_cache.write().await;
             cache.insert(message.clone());
         }
-        
+
         // Broadcast to main message topic
-        self.publish_message(GossipMessage::Message(message.clone()), "adic/messages").await?;
-        
+        self.publish_message(GossipMessage::Message(message.clone()), "adic/messages")
+            .await?;
+
         // Also broadcast to axis-specific topics if applicable
-        for (axis_key, _) in &message.meta.axes {
+        for axis_key in message.meta.axes.keys() {
             let topic = format!("adic/axis/{}", axis_key);
-            self.publish_message(GossipMessage::Message(message.clone()), &topic).await?;
+            self.publish_message(GossipMessage::Message(message.clone()), &topic)
+                .await?;
         }
-        
+
         Ok(())
     }
 
     pub async fn announce_tips(&self, tips: Vec<MessageId>) -> Result<()> {
-        self.publish_message(GossipMessage::Tips(tips), "adic/tips").await
+        self.publish_message(GossipMessage::Tips(tips), "adic/tips")
+            .await
     }
 
     pub async fn announce_finality(&self, message_id: MessageId, k_core: u64) -> Result<()> {
         self.publish_message(
             GossipMessage::FinalityUpdate(message_id, k_core),
-            "adic/finality"
-        ).await
+            "adic/finality",
+        )
+        .await
     }
 
-    pub async fn announce_conflict(&self, conflict_id: String, messages: Vec<MessageId>) -> Result<()> {
+    pub async fn announce_conflict(
+        &self,
+        conflict_id: String,
+        messages: Vec<MessageId>,
+    ) -> Result<()> {
         self.publish_message(
             GossipMessage::ConflictAnnouncement(conflict_id, messages),
-            "adic/conflicts"
-        ).await
+            "adic/conflicts",
+        )
+        .await
     }
 
     pub async fn handle_gossip_event(&self, event: GossipsubEvent) {
         match event {
-            GossipsubEvent::Message { 
+            GossipsubEvent::Message {
                 propagation_source,
                 message_id: _,
                 message,
             } => {
                 if let Ok(gossip_msg) = serde_json::from_slice::<GossipMessage>(&message.data) {
-                    self.handle_received_message(gossip_msg, propagation_source).await;
+                    self.handle_received_message(gossip_msg, propagation_source)
+                        .await;
                 }
             }
             GossipsubEvent::Subscribed { peer_id, topic } => {
-                self.event_sender.send(GossipEvent::PeerSubscribed(peer_id, topic)).ok();
+                self.event_sender
+                    .send(GossipEvent::PeerSubscribed(peer_id, topic))
+                    .ok();
             }
             GossipsubEvent::Unsubscribed { peer_id, topic } => {
-                self.event_sender.send(GossipEvent::PeerUnsubscribed(peer_id, topic)).ok();
+                self.event_sender
+                    .send(GossipEvent::PeerUnsubscribed(peer_id, topic))
+                    .ok();
             }
             _ => {}
         }
@@ -312,7 +381,7 @@ impl GossipProtocol {
                 let mut cache = self.message_cache.write().await;
                 if !cache.contains(&adic_msg.id) {
                     cache.insert(adic_msg.clone());
-                    
+
                     // Queue for validation
                     let mut queue = self.validation_queue.write().await;
                     if queue.push(adic_msg.id, adic_msg.clone(), source) {
@@ -323,32 +392,38 @@ impl GossipProtocol {
                 }
             }
             _ => {
-                self.event_sender.send(GossipEvent::MessageReceived(message, source)).ok();
+                self.event_sender
+                    .send(GossipEvent::MessageReceived(Box::new(message), source))
+                    .ok();
             }
         }
     }
 
-    pub async fn process_validation_queue<V>(&self, validator: V) 
+    pub async fn process_validation_queue<V>(&self, validator: V)
     where
-        V: Fn(&AdicMessage) -> bool
+        V: Fn(&AdicMessage) -> bool,
     {
         let mut queue = self.validation_queue.write().await;
         let mut validated = Vec::new();
-        
+
         while let Some((id, message, source)) = queue.pop() {
             let is_valid = validator(&message);
             validated.push((id, is_valid));
-            
+
             if is_valid {
-                self.event_sender.send(GossipEvent::MessageReceived(
-                    GossipMessage::Message(message),
-                    source
-                )).ok();
+                self.event_sender
+                    .send(GossipEvent::MessageReceived(
+                        Box::new(GossipMessage::Message(message)),
+                        source,
+                    ))
+                    .ok();
             }
         }
-        
+
         for (id, is_valid) in validated {
-            self.event_sender.send(GossipEvent::MessageValidated(id, is_valid)).ok();
+            self.event_sender
+                .send(GossipEvent::MessageValidated(id, is_valid))
+                .ok();
         }
     }
 
@@ -375,15 +450,15 @@ impl GossipProtocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libp2p::identity::Keypair;
     use adic_types::{AdicFeatures, AdicMeta, PublicKey};
+    use libp2p::identity::Keypair;
 
     #[tokio::test]
     async fn test_gossip_protocol_creation() {
         let keypair = Keypair::generate_ed25519();
         let config = GossipConfig::default();
         let protocol = GossipProtocol::new(&keypair, config).unwrap();
-        
+
         assert_eq!(protocol.all_peers().await.len(), 0);
     }
 
@@ -392,7 +467,7 @@ mod tests {
         let keypair = Keypair::generate_ed25519();
         let config = GossipConfig::default();
         let protocol = GossipProtocol::new(&keypair, config).unwrap();
-        
+
         assert!(protocol.subscribe("test/topic").await.is_ok());
         assert!(protocol.unsubscribe("test/topic").await.is_ok());
     }
@@ -400,7 +475,7 @@ mod tests {
     #[tokio::test]
     async fn test_message_cache() {
         let mut cache = MessageCache::new(2, Duration::from_secs(60));
-        
+
         let msg1 = AdicMessage::new(
             vec![],
             AdicFeatures::new(vec![]),
@@ -408,7 +483,7 @@ mod tests {
             PublicKey::from_bytes([0; 32]),
             vec![],
         );
-        
+
         cache.insert(msg1.clone());
         assert!(cache.contains(&msg1.id));
     }

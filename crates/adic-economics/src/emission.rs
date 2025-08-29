@@ -4,7 +4,7 @@ use crate::types::{AccountAddress, AdicAmount, EmissionSchedule, TransferEvent, 
 use anyhow::{bail, Result};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 pub struct EmissionMetrics {
     pub total_emitted: AdicAmount,
@@ -58,38 +58,38 @@ impl EmissionController {
         let seconds_per_year = 365.25 * 24.0 * 3600.0;
         let emission_per_second = (current_supply.to_adic() * rate) / seconds_per_year;
         let emission_amount = emission_per_second * time_delta_seconds;
-        
+
         AdicAmount::from_adic(emission_amount)
     }
 
     pub async fn process_emission(&self, recipient: AccountAddress) -> Result<AdicAmount> {
         let mut schedule = self.schedule.write().await;
         let mut metrics = self.metrics.write().await;
-        
+
         let now = chrono::Utc::now().timestamp();
         let time_since_last = now - schedule.last_emission_timestamp;
-        
+
         if time_since_last < 60 {
             // Minimum 60 seconds between emissions to prevent spam
-            bail!("Emission too frequent. Wait {} seconds", 60 - time_since_last);
+            bail!(
+                "Emission too frequent. Wait {} seconds",
+                60 - time_since_last
+            );
         }
-        
+
         // Calculate years elapsed since start
         let years_elapsed = (now - schedule.start_timestamp) as f64 / (365.25 * 24.0 * 3600.0);
-        
+
         // Calculate current emission rate with decay
-        let current_rate = self.calculate_emission_rate(years_elapsed, &*schedule);
-        
+        let current_rate = self.calculate_emission_rate(years_elapsed, &schedule);
+
         // Get current supply to calculate emission
         let current_supply = self.supply.get_total_supply().await;
-        
+
         // Calculate emission amount
-        let emission_amount = self.calculate_emission_amount(
-            current_supply,
-            current_rate,
-            time_since_last as f64,
-        );
-        
+        let emission_amount =
+            self.calculate_emission_amount(current_supply, current_rate, time_since_last as f64);
+
         // Check if we can mint this amount
         if !self.supply.can_mint(emission_amount).await {
             let remaining = self.supply.remaining_mintable().await;
@@ -98,10 +98,13 @@ impl EmissionController {
             }
             // Mint only what's remaining
             info!("Emission limited to remaining mintable: {}", remaining);
-            return self.mint_and_distribute(remaining, recipient, now, &mut schedule, &mut metrics).await;
+            return self
+                .mint_and_distribute(remaining, recipient, now, &mut schedule, &mut metrics)
+                .await;
         }
-        
-        self.mint_and_distribute(emission_amount, recipient, now, &mut schedule, &mut metrics).await
+
+        self.mint_and_distribute(emission_amount, recipient, now, &mut schedule, &mut metrics)
+            .await
     }
 
     async fn mint_and_distribute(
@@ -114,10 +117,10 @@ impl EmissionController {
     ) -> Result<AdicAmount> {
         // Mint new tokens
         self.supply.mint_emission(amount).await?;
-        
+
         // Credit to recipient
         self.balances.credit(recipient, amount).await?;
-        
+
         // Record transfer event
         let event = TransferEvent {
             from: AccountAddress::from_bytes([0; 32]),
@@ -127,19 +130,19 @@ impl EmissionController {
             reason: TransferReason::Emission,
         };
         self.supply.add_transfer_event(event).await;
-        
+
         // Update schedule and metrics
         schedule.last_emission_timestamp = timestamp;
         metrics.total_emitted = metrics.total_emitted.saturating_add(amount);
         metrics.last_emission = timestamp;
-        metrics.current_rate = self.calculate_emission_rate(
-            metrics.years_elapsed,
-            schedule,
-        );
-        
+        metrics.current_rate = self.calculate_emission_rate(metrics.years_elapsed, schedule);
+
         info!("Emission processed: {} to {}", amount, recipient);
-        debug!("Current emission rate: {:.6}%/year", metrics.current_rate * 100.0);
-        
+        debug!(
+            "Current emission rate: {:.6}%/year",
+            metrics.current_rate * 100.0
+        );
+
         Ok(amount)
     }
 
@@ -157,17 +160,19 @@ impl EmissionController {
             // Check treasury balance and match up to base_reward
             let treasury_addr = AccountAddress::treasury();
             let treasury_balance = self.balances.get_balance(treasury_addr).await?;
-            
+
             let matched_amount = if treasury_balance >= base_reward {
                 base_reward
             } else {
                 treasury_balance // Match what's available
             };
-            
+
             if matched_amount > AdicAmount::ZERO {
                 // Transfer from treasury to validator
-                self.balances.transfer(treasury_addr, validator, matched_amount).await?;
-                
+                self.balances
+                    .transfer(treasury_addr, validator, matched_amount)
+                    .await?;
+
                 let event = TransferEvent {
                     from: treasury_addr,
                     to: validator,
@@ -177,10 +182,10 @@ impl EmissionController {
                 };
                 self.supply.add_transfer_event(event).await;
             }
-            
+
             matched_amount
         };
-        
+
         // Process as emission if we need to mint new tokens
         if sponsor_funded && self.supply.can_mint(reward).await {
             self.process_emission(validator).await
@@ -193,7 +198,7 @@ impl EmissionController {
         let schedule = self.schedule.read().await;
         let now = chrono::Utc::now().timestamp();
         let years_elapsed = (now - schedule.start_timestamp) as f64 / (365.25 * 24.0 * 3600.0);
-        self.calculate_emission_rate(years_elapsed, &*schedule)
+        self.calculate_emission_rate(years_elapsed, &schedule)
     }
 
     pub async fn get_metrics(&self) -> EmissionMetrics {
@@ -210,28 +215,28 @@ impl EmissionController {
         let schedule = self.schedule.read().await;
         let current_supply = self.supply.get_total_supply().await;
         let mut total_emission = AdicAmount::ZERO;
-        
+
         // Simulate emission over the given years with monthly granularity
         let months = (years * 12.0) as u32;
         let seconds_per_month = 30.44 * 24.0 * 3600.0;
-        
+
         for month in 0..months {
             let years_at_month = (month as f64) / 12.0;
-            let rate = self.calculate_emission_rate(years_at_month, &*schedule);
+            let rate = self.calculate_emission_rate(years_at_month, &schedule);
             let month_emission = self.calculate_emission_amount(
                 current_supply.saturating_add(total_emission),
                 rate,
                 seconds_per_month,
             );
-            
+
             total_emission = total_emission.saturating_add(month_emission);
-            
+
             // Stop if we hit max supply
             if current_supply.saturating_add(total_emission) >= AdicAmount::MAX_SUPPLY {
                 break;
             }
         }
-        
+
         total_emission
     }
 }
@@ -246,20 +251,20 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let supply = Arc::new(TokenSupply::new());
         let balances = Arc::new(BalanceManager::new(storage));
-        
+
         let controller = EmissionController::new(supply.clone(), balances.clone());
-        
+
         // Test decay calculation
         let schedule = EmissionSchedule::default();
-        
+
         // Year 0: full rate (1%)
         let rate_0 = controller.calculate_emission_rate(0.0, &schedule);
         assert_eq!(rate_0, 0.01);
-        
+
         // Year 6: half rate (0.5%)
         let rate_6 = controller.calculate_emission_rate(6.0, &schedule);
         assert!((rate_6 - 0.005).abs() < 0.0001);
-        
+
         // Year 12: quarter rate (0.25%)
         let rate_12 = controller.calculate_emission_rate(12.0, &schedule);
         assert!((rate_12 - 0.0025).abs() < 0.0001);
@@ -270,17 +275,17 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let supply = Arc::new(TokenSupply::new());
         let balances = Arc::new(BalanceManager::new(storage));
-        
+
         let controller = EmissionController::new(supply, balances);
-        
+
         // Test emission calculation
         let current_supply = AdicAmount::from_adic(1_000_000.0);
         let rate = 0.01; // 1% per year
         let time_seconds = 365.25 * 24.0 * 3600.0; // 1 year
-        
+
         let emission = controller.calculate_emission_amount(current_supply, rate, time_seconds);
         let expected = AdicAmount::from_adic(10_000.0); // 1% of 1M
-        
+
         // Allow small rounding difference
         assert!((emission.to_adic() - expected.to_adic()).abs() < 1.0);
     }
@@ -290,15 +295,18 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let supply = Arc::new(TokenSupply::new());
         let balances = Arc::new(BalanceManager::new(storage));
-        
+
         // Mint genesis first
-        supply.mint_genesis(AdicAmount::GENESIS_SUPPLY).await.unwrap();
-        
+        supply
+            .mint_genesis(AdicAmount::GENESIS_SUPPLY)
+            .await
+            .unwrap();
+
         let controller = EmissionController::new(supply.clone(), balances);
-        
+
         // Project emissions for 100 years
         let projected = controller.get_projected_emission(100.0).await;
-        
+
         // Total should not exceed max supply
         let total = AdicAmount::GENESIS_SUPPLY.saturating_add(projected);
         assert!(total <= AdicAmount::MAX_SUPPLY);

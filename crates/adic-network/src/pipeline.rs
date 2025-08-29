@@ -2,11 +2,11 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{RwLock, mpsc, Semaphore};
+use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio::time::interval;
 use tracing::{debug, info};
 
-use adic_types::{AdicMessage, MessageId, Result, AdicError};
+use adic_types::{AdicError, AdicMessage, MessageId, Result};
 // Import verify_signature when available
 use libp2p::PeerId;
 
@@ -37,10 +37,10 @@ impl Default for PipelineConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MessagePriority {
-    Critical = 0,  // Finality messages
-    High = 1,      // Conflict messages
-    Normal = 2,    // Regular messages
-    Low = 3,       // Background sync
+    Critical = 0, // Finality messages
+    High = 1,     // Conflict messages
+    Normal = 2,   // Regular messages
+    Low = 3,      // Background sync
 }
 
 #[derive(Debug, Clone)]
@@ -82,9 +82,9 @@ impl RateLimiter {
     pub async fn check_rate_limit(&self, peer: &PeerId) -> bool {
         let mut limits = self.limits.write().await;
         let now = Instant::now();
-        
+
         let timestamps = limits.entry(*peer).or_insert_with(VecDeque::new);
-        
+
         // Remove old timestamps outside the window
         while let Some(&front) = timestamps.front() {
             if now.duration_since(front) > self.window {
@@ -93,7 +93,7 @@ impl RateLimiter {
                 break;
             }
         }
-        
+
         if timestamps.len() >= self.max_per_window {
             false
         } else {
@@ -105,7 +105,7 @@ impl RateLimiter {
     pub async fn cleanup_old_entries(&self) {
         let mut limits = self.limits.write().await;
         let now = Instant::now();
-        
+
         limits.retain(|_, timestamps| {
             timestamps.retain(|&t| now.duration_since(t) <= self.window);
             !timestamps.is_empty()
@@ -147,7 +147,7 @@ pub enum PipelineEvent {
 impl MessagePipeline {
     pub fn new(config: PipelineConfig) -> Self {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
-        
+
         Self {
             priority_queue: Arc::new(RwLock::new(Vec::with_capacity(config.priority_queue_size))),
             normal_queue: Arc::new(RwLock::new(VecDeque::with_capacity(config.max_queue_size))),
@@ -163,26 +163,27 @@ impl MessagePipeline {
         }
     }
 
-    pub async fn submit_message(
-        &self,
-        message: AdicMessage,
-        source: PeerId,
-    ) -> Result<()> {
+    pub async fn submit_message(&self, message: AdicMessage, source: PeerId) -> Result<()> {
         // Check rate limit
         if !self.rate_limiter.check_rate_limit(&source).await {
             let mut stats = self.stats.write().await;
             stats.messages_rate_limited += 1;
-            
-            self.event_sender.send(PipelineEvent::RateLimitExceeded(source)).ok();
-            return Err(AdicError::Network(format!("Rate limit exceeded for peer {}", source)));
+
+            self.event_sender
+                .send(PipelineEvent::RateLimitExceeded(source))
+                .ok();
+            return Err(AdicError::Network(format!(
+                "Rate limit exceeded for peer {}",
+                source
+            )));
         }
-        
+
         // Determine priority
         let priority = self.determine_priority(&message);
-        
+
         // Queue the message
         let queued = QueuedMessage::new(message.clone(), priority, source);
-        
+
         match priority {
             MessagePriority::Critical | MessagePriority::High => {
                 let mut queue = self.priority_queue.write().await;
@@ -202,14 +203,16 @@ impl MessagePipeline {
                 queue.push_back(queued);
             }
         }
-        
+
         let mut stats = self.stats.write().await;
         stats.messages_received += 1;
         stats.queue_depth = self.normal_queue.read().await.len();
         stats.priority_queue_depth = self.priority_queue.read().await.len();
-        
-        self.event_sender.send(PipelineEvent::MessageQueued(message.id, priority)).ok();
-        
+
+        self.event_sender
+            .send(PipelineEvent::MessageQueued(message.id, priority))
+            .ok();
+
         Ok(())
     }
 
@@ -218,17 +221,17 @@ impl MessagePipeline {
         if message.meta.axes.contains_key("finality") {
             return MessagePriority::Critical;
         }
-        
+
         // Check if it's a conflict message
         if !message.meta.conflict.is_none() {
             return MessagePriority::High;
         }
-        
+
         // Check message size for background sync
         if message.payload.len() > 10000 {
             return MessagePriority::Low;
         }
-        
+
         MessagePriority::Normal
     }
 
@@ -238,7 +241,7 @@ impl MessagePipeline {
     {
         let mut validated_messages = Vec::new();
         let mut batch = Vec::new();
-        
+
         // Get messages from priority queue first
         {
             let mut priority_queue = self.priority_queue.write().await;
@@ -248,7 +251,7 @@ impl MessagePipeline {
                 }
             }
         }
-        
+
         // Fill remaining from normal queue
         {
             let mut normal_queue = self.normal_queue.write().await;
@@ -258,14 +261,19 @@ impl MessagePipeline {
                 }
             }
         }
-        
+
         // Process batch in parallel
         let validator = Arc::new(validator);
         let mut handles = Vec::new();
         for queued in batch {
-            let permit = self.validation_semaphore.clone().acquire_owned().await.unwrap();
+            let permit = self
+                .validation_semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .unwrap();
             let validator = validator.clone();
-            
+
             handles.push(tokio::spawn(async move {
                 let start = Instant::now();
                 let is_valid = validator(&queued.message);
@@ -274,37 +282,39 @@ impl MessagePipeline {
                 (queued, is_valid, validation_time)
             }));
         }
-        
+
         // Collect results
         for handle in handles {
             if let Ok((queued, is_valid, validation_time)) = handle.await {
                 let mut stats = self.stats.write().await;
-                
+
                 if is_valid {
                     stats.messages_validated += 1;
                     validated_messages.push(queued.message.clone());
-                    
-                    self.event_sender.send(PipelineEvent::MessageValidated(
-                        queued.message.id
-                    )).ok();
+
+                    self.event_sender
+                        .send(PipelineEvent::MessageValidated(queued.message.id))
+                        .ok();
                 } else {
                     stats.messages_rejected += 1;
-                    
-                    self.event_sender.send(PipelineEvent::MessageRejected(
-                        queued.message.id,
-                        "Validation failed".to_string()
-                    )).ok();
+
+                    self.event_sender
+                        .send(PipelineEvent::MessageRejected(
+                            queued.message.id,
+                            "Validation failed".to_string(),
+                        ))
+                        .ok();
                 }
-                
+
                 // Update average validation time
                 let current_avg = stats.average_validation_time_ms;
                 let new_time = validation_time.as_millis() as f64;
-                stats.average_validation_time_ms = 
-                    (current_avg * (stats.messages_validated as f64 - 1.0) + new_time) 
-                    / stats.messages_validated as f64;
+                stats.average_validation_time_ms =
+                    (current_avg * (stats.messages_validated as f64 - 1.0) + new_time)
+                        / stats.messages_validated as f64;
             }
         }
-        
+
         validated_messages
     }
 
@@ -313,10 +323,15 @@ impl MessagePipeline {
         messages: Vec<AdicMessage>,
     ) -> Vec<(MessageId, bool)> {
         let mut handles = Vec::new();
-        
+
         for message in messages {
-            let permit = self.validation_semaphore.clone().acquire_owned().await.unwrap();
-            
+            let permit = self
+                .validation_semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .unwrap();
+
             handles.push(tokio::spawn(async move {
                 // let message_bytes = message.to_bytes();
                 // Simplified signature verification - would use adic_crypto when available
@@ -325,27 +340,30 @@ impl MessagePipeline {
                 (message.id, is_valid)
             }));
         }
-        
+
         let mut results = Vec::new();
         for handle in handles {
             if let Ok(result) = handle.await {
                 results.push(result);
             }
         }
-        
+
         results
     }
 
     pub fn compress_message(&self, message: &AdicMessage) -> Result<Vec<u8>> {
         let serialized = serde_json::to_vec(message)?;
-        
+
         if serialized.len() > self.config.compression_threshold {
             let mut encoder = snap::raw::Encoder::new();
             let compressed = encoder
                 .compress_vec(&serialized[..])
                 .map_err(|e| AdicError::Serialization(format!("Compression failed: {}", e)))?;
-            debug!("Compressed message from {} to {} bytes", 
-                serialized.len(), compressed.len());
+            debug!(
+                "Compressed message from {} to {} bytes",
+                serialized.len(),
+                compressed.len()
+            );
             Ok(compressed)
         } else {
             Ok(serialized)
@@ -357,7 +375,7 @@ impl MessagePipeline {
         if let Ok(message) = serde_json::from_slice::<AdicMessage>(data) {
             return Ok(message);
         }
-        
+
         // If that fails, try decompressing first
         let mut decoder = snap::raw::Decoder::new();
         let decompressed = decoder
@@ -374,14 +392,14 @@ impl MessagePipeline {
     pub async fn clear_queues(&self) {
         let mut priority_queue = self.priority_queue.write().await;
         priority_queue.clear();
-        
+
         let mut normal_queue = self.normal_queue.write().await;
         normal_queue.clear();
-        
+
         let mut stats = self.stats.write().await;
         stats.queue_depth = 0;
         stats.priority_queue_depth = 0;
-        
+
         info!("Message pipeline queues cleared");
     }
 
@@ -389,18 +407,48 @@ impl MessagePipeline {
         self.event_receiver.clone()
     }
 
+    pub async fn get_pending_messages(&self) -> Vec<AdicMessage> {
+        // Get a batch of pending messages from both queues
+        let mut messages = Vec::new();
+
+        // First get high priority messages
+        {
+            let mut priority_queue = self.priority_queue.write().await;
+            while messages.len() < 50 && !priority_queue.is_empty() {
+                if let Some(queued) = priority_queue.pop() {
+                    messages.push(queued.message);
+                }
+            }
+        }
+
+        // Then get normal priority messages
+        {
+            let mut normal_queue = self.normal_queue.write().await;
+            while messages.len() < 100 && !normal_queue.is_empty() {
+                if let Some(queued) = normal_queue.pop_front() {
+                    messages.push(queued.message);
+                }
+            }
+        }
+
+        messages
+    }
+
     pub async fn start_cleanup_task(&self) {
+        debug!("MessagePipeline::start_cleanup_task - Starting cleanup task");
         let rate_limiter = self.rate_limiter.clone();
-        
+
         tokio::spawn(async move {
+            debug!("MessagePipeline cleanup task - Started");
             let mut cleanup_interval = interval(Duration::from_secs(60));
-            
+
             loop {
                 cleanup_interval.tick().await;
                 rate_limiter.cleanup_old_entries().await;
                 debug!("Cleaned up rate limiter entries");
             }
         });
+        debug!("MessagePipeline::start_cleanup_task - Cleanup task spawned");
     }
 }
 
@@ -413,12 +461,12 @@ mod tests {
     async fn test_rate_limiter() {
         let limiter = RateLimiter::new(3, Duration::from_secs(1));
         let peer = PeerId::random();
-        
+
         assert!(limiter.check_rate_limit(&peer).await);
         assert!(limiter.check_rate_limit(&peer).await);
         assert!(limiter.check_rate_limit(&peer).await);
         assert!(!limiter.check_rate_limit(&peer).await);
-        
+
         tokio::time::sleep(Duration::from_secs(2)).await;
         assert!(limiter.check_rate_limit(&peer).await);
     }
@@ -427,7 +475,7 @@ mod tests {
     async fn test_message_pipeline() {
         let config = PipelineConfig::default();
         let pipeline = MessagePipeline::new(config);
-        
+
         let message = AdicMessage::new(
             vec![],
             AdicFeatures::new(vec![]),
@@ -435,10 +483,10 @@ mod tests {
             PublicKey::from_bytes([0; 32]),
             vec![],
         );
-        
+
         let peer = PeerId::random();
         assert!(pipeline.submit_message(message, peer).await.is_ok());
-        
+
         let stats = pipeline.get_stats().await;
         assert_eq!(stats.messages_received, 1);
     }
@@ -447,7 +495,7 @@ mod tests {
     async fn test_priority_ordering() {
         let config = PipelineConfig::default();
         let pipeline = MessagePipeline::new(config);
-        
+
         let mut critical_msg = AdicMessage::new(
             vec![],
             AdicFeatures::new(vec![]),
@@ -455,8 +503,11 @@ mod tests {
             PublicKey::from_bytes([0; 32]),
             vec![],
         );
-        critical_msg.meta.axes.insert("finality".to_string(), "true".to_string());
-        
+        critical_msg
+            .meta
+            .axes
+            .insert("finality".to_string(), "true".to_string());
+
         let normal_msg = AdicMessage::new(
             vec![],
             AdicFeatures::new(vec![]),
@@ -464,11 +515,11 @@ mod tests {
             PublicKey::from_bytes([0; 32]),
             vec![],
         );
-        
+
         let peer = PeerId::random();
         pipeline.submit_message(normal_msg, peer).await.unwrap();
         pipeline.submit_message(critical_msg, peer).await.unwrap();
-        
+
         let stats = pipeline.get_stats().await;
         assert_eq!(stats.messages_received, 2);
         assert_eq!(stats.priority_queue_depth, 1);

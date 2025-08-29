@@ -9,11 +9,11 @@ mod weights_tests;
 
 pub use selector::{MrwSelector, ParentCandidate, SelectionParams};
 pub use trace::{MrwTrace, SelectionStep};
-pub use weights::{WeightCalculator, MrwWeights};
+pub use weights::{MrwWeights, WeightCalculator};
 
-use adic_types::{AdicParams, AdicFeatures, MessageId, QpDigits};
+use adic_consensus::{ConflictResolver, ReputationTracker};
 use adic_storage::StorageEngine;
-use adic_consensus::ConflictResolver;
+use adic_types::{AdicFeatures, AdicParams, MessageId, QpDigits};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -52,38 +52,50 @@ impl MrwEngine {
         tips: &[MessageId],
         storage: &StorageEngine,
         conflict_resolver: &ConflictResolver,
+        reputation_tracker: &ReputationTracker,
     ) -> Result<Vec<MessageId>> {
         // Build parent candidates from tips
         let mut candidates = Vec::new();
-        
+
         tracing::debug!("Building parent candidates from {} tips", tips.len());
-        
+
         for tip_id in tips {
             // Get tip message from storage
             match storage.get_message(tip_id).await {
                 Ok(Some(tip_msg)) => {
-                    // Get reputation for the tip proposer
-                    // For now, use a default reputation of 1.0
-                    let reputation = 1.0;
-                    
+                    // Get LIVE reputation for the tip proposer
+                    let reputation = reputation_tracker
+                        .get_reputation(&tip_msg.proposer_pk)
+                        .await;
+                    tracing::debug!(
+                        "Tip {} proposer reputation: {:.2}",
+                        hex::encode(&tip_id.as_bytes()[..8]),
+                        reputation
+                    );
+
                     // Calculate conflict penalty
                     let conflict_penalty = if !tip_msg.meta.conflict.is_none() {
-                        conflict_resolver.get_penalty(tip_id, &tip_msg.meta.conflict).await
+                        conflict_resolver
+                            .get_penalty(tip_id, &tip_msg.meta.conflict)
+                            .await
                     } else {
                         0.0
                     };
-                    
+
                     // Extract features as Vec<QpDigits>
-                    let features: Vec<QpDigits> = tip_msg.features.phi.iter()
+                    let features: Vec<QpDigits> = tip_msg
+                        .features
+                        .phi
+                        .iter()
                         .map(|axis_phi| axis_phi.qp_digits.clone())
                         .collect();
-                        
+
                     candidates.push(ParentCandidate {
                         message_id: *tip_id,
                         features,
                         reputation,
                         conflict_penalty,
-                        weight: 0.0, // Will be calculated later
+                        weight: 0.0,                  // Will be calculated later
                         axis_weights: HashMap::new(), // Will be filled by MRW
                     });
                 }
@@ -95,48 +107,51 @@ impl MrwEngine {
                 }
             }
         }
-        
-        tracing::debug!("Built {} parent candidates from {} tips", candidates.len(), tips.len());
-        
+
+        tracing::debug!(
+            "Built {} parent candidates from {} tips",
+            candidates.len(),
+            tips.len()
+        );
+
         // If no candidates were built, return an error
         if candidates.is_empty() {
             return Err(anyhow::anyhow!(
-                "No valid parent candidates found from {} tips", 
+                "No valid parent candidates found from {} tips",
                 tips.len()
             ));
         }
-        
+
         // Select parents using MRW
-        let (selected, trace) = self.selector.select_parents(
-            features,
-            candidates,
-            &self.weight_calc,
-        ).await?;
-        
+        let (selected, trace) = self
+            .selector
+            .select_parents(features, candidates, &self.weight_calc)
+            .await?;
+
         // Store the trace for debugging
         let trace_id = format!("mrw_{}", chrono::Utc::now().timestamp_millis());
         {
             let mut traces = self.traces.write().await;
             traces.insert(trace_id.clone(), trace);
-            
+
             // Limit trace storage to 100 most recent traces
             if traces.len() > 100 {
                 let oldest_key = traces.keys().min().unwrap().clone();
                 traces.remove(&oldest_key);
             }
         }
-        
+
         tracing::debug!("MRW selection completed, trace stored: {}", trace_id);
-        
+
         Ok(selected)
     }
-    
+
     /// Get a specific MRW trace by ID
     pub async fn get_trace(&self, trace_id: &str) -> Option<MrwTrace> {
         let traces = self.traces.read().await;
         traces.get(trace_id).cloned()
     }
-    
+
     /// Get all stored trace IDs
     pub async fn get_trace_ids(&self) -> Vec<String> {
         let traces = self.traces.read().await;
@@ -145,14 +160,15 @@ impl MrwEngine {
         ids.reverse(); // Most recent first
         ids
     }
-    
+
     /// Get recent traces (up to specified limit)
     pub async fn get_recent_traces(&self, limit: usize) -> Vec<(String, MrwTrace)> {
         let traces = self.traces.read().await;
         let mut entries: Vec<_> = traces.iter().collect();
         entries.sort_by_key(|(k, _)| *k);
         entries.reverse(); // Most recent first
-        entries.into_iter()
+        entries
+            .into_iter()
             .take(limit)
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
@@ -163,8 +179,8 @@ impl MrwEngine {
 mod tests {
     use super::*;
     use adic_storage::{StorageConfig, StorageEngine};
-    use chrono::Utc;
     use adic_types::features::{AxisPhi, QpDigits};
+    use chrono::Utc;
 
     #[tokio::test]
     async fn test_mrw_engine_select_parents() {
@@ -199,8 +215,9 @@ mod tests {
         ]);
 
         let resolver = adic_consensus::ConflictResolver::new();
+        let reputation = adic_consensus::ReputationTracker::new(0.9);
         let selected = engine
-            .select_parents(&features, &tips, &storage, &resolver)
+            .select_parents(&features, &tips, &storage, &resolver, &reputation)
             .await
             .expect("selection should succeed");
 

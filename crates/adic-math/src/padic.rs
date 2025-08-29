@@ -6,16 +6,16 @@ pub fn vp(n: u64, p: u32) -> u32 {
     if n == 0 {
         return u32::MAX;
     }
-    
+
     let mut v = 0;
     let mut m = n;
     let p64 = p as u64;
-    
+
     while m % p64 == 0 {
         v += 1;
         m /= p64;
     }
-    
+
     v
 }
 
@@ -23,33 +23,33 @@ pub fn vp_bigint(n: &BigUint, p: u32) -> u32 {
     if n.is_zero() {
         return u32::MAX;
     }
-    
+
     let mut v = 0;
     let mut m = n.clone();
     let p_big = BigUint::from(p);
-    
+
     while (&m % &p_big).is_zero() {
         v += 1;
         m /= &p_big;
     }
-    
+
     v
 }
 
 pub fn vp_diff(x: &QpDigits, y: &QpDigits) -> u32 {
     assert_eq!(x.p, y.p, "Cannot compute vp_diff for different primes");
-    
+
     let max_len = x.digits.len().max(y.digits.len());
-    
+
     for i in 0..max_len {
         let x_digit = x.digits.get(i).copied().unwrap_or(0);
         let y_digit = y.digits.get(i).copied().unwrap_or(0);
-        
+
         if x_digit != y_digit {
             return i as u32;
         }
     }
-    
+
     max_len as u32
 }
 
@@ -57,7 +57,7 @@ pub fn compute_unit(n: &BigUint, p: u32, valuation: u32) -> BigUint {
     if n.is_zero() {
         return BigUint::zero();
     }
-    
+
     let p_big = BigUint::from(p);
     let p_power = p_big.pow(valuation);
     n / p_power
@@ -67,12 +67,13 @@ pub fn expand_padic(n: &BigUint, p: u32, precision: usize) -> Vec<u8> {
     let mut digits = Vec::with_capacity(precision);
     let mut value = n.clone();
     let p_big = BigUint::from(p);
-    
+
     for _ in 0..precision {
         if value.is_zero() {
             digits.push(0);
         } else {
-            let digit = (&value % &p_big).to_u32_digits()
+            let digit = (&value % &p_big)
+                .to_u32_digits()
                 .first()
                 .copied()
                 .unwrap_or(0) as u8;
@@ -80,7 +81,7 @@ pub fn expand_padic(n: &BigUint, p: u32, precision: usize) -> Vec<u8> {
             value /= &p_big;
         }
     }
-    
+
     digits
 }
 
@@ -130,8 +131,11 @@ mod tests {
         let n = BigUint::from(42u32);
         let digits = expand_padic(&n, 3, 5);
         assert_eq!(digits.len(), 5);
-        
-        let reconstructed = QpDigits { digits: digits.clone(), p: 3 };
+
+        let reconstructed = QpDigits {
+            digits: digits.clone(),
+            p: 3,
+        };
         assert_eq!(reconstructed.digits[0], 0);
         assert_eq!(reconstructed.digits[1], 2);
         assert_eq!(reconstructed.digits[2], 1);

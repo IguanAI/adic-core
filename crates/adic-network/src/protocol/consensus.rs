@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{RwLock, mpsc, oneshot};
-use serde::{Serialize, Deserialize};
-use tracing::{debug, warn, info};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot, RwLock};
+use tracing::{debug, info, warn};
 
 use adic_types::{MessageId, PublicKey, Result};
 
@@ -93,7 +93,7 @@ pub enum ConsensusEvent {
 impl ConsensusProtocol {
     pub fn new(config: ConsensusConfig) -> Self {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
-        
+
         Self {
             config,
             proposals: Arc::new(RwLock::new(HashMap::new())),
@@ -117,22 +117,27 @@ impl ConsensusProtocol {
             features,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
         };
-        
+
         let (tx, rx) = oneshot::channel();
-        
+
         let mut proposals = self.proposals.write().await;
-        proposals.insert(message_id, ProposalState {
-            proposal: proposal.clone(),
-            votes: HashMap::new(),
-            created_at: Instant::now(),
-            decided: false,
-        });
-        
+        proposals.insert(
+            message_id,
+            ProposalState {
+                proposal: proposal.clone(),
+                votes: HashMap::new(),
+                created_at: Instant::now(),
+                decided: false,
+            },
+        );
+
         let mut pending = self.pending_decisions.write().await;
         pending.insert(message_id, tx);
-        
-        self.event_sender.send(ConsensusEvent::ProposalReceived(message_id, proposal)).ok();
-        
+
+        self.event_sender
+            .send(ConsensusEvent::ProposalReceived(message_id, proposal))
+            .ok();
+
         info!("Proposed parents for message {}", message_id);
         Ok(rx)
     }
@@ -147,27 +152,28 @@ impl ConsensusProtocol {
         let mut proposals = self.proposals.write().await;
         if let Some(proposal_state) = proposals.get_mut(&proposal_id) {
             if !proposal_state.decided {
-                proposal_state.votes.insert(voter.clone(), approved);
-                
-                self.event_sender.send(ConsensusEvent::VoteReceived(
-                    proposal_id,
-                    voter,
-                    approved
-                )).ok();
-                
+                proposal_state.votes.insert(voter, approved);
+
+                self.event_sender
+                    .send(ConsensusEvent::VoteReceived(proposal_id, voter, approved))
+                    .ok();
+
                 // Check if we have enough votes to decide
-                self.check_proposal_decision(proposal_id, proposal_state).await?;
+                self.check_proposal_decision(proposal_id, proposal_state)
+                    .await?;
             }
         }
-        
+
         Ok(())
     }
 
     pub async fn get_proposal(&self, proposal_id: &MessageId) -> Option<ConsensusMessage> {
         let proposals = self.proposals.read().await;
-        proposals.get(proposal_id).map(|state| state.proposal.clone())
+        proposals
+            .get(proposal_id)
+            .map(|state| state.proposal.clone())
     }
-    
+
     async fn check_proposal_decision(
         &self,
         proposal_id: MessageId,
@@ -177,35 +183,45 @@ impl ConsensusProtocol {
         if total_votes == 0 {
             return Ok(());
         }
-        
-        let approved_votes = proposal_state.votes.values()
-            .filter(|&&v| v)
-            .count();
-        
+
+        let approved_votes = proposal_state.votes.values().filter(|&&v| v).count();
+
         let approval_ratio = approved_votes as f64 / total_votes as f64;
-        
+
         if approval_ratio >= self.config.vote_threshold {
             proposal_state.decided = true;
-            
+
             let mut pending = self.pending_decisions.write().await;
             if let Some(sender) = pending.remove(&proposal_id) {
                 sender.send(true).ok();
             }
-            
-            self.event_sender.send(ConsensusEvent::ProposalDecided(proposal_id, true)).ok();
-            info!("Proposal {} approved with {:.1}% votes", proposal_id, approval_ratio * 100.0);
+
+            self.event_sender
+                .send(ConsensusEvent::ProposalDecided(proposal_id, true))
+                .ok();
+            info!(
+                "Proposal {} approved with {:.1}% votes",
+                proposal_id,
+                approval_ratio * 100.0
+            );
         } else if approval_ratio < (1.0 - self.config.vote_threshold) {
             proposal_state.decided = true;
-            
+
             let mut pending = self.pending_decisions.write().await;
             if let Some(sender) = pending.remove(&proposal_id) {
                 sender.send(false).ok();
             }
-            
-            self.event_sender.send(ConsensusEvent::ProposalDecided(proposal_id, false)).ok();
-            info!("Proposal {} rejected with {:.1}% votes", proposal_id, approval_ratio * 100.0);
+
+            self.event_sender
+                .send(ConsensusEvent::ProposalDecided(proposal_id, false))
+                .ok();
+            info!(
+                "Proposal {} rejected with {:.1}% votes",
+                proposal_id,
+                approval_ratio * 100.0
+            );
         }
-        
+
         Ok(())
     }
 
@@ -221,9 +237,11 @@ impl ConsensusProtocol {
             conflict_set: conflict_set.clone(),
             evidence,
         };
-        
-        self.event_sender.send(ConsensusEvent::ConflictDetected(conflict_set)).ok();
-        
+
+        self.event_sender
+            .send(ConsensusEvent::ConflictDetected(conflict_set))
+            .ok();
+
         info!("Conflict detected by {:?}", detector);
         Ok(())
     }
@@ -242,10 +260,15 @@ impl ConsensusProtocol {
             k_core_value,
             witnesses,
         };
-        
-        self.event_sender.send(ConsensusEvent::FinalityAchieved(message_id, k_core_value)).ok();
-        
-        info!("Finality proposed for message {} with k-core {}", message_id, k_core_value);
+
+        self.event_sender
+            .send(ConsensusEvent::FinalityAchieved(message_id, k_core_value))
+            .ok();
+
+        info!(
+            "Finality proposed for message {} with k-core {}",
+            message_id, k_core_value
+        );
         Ok(())
     }
 
@@ -260,7 +283,7 @@ impl ConsensusProtocol {
             proposal_id,
             accepted,
         };
-        
+
         debug!("Finality acknowledgment for {} : {}", proposal_id, accepted);
         Ok(())
     }
@@ -276,7 +299,7 @@ impl ConsensusProtocol {
             tips,
             local_time: chrono::Utc::now().timestamp_millis() as u64,
         };
-        
+
         debug!("Coordination ping sent with {} tips", tip_count);
         Ok(())
     }
@@ -285,39 +308,35 @@ impl ConsensusProtocol {
         let mut proposals = self.proposals.write().await;
         let now = Instant::now();
         let timeout = self.config.message_timeout;
-        
+
         let expired: Vec<MessageId> = proposals
             .iter()
-            .filter(|(_, state)| {
-                !state.decided && now.duration_since(state.created_at) > timeout
-            })
+            .filter(|(_, state)| !state.decided && now.duration_since(state.created_at) > timeout)
             .map(|(id, _)| *id)
             .collect();
-        
+
         for proposal_id in expired {
             proposals.remove(&proposal_id);
-            
+
             let mut pending = self.pending_decisions.write().await;
             if let Some(sender) = pending.remove(&proposal_id) {
                 sender.send(false).ok();
             }
-            
+
             warn!("Proposal {} expired", proposal_id);
         }
     }
 
     pub async fn pending_proposal_count(&self) -> usize {
         let proposals = self.proposals.read().await;
-        proposals.iter()
-            .filter(|(_, state)| !state.decided)
-            .count()
+        proposals.iter().filter(|(_, state)| !state.decided).count()
     }
 
     pub async fn get_proposal_status(&self, proposal_id: &MessageId) -> Option<(usize, bool)> {
         let proposals = self.proposals.read().await;
-        proposals.get(proposal_id).map(|state| {
-            (state.votes.len(), state.decided)
-        })
+        proposals
+            .get(proposal_id)
+            .map(|state| (state.votes.len(), state.decided))
     }
 
     pub fn event_stream(&self) -> Arc<RwLock<mpsc::UnboundedReceiver<ConsensusEvent>>> {
@@ -333,7 +352,7 @@ mod tests {
     async fn test_consensus_protocol_creation() {
         let config = ConsensusConfig::default();
         let protocol = ConsensusProtocol::new(config);
-        
+
         assert_eq!(protocol.pending_proposal_count().await, 0);
     }
 
@@ -341,18 +360,16 @@ mod tests {
     async fn test_parent_proposal() {
         let config = ConsensusConfig::default();
         let protocol = ConsensusProtocol::new(config);
-        
+
         let proposer = PublicKey::from_bytes([1; 32]);
         let message_id = MessageId::new(b"test");
         let parents = vec![MessageId::new(b"parent1"), MessageId::new(b"parent2")];
-        
-        let _rx = protocol.propose_parents(
-            proposer,
-            message_id,
-            parents,
-            vec![],
-        ).await.unwrap();
-        
+
+        let _rx = protocol
+            .propose_parents(proposer, message_id, parents, vec![])
+            .await
+            .unwrap();
+
         assert_eq!(protocol.pending_proposal_count().await, 1);
     }
 
@@ -360,24 +377,25 @@ mod tests {
     async fn test_voting() {
         let config = ConsensusConfig::default();
         let protocol = ConsensusProtocol::new(config);
-        
+
         let proposer = PublicKey::from_bytes([1; 32]);
         let message_id = MessageId::new(b"test");
         let parents = vec![MessageId::new(b"parent1")];
-        
-        let _rx = protocol.propose_parents(
-            proposer,
-            message_id,
-            parents,
-            vec![],
-        ).await.unwrap();
-        
+
+        let _rx = protocol
+            .propose_parents(proposer, message_id, parents, vec![])
+            .await
+            .unwrap();
+
         // Vote on the proposal
         for i in 0..10 {
             let voter = PublicKey::from_bytes([i; 32]);
-            protocol.vote_on_proposal(voter, message_id, true, None).await.unwrap();
+            protocol
+                .vote_on_proposal(voter, message_id, true, None)
+                .await
+                .unwrap();
         }
-        
+
         // Check if proposal was decided
         let status = protocol.get_proposal_status(&message_id).await;
         assert!(status.is_some());

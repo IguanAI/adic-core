@@ -18,7 +18,7 @@ adic-economics = { path = "../adic-economics" }
 adic-mrw = { path = "../adic-mrw" }
 adic-finality = { path = "../adic-finality" }
 adic-storage = { path = "../adic-storage" }
-# adic-network = { path = "../adic-network" }  # To be added when network is implemented
+adic-network = { path = "../adic-network" }
 
 tokio = { workspace = true }
 async-trait = { workspace = true }
@@ -38,3 +38,15 @@ chrono = { workspace = true }
 hex = { workspace = true }
 toml = "0.8"
 dotenv = "0.15"
+libp2p = { workspace = true }
+jsonwebtoken = "9"
+rand = "0.8"
+axum-extra = { version = "0.9", features = ["typed-header"] }
+headers = "0.4"
+
+[features]
+default = ["rocksdb"]
+rocksdb = ["adic-storage/rocksdb"]
+
+[dev-dependencies]
+tempfile = "3"

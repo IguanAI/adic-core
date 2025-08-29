@@ -39,55 +39,131 @@ pub struct Metrics {
     pub dag_messages: IntGauge,
 }
 
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Metrics {
     pub fn new() -> Self {
         let registry = Arc::new(Registry::new());
-        
-        let messages_submitted = IntCounter::new("adic_messages_submitted_total", "Total messages submitted").unwrap();
-        let messages_processed = IntCounter::new("adic_messages_processed_total", "Total messages processed").unwrap();
-        let messages_failed = IntCounter::new("adic_messages_failed_total", "Total messages failed").unwrap();
 
-        let mrw_attempts_total = IntCounter::new("adic_mrw_attempts_total", "Total MRW attempts").unwrap();
-        let mrw_widens_total = IntCounter::new("adic_mrw_widens_total", "Total MRW widens").unwrap();
-        let mrw_selection_duration = Histogram::with_opts(HistogramOpts::new("adic_mrw_selection_duration_seconds", "MRW selection duration")).unwrap();
+        let messages_submitted =
+            IntCounter::new("adic_messages_submitted_total", "Total messages submitted").unwrap();
+        let messages_processed =
+            IntCounter::new("adic_messages_processed_total", "Total messages processed").unwrap();
+        let messages_failed =
+            IntCounter::new("adic_messages_failed_total", "Total messages failed").unwrap();
 
-        let admissibility_checks_total = IntCounter::new("adic_admissibility_checks_total", "Total admissibility checks").unwrap();
-        let admissibility_s_failures = IntCounter::new("adic_admissibility_s_failures_total", "Admissibility S failures").unwrap();
-        let admissibility_c2_failures = IntCounter::new("adic_admissibility_c2_failures_total", "Admissibility C2 failures").unwrap();
-        let admissibility_c3_failures = IntCounter::new("adic_admissibility_c3_failures_total", "Admissibility C3 failures").unwrap();
+        let mrw_attempts_total =
+            IntCounter::new("adic_mrw_attempts_total", "Total MRW attempts").unwrap();
+        let mrw_widens_total =
+            IntCounter::new("adic_mrw_widens_total", "Total MRW widens").unwrap();
+        let mrw_selection_duration = Histogram::with_opts(HistogramOpts::new(
+            "adic_mrw_selection_duration_seconds",
+            "MRW selection duration",
+        ))
+        .unwrap();
 
-        let deposits_escrowed = IntCounter::new("adic_deposits_escrowed_total", "Total deposits escrowed").unwrap();
-        let deposits_refunded = IntCounter::new("adic_deposits_refunded_total", "Total deposits refunded").unwrap();
-        let deposits_slashed = IntCounter::new("adic_deposits_slashed_total", "Total deposits slashed").unwrap();
+        let admissibility_checks_total = IntCounter::new(
+            "adic_admissibility_checks_total",
+            "Total admissibility checks",
+        )
+        .unwrap();
+        let admissibility_s_failures = IntCounter::new(
+            "adic_admissibility_s_failures_total",
+            "Admissibility S failures",
+        )
+        .unwrap();
+        let admissibility_c2_failures = IntCounter::new(
+            "adic_admissibility_c2_failures_total",
+            "Admissibility C2 failures",
+        )
+        .unwrap();
+        let admissibility_c3_failures = IntCounter::new(
+            "adic_admissibility_c3_failures_total",
+            "Admissibility C3 failures",
+        )
+        .unwrap();
 
-        let finalizations_total = IntCounter::new("adic_finalizations_total", "Total finalizations").unwrap();
+        let deposits_escrowed =
+            IntCounter::new("adic_deposits_escrowed_total", "Total deposits escrowed").unwrap();
+        let deposits_refunded =
+            IntCounter::new("adic_deposits_refunded_total", "Total deposits refunded").unwrap();
+        let deposits_slashed =
+            IntCounter::new("adic_deposits_slashed_total", "Total deposits slashed").unwrap();
+
+        let finalizations_total =
+            IntCounter::new("adic_finalizations_total", "Total finalizations").unwrap();
         let kcore_size = IntGauge::new("adic_kcore_size", "K-core size").unwrap();
-        let finality_depth = Histogram::with_opts(HistogramOpts::new("adic_finality_depth_seconds", "Finality depth")).unwrap();
+        let finality_depth = Histogram::with_opts(HistogramOpts::new(
+            "adic_finality_depth_seconds",
+            "Finality depth",
+        ))
+        .unwrap();
 
-        let signature_verifications = IntCounter::new("adic_signature_verifications_total", "Total signature verifications").unwrap();
-        let signature_failures = IntCounter::new("adic_signature_failures_total", "Total signature failures").unwrap();
+        let signature_verifications = IntCounter::new(
+            "adic_signature_verifications_total",
+            "Total signature verifications",
+        )
+        .unwrap();
+        let signature_failures =
+            IntCounter::new("adic_signature_failures_total", "Total signature failures").unwrap();
 
         let current_tips = IntGauge::new("adic_current_tips", "Current tips").unwrap();
         let dag_messages = IntGauge::new("adic_dag_messages", "Total DAG messages").unwrap();
 
-        registry.register(Box::new(messages_submitted.clone())).unwrap();
-        registry.register(Box::new(messages_processed.clone())).unwrap();
-        registry.register(Box::new(messages_failed.clone())).unwrap();
-        registry.register(Box::new(mrw_attempts_total.clone())).unwrap();
-        registry.register(Box::new(mrw_widens_total.clone())).unwrap();
-        registry.register(Box::new(mrw_selection_duration.clone())).unwrap();
-        registry.register(Box::new(admissibility_checks_total.clone())).unwrap();
-        registry.register(Box::new(admissibility_s_failures.clone())).unwrap();
-        registry.register(Box::new(admissibility_c2_failures.clone())).unwrap();
-        registry.register(Box::new(admissibility_c3_failures.clone())).unwrap();
-        registry.register(Box::new(deposits_escrowed.clone())).unwrap();
-        registry.register(Box::new(deposits_refunded.clone())).unwrap();
-        registry.register(Box::new(deposits_slashed.clone())).unwrap();
-        registry.register(Box::new(finalizations_total.clone())).unwrap();
+        registry
+            .register(Box::new(messages_submitted.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(messages_processed.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(messages_failed.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(mrw_attempts_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(mrw_widens_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(mrw_selection_duration.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(admissibility_checks_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(admissibility_s_failures.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(admissibility_c2_failures.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(admissibility_c3_failures.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(deposits_escrowed.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(deposits_refunded.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(deposits_slashed.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(finalizations_total.clone()))
+            .unwrap();
         registry.register(Box::new(kcore_size.clone())).unwrap();
         registry.register(Box::new(finality_depth.clone())).unwrap();
-        registry.register(Box::new(signature_verifications.clone())).unwrap();
-        registry.register(Box::new(signature_failures.clone())).unwrap();
+        registry
+            .register(Box::new(signature_verifications.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(signature_failures.clone()))
+            .unwrap();
         registry.register(Box::new(current_tips.clone())).unwrap();
         registry.register(Box::new(dag_messages.clone())).unwrap();
 
@@ -119,7 +195,9 @@ impl Metrics {
     pub fn gather(&self) -> String {
         let encoder = TextEncoder::new();
         let metric_families = self.registry.gather();
-        encoder.encode_to_string(&metric_families).unwrap_or_default()
+        encoder
+            .encode_to_string(&metric_families)
+            .unwrap_or_default()
     }
 }
 

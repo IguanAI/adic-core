@@ -1,8 +1,8 @@
 use adic_types::AdicParams;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 use std::env;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
@@ -99,18 +99,18 @@ impl Default for NodeConfig {
                 rho: vec![2, 2, 1],
                 q: 3,
                 k: 20,
-                depth_star: 12,     // Phase-0 default
+                depth_star: 12, // Phase-0 default
                 delta: 5,
-                r_sum_min: 4.0,     // Phase-0 default
-                r_min: 1.0,         // Phase-0 default
+                r_sum_min: 4.0, // Phase-0 default
+                r_min: 1.0,     // Phase-0 default
                 deposit: 1.0,
-                lambda: 1.0,        // Phase-0 default
-                beta: 0.5,          // Phase-0 default
-                mu: 1.0,            // Phase-0 default
+                lambda: 1.0, // Phase-0 default
+                beta: 0.5,   // Phase-0 default
+                mu: 1.0,     // Phase-0 default
                 gamma: 0.9,
             },
             storage: StorageConfig {
-                backend: "memory".to_string(),
+                backend: "rocksdb".to_string(),
                 cache_size: 10000,
                 snapshot_interval: 3600,
                 max_snapshots: 10,
@@ -145,7 +145,7 @@ impl NodeConfig {
         Ok(())
     }
 
-    pub fn default_with_paths(data_dir: PathBuf, p2p_port: u16, api_port: u16) -> Result<Self> {
+    pub fn _default_with_paths(data_dir: PathBuf, p2p_port: u16, api_port: u16) -> Result<Self> {
         let mut config = Self::default();
         config.node.data_dir = data_dir;
         config.network.p2p_port = p2p_port;
@@ -192,7 +192,8 @@ impl NodeConfig {
         }
         if let Ok(bootstrap) = env::var("BOOTSTRAP_PEERS") {
             if !bootstrap.is_empty() {
-                self.network.bootstrap_peers = bootstrap.split(',').map(|s| s.trim().to_string()).collect();
+                self.network.bootstrap_peers =
+                    bootstrap.split(',').map(|s| s.trim().to_string()).collect();
             }
         }
 
@@ -267,9 +268,12 @@ mod tests {
         assert_eq!(config.api.host, "192.168.1.1");
         assert_eq!(config.api.port, 9090);
         assert_eq!(config.network.p2p_port, 8000);
-        assert_eq!(config.node.validator, true);
+        assert!(config.node.validator);
         assert_eq!(config.network.max_peers, 100);
-        assert_eq!(config.network.bootstrap_peers, vec!["peer1", "peer2", "peer3"]);
+        assert_eq!(
+            config.network.bootstrap_peers,
+            vec!["peer1", "peer2", "peer3"]
+        );
         assert_eq!(config.consensus.p, 5);
         assert_eq!(config.consensus.k, 30);
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
-use tracing::{debug, warn, info};
+use tracing::{debug, info, warn};
 
 use libp2p::PeerId;
 
@@ -93,7 +93,7 @@ impl NetworkResilience {
 
     pub async fn can_connect(&self, peer: &PeerId) -> bool {
         let breakers = self.circuit_breakers.read().await;
-        
+
         if let Some(breaker) = breakers.get(peer) {
             match breaker.state {
                 CircuitState::Closed => true,
@@ -129,10 +129,10 @@ impl NetworkResilience {
         });
 
         state.attempt += 1;
-        
+
         let backoff = self.config.backoff_base * 2u32.pow(state.attempt.min(10) as u32);
         let backoff = backoff.min(self.config.backoff_max);
-        
+
         state.next_retry = Instant::now() + backoff;
         backoff
     }
@@ -144,20 +144,24 @@ impl NetworkResilience {
 
     pub async fn check_network_health(&self) {
         let breakers = self.circuit_breakers.read().await;
-        let open_count = breakers.values()
+        let open_count = breakers
+            .values()
             .filter(|b| b.state == CircuitState::Open)
             .count();
-        
+
         if open_count > 0 {
             warn!("{} circuit breakers are open", open_count);
         }
-        
-        debug!("Network health check: {} total peers monitored", breakers.len());
+
+        debug!(
+            "Network health check: {} total peers monitored",
+            breakers.len()
+        );
     }
 
     pub async fn cleanup_old_states(&self) {
         let mut breakers = self.circuit_breakers.write().await;
-        
+
         breakers.retain(|_, breaker| {
             if let Some(last_failure) = breaker.last_failure {
                 last_failure.elapsed() < Duration::from_secs(3600)
@@ -176,14 +180,14 @@ mod tests {
     async fn test_circuit_breaker() {
         let resilience = NetworkResilience::new(Default::default());
         let peer = PeerId::random();
-        
+
         assert!(resilience.can_connect(&peer).await);
-        
+
         // Record failures
         for _ in 0..3 {
             resilience.record_failure(&peer).await;
         }
-        
+
         // Circuit should be open
         assert!(!resilience.can_connect(&peer).await);
     }
@@ -192,15 +196,15 @@ mod tests {
     async fn test_backoff() {
         let resilience = NetworkResilience::new(Default::default());
         let peer = PeerId::random();
-        
+
         let backoff1 = resilience.calculate_backoff(&peer).await;
         let backoff2 = resilience.calculate_backoff(&peer).await;
-        
+
         assert!(backoff2 > backoff1);
-        
+
         resilience.reset_backoff(&peer).await;
         let backoff3 = resilience.calculate_backoff(&peer).await;
-        
+
         assert_eq!(backoff3, backoff1);
     }
 }
