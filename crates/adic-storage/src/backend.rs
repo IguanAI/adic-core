@@ -110,6 +110,24 @@ pub trait StorageBackend: Send + Sync {
 
     /// Get storage statistics
     async fn get_stats(&self) -> Result<StorageStats>;
+
+    /// Get recently finalized messages (up to limit)
+    async fn get_recently_finalized(&self, limit: usize) -> Result<Vec<MessageId>>;
+
+    /// Get messages in a time range (optimized)
+    async fn get_messages_in_time_range(
+        &self,
+        start_timestamp_millis: i64,
+        end_timestamp_millis: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<MessageId>>;
+
+    /// Get messages after a specific timestamp (optimized)
+    async fn get_messages_after_timestamp(
+        &self,
+        timestamp_millis: i64,
+        limit: usize,
+    ) -> Result<Vec<MessageId>>;
 }
 
 #[derive(Debug, Clone, Default)]

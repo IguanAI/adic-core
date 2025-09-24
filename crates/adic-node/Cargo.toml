@@ -31,18 +31,23 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+log = { workspace = true }
 anyhow = { workspace = true }
 prometheus = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
 toml = "0.8"
+ed25519-dalek = { workspace = true }
 dotenvy = "0.15"
 libp2p = { workspace = true }
 jsonwebtoken = "9"
 rand = "0.8"
 axum-extra = { version = "0.9", features = ["typed-header"] }
 headers = "0.4"
+base64 = "0.22.1"
+sha2 = "0.10"
+rpassword = "7.3"
 
 [features]
 default = ["rocksdb"]
@@ -50,3 +55,4 @@ rocksdb = ["adic-storage/rocksdb"]
 
 [dev-dependencies]
 tempfile = "3"
+ed25519-dalek = "2"

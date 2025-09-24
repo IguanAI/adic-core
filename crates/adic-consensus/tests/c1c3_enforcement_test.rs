@@ -47,7 +47,6 @@ async fn test_c1_proximity_enforcement() {
         ..Default::default()
     };
 
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
     let storage_config = StorageConfig {
         backend_type: BackendType::Memory,
         cache_size: 100,
@@ -55,6 +54,7 @@ async fn test_c1_proximity_enforcement() {
         max_batch_size: 10,
     };
     let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
 
     // Create genesis message
     let genesis_proposer = PublicKey::from_bytes([1; 32]);
@@ -139,7 +139,6 @@ async fn test_c2_diversity_enforcement() {
         ..Default::default()
     };
 
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
     let storage_config = StorageConfig {
         backend_type: BackendType::Memory,
         cache_size: 100,
@@ -147,6 +146,7 @@ async fn test_c2_diversity_enforcement() {
         max_batch_size: 10,
     };
     let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
 
     let proposer = PublicKey::from_bytes([1; 32]);
 
@@ -249,7 +249,6 @@ async fn test_c3_reputation_enforcement() {
         ..Default::default()
     };
 
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
     let storage_config = StorageConfig {
         backend_type: BackendType::Memory,
         cache_size: 100,
@@ -257,6 +256,7 @@ async fn test_c3_reputation_enforcement() {
         max_batch_size: 10,
     };
     let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let reputation = &consensus.reputation;
 
     // Create proposers with different reputations
@@ -360,7 +360,6 @@ async fn test_combined_c1_c2_c3_enforcement() {
         ..Default::default()
     };
 
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
     let storage_config = StorageConfig {
         backend_type: BackendType::Memory,
         cache_size: 100,
@@ -368,6 +367,7 @@ async fn test_combined_c1_c2_c3_enforcement() {
         max_batch_size: 10,
     };
     let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let reputation = &consensus.reputation;
 
     // Create proposers with varied reputations
@@ -510,7 +510,14 @@ async fn test_combined_c1_c2_c3_enforcement() {
 #[tokio::test]
 async fn test_genesis_message_handling() {
     let params = AdicParams::default();
-    let _consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    let _consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
 
     // Genesis messages (no parents) should be handled specially
     // The admissibility checker currently expects exactly d+1 parents
@@ -534,7 +541,7 @@ async fn test_genesis_message_handling() {
     // Create a new consensus with d=0 to expect 1 parent
     let mut genesis_params = params.clone();
     genesis_params.d = 0;
-    let genesis_consensus = Arc::new(ConsensusEngine::new(genesis_params));
+    let genesis_consensus = Arc::new(ConsensusEngine::new(genesis_params, storage));
 
     let result = genesis_consensus
         .admissibility()

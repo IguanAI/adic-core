@@ -8,7 +8,8 @@ license.workspace = true
 [dependencies]
 adic-types = { path = "../adic-types" }
 adic-consensus = { path = "../adic-consensus" }
-tokio = { workspace = true }
+adic-storage = { path = "../adic-storage" }
+tokio = { workspace = true, features = ["full"] }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -25,3 +26,4 @@ ordered-float = "4.2"
 [dev-dependencies]
 tokio-test = "0.4"
 adic-crypto = { path = "../adic-crypto" }
+tempfile = "3.8"

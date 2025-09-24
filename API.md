@@ -4,11 +4,31 @@
 
 The ADIC node provides a RESTful API for interacting with the ADIC-DAG network. All endpoints return JSON responses and follow standard HTTP status codes.
 
+> **📋 For comprehensive integration status and Explorer Backend compatibility, see [INTEGRATION-STATUS.md](./INTEGRATION-STATUS.md)**
+
+## Implementation Framework
+
+**Note**: API code samples in this documentation are illustrative and show expected request/response patterns. The actual implementation uses **Axum's router builder pattern** with Rust handlers. Code samples represent the conceptual API structure, not literal implementation code.
+
+## Data Normalization Notes
+
+**Timestamp Handling**: All timestamps are returned as Unix milliseconds (UTC). Clients should convert to their local timezone and handle potential precision loss when converting to seconds-based systems.
+
+**ID Transforms**: Message IDs and public keys use consistent hexadecimal encoding (lowercase). Clients should validate hex format and length before processing to prevent parsing errors and off-by-one indexing issues.
+
 ## Base URL
 
 ```
 http://localhost:8080
 ```
+
+## Versioning
+
+The API provides both versioned and unversioned endpoints:
+- **Root endpoints**: `/health`, `/status`, `/submit`, `/message/:id`, `/tips` (legacy compatibility)
+- **Versioned endpoints**: `/v1/*` (recommended for new integrations)
+
+Future versions may consolidate all endpoints under `/v1` for consistency.
 
 ## Authentication
 
@@ -20,15 +40,27 @@ Authorization: Bearer <your-jwt-token>
 
 ## Rate Limiting
 
-API requests are rate-limited to prevent abuse. Default limits:
-- 100 requests per minute for unauthenticated requests
-- 1000 requests per minute for authenticated requests
+**Current Implementation**: In-process flat rate limiter (100 requests/minute by default)
+
+**Default Limits:**
+- 100 requests per minute for all clients (flat rate)
+- Applied per IP address using middleware
+
+**Recommended Production Setup**: 
+- Deploy auth-aware tiering at gateway level (Cloudflare, HAProxy, etc.)
+- Higher limits for authenticated clients based on auth claims
+- Consider extending middleware to read auth claims and set per-user limits
+
+**Headers Returned:**
+- `X-RateLimit-Limit`: Request limit per window
+- `X-RateLimit-Remaining`: Requests remaining in current window  
+- `X-RateLimit-Reset`: Time when the rate limit resets (Unix timestamp)
 
 ## Endpoints
 
 ### Health & Status
 
-#### GET /health
+#### GET /health **[IMPLEMENTED]**
 Health check endpoint.
 
 **Response:**
@@ -36,14 +68,21 @@ Health check endpoint.
 OK
 ```
 
-#### GET /status
+#### GET /status **[IMPLEMENTED]**
 Get node status including network statistics and finality metrics.
 
 **Response:**
 ```json
 {
-  "node_id": "hex_string",
+  "node_id": "a1b2c3d4e5f6789...",
   "version": "0.1.4",
+  "capabilities": {
+    "sse_streaming": false,
+    "websocket": false,
+    "bulk_queries": true,
+    "weights_in_tips": false,
+    "versioned_api": true
+  },
   "network": {
     "peers": 5,
     "messages": 1000,
@@ -51,14 +90,28 @@ Get node status including network statistics and finality metrics.
   },
   "finality": {
     "k_core_messages": 450,
-    "f2_stabilized": 200
+    "homology_stabilized": 200
   }
 }
 ```
 
+**Fields:**
+- `node_id`: Node's public key in hex format (no 0x prefix)
+- `version`: Crate version from Cargo.toml
+- `capabilities`: Feature flags for client capability detection
+- `network`: Basic network counters (peers, total messages, current tips)
+- `finality`: Finality metrics (k-core finalized count, homology stabilized count)
+
+**Capability Flags:**
+- `sse_streaming`: Server-Sent Events support for `/v1/stream/events` (currently false)
+- `websocket`: WebSocket support (always false for nodes; Explorer Backend provides WebSocket)
+- `bulk_queries`: Bulk endpoints available (`/v1/messages/bulk`, `/v1/messages/range`, `/v1/messages/since/:id`)
+- `weights_in_tips`: Weighted tips with MRW scores (currently false - future enhancement)
+- `versioned_api`: API versioning support (true)
+
 ### Message Operations
 
-#### POST /submit
+#### POST /submit **[IMPLEMENTED]**
 Submit a new message to the DAG.
 
 **Authentication Required:** Yes
@@ -69,13 +122,15 @@ Submit a new message to the DAG.
   "content": "string",
   "features": {
     "axes": [
-      {"axis": 0, "value": 42},
+      {"axis": 0, "value": 42},  // Simplified format for submission
       {"axis": 1, "value": 100},
       {"axis": 2, "value": 7}
     ]
   }
 }
 ```
+
+**Note:** The node currently derives features from content; provided features are ignored for now and may be used in future versions.
 
 **Response:**
 ```json
@@ -84,7 +139,7 @@ Submit a new message to the DAG.
 }
 ```
 
-#### GET /message/:id
+#### GET /message/:id **[IMPLEMENTED]**
 Retrieve a specific message by ID.
 
 **Parameters:**
@@ -96,7 +151,18 @@ Retrieve a specific message by ID.
   "id": "hex_string",
   "parents": ["hex_string", "hex_string"],
   "features": {
-    "axes": [...]
+    "axes": [
+      {
+        "axis": 0,
+        "p": 3,
+        "digits": [1, 2, 0, 1, 2]  // LSB-first p-adic digits
+      },
+      {
+        "axis": 1,
+        "p": 3,
+        "digits": [2, 0, 1, 0, 1]
+      }
+    ]
   },
   "content": "base64_string",
   "timestamp": "2025-08-29T12:00:00Z",
@@ -104,10 +170,17 @@ Retrieve a specific message by ID.
 }
 ```
 
-#### GET /tips
+#### GET /tips **[IMPLEMENTED]**
 Get current DAG tips (messages without children).
 
-**Response:**
+**Response (Current Implementation):**
+```json
+{
+  "tips": ["hex_string", "hex_string", "hex_string"]
+}
+```
+
+**Response (Future Enhancement with Weights):**
 ```json
 {
   "tips": [
@@ -121,7 +194,7 @@ Get current DAG tips (messages without children).
 
 ### P-adic Operations
 
-#### GET /ball/:axis/:radius
+#### GET /ball/:axis/:radius **[PLACEHOLDER]**
 Get all messages within a p-adic ball.
 
 **Parameters:**
@@ -140,7 +213,7 @@ Get all messages within a p-adic ball.
 
 ### Proofs & Security
 
-#### POST /proof/membership
+#### POST /proof/membership **[PLACEHOLDER]**
 Generate a p-adic ball membership proof.
 
 **Request Body:**
@@ -160,7 +233,7 @@ Generate a p-adic ball membership proof.
 }
 ```
 
-#### POST /proof/verify
+#### POST /proof/verify **[PLACEHOLDER]**
 Verify a membership proof.
 
 **Request Body:**
@@ -179,7 +252,7 @@ Verify a membership proof.
 }
 ```
 
-#### GET /security/score/:id
+#### GET /security/score/:id **[PARTIAL]**
 Get the security score for a message.
 
 **Parameters:**
@@ -198,7 +271,7 @@ Get the security score for a message.
 
 ### Finality & Consensus
 
-#### GET /v1/finality/:id
+#### GET /v1/finality/:id **[IMPLEMENTED]**
 Get finality artifact for a message.
 
 **Parameters:**
@@ -216,46 +289,46 @@ Get finality artifact for a message.
 }
 ```
 
-#### GET /v1/mrw/traces
+#### GET /v1/mrw/traces **[IMPLEMENTED]**
 Get Multi-axis Random Walk traces.
 
 **Query Parameters:**
-- `limit` (optional) - Maximum number of traces (default: 100)
+- `limit` (optional) - Maximum number of traces (default: 10, max: 50)
 
 **Response:**
 ```json
 {
   "traces": [
     {
-      "id": "hex_string",
-      "path": ["hex_string", ...],
-      "weight": 0.85,
-      "timestamp": "2025-08-29T12:00:00Z"
+      "id": "mrw_1693123456789",
+      "success": true,
+      "parent_count": 2,
+      "step_count": 5,
+      "duration_ms": 45,
+      "widen_count": 0,
+      "candidates_considered": 12
     }
-  ]
+  ],
+  "total": 1
 }
 ```
 
-#### GET /v1/mrw/trace/:id
-Get a specific MRW trace.
+**Note:** Fields are evolving and will stabilize. Current implementation returns execution metrics rather than path details.
+
+#### GET /v1/mrw/trace/:id **[IMPLEMENTED]**
+Get a specific MRW trace by ID.
 
 **Parameters:**
-- `id` (path) - Trace ID
+- `id` (path) - Trace ID (e.g., "mrw_1693123456789")
 
 **Response:**
-```json
-{
-  "id": "hex_string",
-  "start": "hex_string",
-  "end": "hex_string",
-  "path": ["hex_string", ...],
-  "axis_weights": [0.3, 0.3, 0.4]
-}
-```
+Returns the full trace object with detailed execution information.
+
+**Note:** Response format is evolving. Currently returns the internal trace structure with execution details and selected parents.
 
 ### Reputation System
 
-#### GET /v1/reputation/all
+#### GET /v1/reputation/all **[IMPLEMENTED]**
 Get all reputation scores.
 
 **Response:**
@@ -268,7 +341,7 @@ Get all reputation scores.
 }
 ```
 
-#### GET /v1/reputation/:pubkey
+#### GET /v1/reputation/:pubkey **[IMPLEMENTED]**
 Get reputation score for a specific public key.
 
 **Parameters:**
@@ -280,14 +353,15 @@ Get reputation score for a specific public key.
   "public_key": "hex_string",
   "reputation": 0.95,
   "messages_approved": 450,
-  "conflicts_resolved": 12,
   "last_updated": "2025-08-29T12:00:00Z"
 }
 ```
 
+**Note:** `conflicts_resolved` field not yet implemented - currently returns 0 or is omitted.
+
 ### Conflict Resolution
 
-#### GET /v1/conflicts
+#### GET /v1/conflicts **[IMPLEMENTED]**
 Get all active conflicts.
 
 **Response:**
@@ -304,7 +378,7 @@ Get all active conflicts.
 }
 ```
 
-#### GET /v1/conflict/:id
+#### GET /v1/conflict/:id **[IMPLEMENTED]**
 Get details of a specific conflict.
 
 **Parameters:**
@@ -323,7 +397,7 @@ Get details of a specific conflict.
 
 ### Economics & Token Management
 
-#### GET /v1/economics/supply
+#### GET /v1/economics/supply **[IMPLEMENTED]**
 Get token supply metrics.
 
 **Response:**
@@ -341,7 +415,7 @@ Get token supply metrics.
 }
 ```
 
-#### GET /v1/economics/balance/:address
+#### GET /v1/economics/balance/:address **[IMPLEMENTED]**
 Get balance for a specific address.
 
 **Parameters:**
@@ -357,7 +431,7 @@ Get balance for a specific address.
 }
 ```
 
-#### GET /v1/economics/balance
+#### GET /v1/economics/balance **[IMPLEMENTED]**
 Get balance using query parameter.
 
 **Query Parameters:**
@@ -365,7 +439,7 @@ Get balance using query parameter.
 
 **Response:** Same as above
 
-#### GET /v1/economics/emissions
+#### GET /v1/economics/emissions **[IMPLEMENTED]**
 Get emission schedule information.
 
 **Response:**
@@ -380,7 +454,7 @@ Get emission schedule information.
 }
 ```
 
-#### GET /v1/economics/treasury
+#### GET /v1/economics/treasury **[IMPLEMENTED]**
 Get treasury information.
 
 **Response:**
@@ -402,7 +476,7 @@ Get treasury information.
 }
 ```
 
-#### GET /v1/economics/genesis
+#### GET /v1/economics/genesis **[IMPLEMENTED]**
 Get genesis allocation status.
 
 **Response:**
@@ -416,7 +490,7 @@ Get genesis allocation status.
 }
 ```
 
-#### POST /v1/economics/initialize
+#### POST /v1/economics/initialize **[IMPLEMENTED]**
 Initialize genesis allocation (can only be called once).
 
 **Authentication Required:** Yes (admin only)
@@ -429,7 +503,7 @@ Initialize genesis allocation (can only be called once).
 }
 ```
 
-#### GET /v1/economics/deposits
+#### GET /v1/economics/deposits **[PARTIAL]**
 Get deposits summary.
 
 **Response:**
@@ -441,7 +515,7 @@ Get deposits summary.
 }
 ```
 
-#### GET /v1/economics/deposit/:id
+#### GET /v1/economics/deposit/:id **[PARTIAL]**
 Get deposit status for a message.
 
 **Parameters:**
@@ -461,7 +535,7 @@ Get deposit status for a message.
 
 ### Statistics & Monitoring
 
-#### GET /v1/statistics/detailed
+#### GET /v1/statistics/detailed **[IMPLEMENTED]**
 Get detailed node statistics.
 
 **Response:**
@@ -494,7 +568,7 @@ Get detailed node statistics.
 }
 ```
 
-#### GET /metrics
+#### GET /metrics **[IMPLEMENTED]**
 Prometheus-compatible metrics endpoint.
 
 **Response:**
@@ -513,6 +587,64 @@ adic_peers_connected 5
 
 # ... additional metrics
 ```
+
+### Bulk Query Endpoints
+
+#### GET /v1/messages/bulk **[IMPLEMENTED]**
+Query multiple messages in a single request for efficient indexing.
+
+**Query Parameters:**
+- `ids` - Comma-separated list of message IDs (max 1000)
+
+**Response:**
+```json
+{
+  "messages": [
+    { /* full message object */ },
+    { /* full message object */ }
+  ],
+  "not_found": ["id3", "id4"]
+}
+```
+
+#### GET /v1/messages/range **[PARTIAL]** 
+Get messages within a time range.
+
+**Query Parameters:**
+- `start` - ISO8601 timestamp (required)
+- `end` - ISO8601 timestamp (required)
+- `limit` - Max messages (default 1000)
+- `cursor` - Pagination cursor
+
+**Response:**
+```json
+{
+  "messages": [ /* array of messages */ ],
+  "next_cursor": "cursor_string",
+  "has_more": true
+}
+```
+
+**Note:** Storage backend implementation for time-based queries is pending. Currently returns empty results.
+
+#### GET /v1/messages/since/:id **[PARTIAL]**
+Get all messages since a specific checkpoint for incremental sync.
+
+**Parameters:**
+- `id` (path) - Checkpoint message ID
+
+**Query Parameters:**
+- `limit` - Max messages (default 1000)
+
+**Response:**
+```json
+{
+  "messages": [ /* messages since checkpoint */ ],
+  "count": 150
+}
+```
+
+**Note:** Storage backend implementation for incremental sync is pending. Currently returns empty results.
 
 ## Error Responses
 
@@ -537,39 +669,20 @@ All endpoints may return error responses with the following format:
 - `429 Too Many Requests` - Rate limit exceeded
 - `500 Internal Server Error` - Server error
 
-## WebSocket API
+## Real-time Updates
 
-For real-time updates, connect to the WebSocket endpoint:
+**Note:** WebSocket support is not implemented in the core node. Real-time updates are available through:
 
-```
-ws://localhost:8080/ws
-```
+1. **Server-Sent Events (SSE)** - For lightweight streaming from the node (planned)
+2. **Explorer WebSocket API** - Full WebSocket support is provided by the separate Explorer backend service
 
-### Events
+The Explorer backend (separate from this node) provides comprehensive WebSocket support for:
+- Real-time message updates
+- Live finality notifications
+- Network statistics streaming
+- Custom subscriptions and filters
 
-- `message.new` - New message added to DAG
-- `tips.updated` - Tips have changed
-- `finality.achieved` - Message achieved finality
-- `conflict.detected` - New conflict detected
-- `peer.connected` - New peer connected
-- `peer.disconnected` - Peer disconnected
-
-### Example WebSocket Client
-
-```javascript
-const ws = new WebSocket('ws://localhost:8080/ws');
-
-ws.on('message', (data) => {
-  const event = JSON.parse(data);
-  console.log('Event:', event.type, event.data);
-});
-
-// Subscribe to specific events
-ws.send(JSON.stringify({
-  action: 'subscribe',
-  events: ['message.new', 'tips.updated']
-}));
-```
+For Explorer WebSocket documentation, see the Explorer API documentation.
 
 ## Examples
 
@@ -603,6 +716,53 @@ curl http://localhost:8080/status | jq '.'
 curl http://localhost:8080/v1/economics/balance/YOUR_ADDRESS | jq '.'
 ```
 
+### Wallet Operations
+
+#### Get Wallet Info
+```bash
+curl http://localhost:8080/wallet/info | jq '.'
+```
+
+#### Check Wallet Balance
+```bash
+curl http://localhost:8080/wallet/balance/ADDRESS | jq '.'
+```
+
+#### Transfer Tokens
+```bash
+curl -X POST http://localhost:8080/wallet/transfer \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "RECIPIENT_ADDRESS",
+    "amount": 100.0,
+    "memo": "Payment for services"
+  }' | jq '.'
+```
+
+#### Request from Faucet
+```bash
+curl -X POST http://localhost:8080/wallet/faucet \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "YOUR_ADDRESS",
+    "amount": 1000.0
+  }' | jq '.'
+```
+
+#### Sign Message
+```bash
+curl -X POST http://localhost:8080/wallet/sign \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Message to sign"
+  }' | jq '.'
+```
+
+#### Get Transaction History
+```bash
+curl http://localhost:8080/wallet/transactions/ADDRESS | jq '.'
+```
+
 ### Monitor Metrics
 
 ```bash
@@ -619,10 +779,18 @@ Official SDKs are planned for:
 
 ## Changelog
 
+### v0.1.5
+- Added complete wallet implementation with transaction support
+- Added wallet API endpoints for transfers, faucet, and signing
+- Added transaction history tracking
+- Enhanced message submission with deposit checking
+- Added energy descent tracking endpoints
+- Added finalization metrics endpoints
+
 ### v0.1.4
 - Added comprehensive economics endpoints
 - Improved error responses
-- Added WebSocket support for real-time updates
+- Planned SSE support for real-time updates
 
 ### v0.1.3
 - Initial API implementation

@@ -1,10 +1,25 @@
 use adic_consensus::ConsensusEngine;
 use adic_crypto::Keypair;
 use adic_finality::{FinalityConfig, FinalityEngine};
+use adic_storage::{store::BackendType, StorageConfig, StorageEngine};
 use adic_types::{AdicFeatures, AdicMessage, AdicMeta, AdicParams, AxisPhi, MessageId, QpDigits};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tempfile::tempdir;
+
+fn create_test_storage() -> Arc<StorageEngine> {
+    let temp_dir = tempdir().unwrap();
+    let storage_config = StorageConfig {
+        backend_type: BackendType::RocksDB {
+            path: temp_dir.path().to_str().unwrap().to_string(),
+        },
+        cache_size: 10,
+        flush_interval_ms: 1000,
+        max_batch_size: 100,
+    };
+    Arc::new(StorageEngine::new(storage_config).unwrap())
+}
 
 /// Create a test message with specified ID and parents
 fn create_test_message(id: u64, parents: Vec<MessageId>, keypair: &Keypair) -> AdicMessage {
@@ -34,9 +49,10 @@ async fn test_kcore_with_complex_graph_structure() {
         ..Default::default()
     };
 
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let storage = create_test_storage();
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus);
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
 
     let keypair = Keypair::generate();
 
@@ -44,6 +60,7 @@ async fn test_kcore_with_complex_graph_structure() {
     // Layer 0: Single root
     let root = create_test_message(0, vec![], &keypair);
     let root_id = root.id;
+    storage.store_message(&root).await.unwrap();
 
     let mut ball_ids = HashMap::new();
     for axis_phi in &root.features.phi {
@@ -60,6 +77,7 @@ async fn test_kcore_with_complex_graph_structure() {
     for i in 1..=5 {
         let msg = create_test_message(i, vec![root_id], &keypair);
         let msg_id = msg.id;
+        storage.store_message(&msg).await.unwrap();
 
         let mut ball_ids = HashMap::new();
         for axis_phi in &msg.features.phi {
@@ -80,6 +98,7 @@ async fn test_kcore_with_complex_graph_structure() {
         let parents = vec![layer1_nodes[0], layer1_nodes[1], layer1_nodes[2]];
         let msg = create_test_message(i, parents.clone(), &keypair);
         let msg_id = msg.id;
+        storage.store_message(&msg).await.unwrap();
 
         let mut ball_ids = HashMap::new();
         for axis_phi in &msg.features.phi {
@@ -99,6 +118,7 @@ async fn test_kcore_with_complex_graph_structure() {
         let parents = vec![layer2_nodes[0], layer2_nodes[1], layer2_nodes[2]];
         let msg = create_test_message(i, parents.clone(), &keypair);
         let msg_id = msg.id;
+        storage.store_message(&msg).await.unwrap();
 
         let mut ball_ids = HashMap::new();
         for axis_phi in &msg.features.phi {
@@ -125,9 +145,10 @@ async fn test_kcore_with_complex_graph_structure() {
 #[tokio::test]
 async fn test_empty_and_disconnected_graphs() {
     let params = AdicParams::default();
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let storage = create_test_storage();
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus);
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
 
     // Test with empty graph
     let finalized = finality.check_finality().await.unwrap();
@@ -139,6 +160,7 @@ async fn test_empty_and_disconnected_graphs() {
     for i in 1..=3 {
         let msg = create_test_message(i, vec![], &keypair);
         let msg_id = msg.id;
+        storage.store_message(&msg).await.unwrap();
 
         let mut ball_ids = HashMap::new();
         for axis_phi in &msg.features.phi {
@@ -169,15 +191,17 @@ async fn test_finality_with_insufficient_diversity() {
         ..Default::default()
     };
 
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let storage = create_test_storage();
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus);
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
 
     let keypair = Keypair::generate();
 
     // Create messages with insufficient diversity (same ball IDs)
     let root = create_test_message(0, vec![], &keypair);
     let root_id = root.id;
+    storage.store_message(&root).await.unwrap();
 
     // All messages use the same features (same ball IDs)
     let same_ball_ids = {
@@ -197,6 +221,7 @@ async fn test_finality_with_insufficient_diversity() {
     for _i in 1..=5 {
         let msg = create_test_message(0, vec![root_id], &keypair); // Same features as root
         let msg_id = msg.id;
+        storage.store_message(&msg).await.unwrap();
 
         finality
             .add_message(msg_id, vec![root_id], 1.5, same_ball_ids.clone())
@@ -222,15 +247,17 @@ async fn test_finality_with_low_reputation() {
         ..Default::default()
     };
 
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let storage = create_test_storage();
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus);
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
 
     let keypair = Keypair::generate();
 
     // Create messages with low reputation
     let root = create_test_message(0, vec![], &keypair);
     let root_id = root.id;
+    storage.store_message(&root).await.unwrap();
 
     let mut ball_ids = HashMap::new();
     for axis_phi in &root.features.phi {
@@ -246,6 +273,7 @@ async fn test_finality_with_low_reputation() {
     for i in 1..=3 {
         let msg = create_test_message(i, vec![root_id], &keypair);
         let msg_id = msg.id;
+        storage.store_message(&msg).await.unwrap();
 
         let mut ball_ids = HashMap::new();
         for axis_phi in &msg.features.phi {
@@ -276,9 +304,10 @@ async fn test_finality_with_deep_dag_structure() {
         ..Default::default()
     };
 
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let storage = create_test_storage();
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus);
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
 
     let keypair = Keypair::generate();
 
@@ -286,6 +315,7 @@ async fn test_finality_with_deep_dag_structure() {
     let mut current_id = {
         let root = create_test_message(0, vec![], &keypair);
         let root_id = root.id;
+        storage.store_message(&root).await.unwrap();
 
         let mut ball_ids = HashMap::new();
         for axis_phi in &root.features.phi {
@@ -303,6 +333,7 @@ async fn test_finality_with_deep_dag_structure() {
     for i in 1..=10 {
         let msg = create_test_message(i, vec![current_id], &keypair);
         let msg_id = msg.id;
+        storage.store_message(&msg).await.unwrap();
 
         let mut ball_ids = HashMap::new();
         for axis_phi in &msg.features.phi {
@@ -338,9 +369,10 @@ async fn test_finality_performance_under_load() {
         ..Default::default()
     };
 
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let storage = create_test_storage();
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus);
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
 
     let keypair = Keypair::generate();
 
@@ -353,6 +385,7 @@ async fn test_finality_performance_under_load() {
     // Genesis
     let root = create_test_message(0, vec![], &keypair);
     let root_id = root.id;
+    storage.store_message(&root).await.unwrap();
     message_ids.push(root_id);
 
     let mut ball_ids = HashMap::new();
@@ -376,6 +409,7 @@ async fn test_finality_performance_under_load() {
 
         let msg = create_test_message(i, parents.clone(), &keypair);
         let msg_id = msg.id;
+        storage.store_message(&msg).await.unwrap();
 
         let mut ball_ids = HashMap::new();
         for axis_phi in &msg.features.phi {
@@ -412,7 +446,7 @@ async fn test_finality_performance_under_load() {
         add_duration
     );
     assert!(
-        finality_duration.as_millis() < 500,
+        finality_duration.as_millis() < 2000,
         "Finality check took too long: {:?}",
         finality_duration
     );

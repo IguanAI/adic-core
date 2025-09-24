@@ -36,12 +36,13 @@ async fn test_single_node_creation() {
     std::mem::forget(temp_dir); // Prevent cleanup during test
 
     info!("Creating consensus engine...");
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
 
     info!("Creating finality engine...");
     let finality = Arc::new(FinalityEngine::new(
         FinalityConfig::from(&params),
         consensus.clone(),
+        storage.clone(),
     ));
 
     info!("Creating network config...");

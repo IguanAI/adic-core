@@ -38,6 +38,8 @@ pub struct ReputationTracker {
     scores: Arc<RwLock<HashMap<PublicKey, ReputationScore>>>,
     decay_factor: f64,
     gamma: f64,
+    /// Track message approvals for overlap detection
+    approval_history: Arc<RwLock<HashMap<PublicKey, Vec<adic_types::MessageId>>>>,
 }
 
 impl ReputationTracker {
@@ -46,12 +48,33 @@ impl ReputationTracker {
             scores: Arc::new(RwLock::new(HashMap::new())),
             decay_factor: 0.99,
             gamma,
+            approval_history: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     pub async fn get_reputation(&self, pubkey: &PublicKey) -> f64 {
         let scores = self.scores.read().await;
-        scores.get(pubkey).map(|s| s.value).unwrap_or(1.0)
+        let reputation = scores.get(pubkey).map(|s| s.value).unwrap_or(1.0);
+
+        // Debug logging to track reputation lookups
+        if let Some(score) = scores.get(pubkey) {
+            tracing::warn!(
+                "DEBUG: Reputation lookup: pubkey={:x} found with value={}",
+                pubkey.as_bytes()[..8]
+                    .iter()
+                    .fold(0u64, |acc, &b| acc << 8 | b as u64),
+                score.value
+            );
+        } else {
+            tracing::warn!(
+                "DEBUG: Reputation lookup: pubkey={:x} not found, returning default 1.0",
+                pubkey.as_bytes()[..8]
+                    .iter()
+                    .fold(0u64, |acc, &b| acc << 8 | b as u64)
+            );
+        }
+
+        reputation
     }
 
     pub async fn get_trust_score(&self, pubkey: &PublicKey) -> f64 {
@@ -70,9 +93,22 @@ impl ReputationTracker {
 
         // Apply update: R_{t+1} = γR_t + (1−γ) * good
         let old_rep = score.value;
+        let old_finalized = score.messages_finalized;
         score.value = (self.gamma * old_rep + (1.0 - self.gamma) * good_score).min(10.0); // Cap at 10.0
         score.messages_finalized += 1;
         score.last_update = chrono::Utc::now().timestamp();
+
+        tracing::info!(
+            pubkey = %pubkey.to_hex(),
+            reputation_before = old_rep,
+            reputation_after = score.value,
+            messages_finalized_before = old_finalized,
+            messages_finalized_after = score.messages_finalized,
+            diversity = diversity,
+            depth = depth,
+            good_score = good_score,
+            "✅ Reputation increased (good behavior)"
+        );
     }
 
     /// Update reputation negatively when message is invalid/slashed
@@ -85,19 +121,167 @@ impl ReputationTracker {
         let old_rep = score.value;
         score.value = (self.gamma * old_rep + (1.0 - self.gamma) * (-penalty)).max(0.1); // Floor at 0.1
         score.last_update = chrono::Utc::now().timestamp();
+
+        tracing::info!(
+            pubkey = %pubkey.to_hex(),
+            reputation_before = old_rep,
+            reputation_after = score.value,
+            penalty = penalty,
+            "⚠️ Reputation decreased (bad behavior)"
+        );
+    }
+
+    /// Comprehensive reputation update per whitepaper Appendix E
+    /// Combines good score from finalized approvals and bad score from overlap
+    pub async fn update_reputation(
+        &self,
+        pubkey: &PublicKey,
+        finalized_count: usize,
+        diversity: f64,
+        depth: u32,
+        active_peers: &[PublicKey],
+    ) {
+        // Calculate good score from finalized approvals
+        let good = if finalized_count > 0 {
+            finalized_count as f64 * (1.0 + diversity / (1.0 + depth as f64))
+        } else {
+            0.0
+        };
+
+        // Calculate overlap penalty (η parameter from paper)
+        let eta = 0.5; // Overlap penalty weight
+        let overlap_score = self.calculate_overlap_score(pubkey, active_peers).await;
+        let bad = eta * overlap_score;
+
+        // Update reputation: R_{t+1} = γR_t + (1−γ)(good − bad)
+        let mut scores = self.scores.write().await;
+        let score = scores.entry(*pubkey).or_insert_with(ReputationScore::new);
+
+        let old_rep = score.value;
+        let old_finalized = score.messages_finalized;
+        let new_rep = self.gamma * old_rep + (1.0 - self.gamma) * (good - bad);
+
+        // Apply bounds [0.1, 10.0]
+        score.value = new_rep.clamp(0.1, 10.0);
+        score.messages_finalized += finalized_count as u64;
+        score.last_update = chrono::Utc::now().timestamp();
+
+        tracing::info!(
+            pubkey = %pubkey.to_hex(),
+            reputation_before = old_rep,
+            reputation_after = score.value,
+            messages_finalized_before = old_finalized,
+            messages_finalized_after = score.messages_finalized,
+            finalized_count = finalized_count,
+            diversity = diversity,
+            depth = depth,
+            overlap_score = overlap_score,
+            good_score = good,
+            bad_score = bad,
+            "🔄 Reputation updated (comprehensive)"
+        );
+    }
+
+    /// Calculate overlap score for Sybil detection
+    /// Per whitepaper: detect when multiple keys approve similar message sets
+    pub async fn calculate_overlap_score(
+        &self,
+        pubkey: &PublicKey,
+        other_keys: &[PublicKey],
+    ) -> f64 {
+        let history = self.approval_history.read().await;
+
+        let my_approvals = match history.get(pubkey) {
+            Some(approvals) => approvals,
+            None => return 0.0,
+        };
+
+        if my_approvals.is_empty() {
+            return 0.0;
+        }
+
+        let mut max_overlap: f64 = 0.0;
+
+        for other_key in other_keys {
+            if other_key == pubkey {
+                continue;
+            }
+
+            if let Some(other_approvals) = history.get(other_key) {
+                // Calculate Jaccard similarity
+                let intersection: usize = my_approvals
+                    .iter()
+                    .filter(|msg| other_approvals.contains(msg))
+                    .count();
+
+                let union = my_approvals.len() + other_approvals.len() - intersection;
+
+                if union > 0 {
+                    let overlap = intersection as f64 / union as f64;
+                    max_overlap = max_overlap.max(overlap);
+                }
+            }
+        }
+
+        // Return penalty factor based on overlap (0 = no overlap, 1 = complete overlap)
+        max_overlap
+    }
+
+    /// Record approval for overlap detection
+    pub async fn record_approval(&self, pubkey: &PublicKey, message_id: adic_types::MessageId) {
+        let mut history = self.approval_history.write().await;
+        let approvals = history.entry(*pubkey).or_insert_with(Vec::new);
+
+        // Keep only recent approvals (last 100)
+        let removed = if approvals.len() >= 100 {
+            Some(approvals.remove(0))
+        } else {
+            None
+        };
+
+        let old_count = approvals.len();
+        approvals.push(message_id);
+
+        tracing::info!(
+            pubkey = %pubkey.to_hex(),
+            message_id = %message_id,
+            approvals_before = old_count,
+            approvals_after = approvals.len(),
+            removed_message_id = ?removed,
+            "📝 Approval recorded for overlap detection"
+        );
     }
 
     /// Apply time-based decay to all reputations
     pub async fn apply_decay(&self) {
         let mut scores = self.scores.write().await;
         let now = chrono::Utc::now().timestamp();
+        let mut decayed_count = 0;
+        let mut total_decay = 0.0;
 
-        for score in scores.values_mut() {
+        for (_pubkey, score) in scores.iter_mut() {
             let time_diff = (now - score.last_update) as f64 / 86400.0; // days
             if time_diff > 0.0 {
+                let old_value = score.value;
                 score.value = (score.value * self.decay_factor.powf(time_diff)).max(0.1);
                 score.last_update = now;
+
+                let decay_amount = old_value - score.value;
+                if decay_amount > 0.001 {
+                    // Only log significant decays
+                    decayed_count += 1;
+                    total_decay += decay_amount;
+                }
             }
+        }
+
+        if decayed_count > 0 {
+            tracing::info!(
+                accounts_decayed = decayed_count,
+                total_decay_amount = total_decay,
+                decay_factor = self.decay_factor,
+                "⏰ Applied time-based reputation decay"
+            );
         }
     }
 
@@ -111,8 +295,16 @@ impl ReputationTracker {
     pub async fn set_reputation(&self, pubkey: &PublicKey, value: f64) {
         let mut scores = self.scores.write().await;
         let score = scores.entry(*pubkey).or_insert_with(ReputationScore::new);
+        let old_value = score.value;
         score.value = value;
         score.last_update = chrono::Utc::now().timestamp();
+
+        tracing::info!(
+            pubkey = %pubkey.to_hex(),
+            reputation_before = old_value,
+            reputation_after = value,
+            "🔧 Reputation manually set (testing)"
+        );
     }
 }
 
@@ -128,6 +320,7 @@ impl Clone for ReputationTracker {
             scores: Arc::clone(&self.scores),
             decay_factor: self.decay_factor,
             gamma: self.gamma,
+            approval_history: Arc::clone(&self.approval_history),
         }
     }
 }

@@ -5,7 +5,10 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-#[derive(Debug, Clone, PartialEq)]
+// Default deposit amount per whitepaper - refundable anti-spam deposit
+pub const DEFAULT_DEPOSIT_AMOUNT: f64 = 0.1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DepositStatus {
     Escrowed,
     Refunded,
@@ -110,11 +113,25 @@ impl DepositManager {
         };
 
         let mut deposits = self.deposits.write().await;
+        let escrowed_before = deposits
+            .values()
+            .filter(|d| d.status == DepositStatus::Escrowed)
+            .count();
         deposits.insert(message_id, deposit);
+        let escrowed_after = deposits
+            .values()
+            .filter(|d| d.status == DepositStatus::Escrowed)
+            .count();
 
         info!(
-            "Escrowed {} for message {}",
-            self.deposit_amount, message_id
+            message_id = %message_id,
+            amount_adic = self.deposit_amount.to_adic(),
+            proposer = %proposer.to_hex(),
+            escrowed_count_before = escrowed_before,
+            escrowed_count_after = escrowed_after,
+            total_deposits = deposits.len(),
+            status = "escrowed",
+            "💎 Deposit escrowed"
         );
 
         Ok(())
@@ -144,9 +161,18 @@ impl DepositManager {
                         })?;
                 }
 
+                let old_status = deposit.status.clone();
                 deposit.status = DepositStatus::Refunded;
+                let proposer = deposit.proposer_pk;
 
-                info!("Refunded {} for message {}", deposit.amount, message_id);
+                info!(
+                    message_id = %message_id,
+                    proposer = %proposer.to_hex(),
+                    amount_adic = deposit.amount.to_adic(),
+                    status_before = ?old_status,
+                    status_after = ?deposit.status,
+                    "💰 Deposit refunded"
+                );
 
                 Ok(())
             }
@@ -197,9 +223,20 @@ impl DepositManager {
                         })?;
                 }
 
+                let old_status = deposit.status.clone();
+                let proposer = deposit.proposer_pk;
                 deposit.status = DepositStatus::Slashed;
 
-                warn!("Slashed {} for {}: {}", deposit.amount, message_id, reason);
+                warn!(
+                    message_id = %message_id,
+                    proposer = %proposer.to_hex(),
+                    amount_adic = deposit.amount.to_adic(),
+                    status_before = ?old_status,
+                    status_after = ?deposit.status,
+                    reason = %reason,
+                    treasury_transfer = self.balance_manager.is_some(),
+                    "❌ Deposit slashed"
+                );
 
                 Ok(())
             }
@@ -288,8 +325,14 @@ impl DepositManager {
     }
 
     pub async fn set_deposit_amount(&mut self, amount: AdicAmount) {
+        let old_amount = self.deposit_amount;
         self.deposit_amount = amount;
-        info!("Deposit amount updated to {}", amount);
+        info!(
+            amount_before = old_amount.to_adic(),
+            amount_after = amount.to_adic(),
+            change = (amount.to_adic() - old_amount.to_adic()),
+            "💰 Deposit requirement updated"
+        );
     }
 
     pub fn get_deposit_amount(&self) -> AdicAmount {
@@ -309,12 +352,28 @@ impl DepositManager {
 
         let num_removed = to_remove.len();
 
+        // Collect status counts before removing
+        let mut removed_by_status = std::collections::HashMap::new();
+        for id in &to_remove {
+            if let Some(deposit) = deposits.get(id) {
+                *removed_by_status.entry(deposit.status.clone()).or_insert(0) += 1;
+            }
+        }
+
+        // Now remove the deposits
         for id in to_remove {
             deposits.remove(&id);
         }
 
         if num_removed > 0 {
-            info!("Cleaned up {} old deposits", num_removed);
+            info!(
+                removed_count = num_removed,
+                deposits_before = deposits.len() + num_removed,
+                deposits_after = deposits.len(),
+                cutoff_days = older_than_days,
+                removed_by_status = ?removed_by_status,
+                "🧹 Old deposits cleaned up"
+            );
         }
     }
 }
@@ -326,7 +385,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deposit_lifecycle() {
-        let manager = DepositManager::new(10.0);
+        let manager = DepositManager::new(DEFAULT_DEPOSIT_AMOUNT);
         let msg_id = MessageId::new(b"test");
         let proposer = PublicKey::from_bytes([1; 32]);
 
@@ -350,7 +409,7 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let balance_manager = Arc::new(BalanceManager::new(storage));
 
-        let deposit_amount = AdicAmount::from_adic(10.0);
+        let deposit_amount = AdicAmount::from_adic(DEFAULT_DEPOSIT_AMOUNT);
         let manager = DepositManager::with_balance_manager(deposit_amount, balance_manager.clone());
 
         let msg_id = MessageId::new(b"test");
@@ -394,7 +453,7 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
         let balance_manager = Arc::new(BalanceManager::new(storage));
 
-        let deposit_amount = AdicAmount::from_adic(10.0);
+        let deposit_amount = AdicAmount::from_adic(DEFAULT_DEPOSIT_AMOUNT);
         let manager = DepositManager::with_balance_manager(deposit_amount, balance_manager.clone());
 
         let msg_id = MessageId::new(b"test");
@@ -418,14 +477,14 @@ mod tests {
             .unwrap();
         assert_eq!(treasury_balance, deposit_amount);
 
-        // Check proposer lost the funds
+        // Check proposer lost the funds (100 - 0.1 = 99.9)
         let proposer_balance = balance_manager.get_balance(proposer_addr).await.unwrap();
-        assert_eq!(proposer_balance, AdicAmount::from_adic(90.0));
+        assert_eq!(proposer_balance, AdicAmount::from_adic(99.9));
     }
 
     #[tokio::test]
     async fn test_deposit_stats() {
-        let manager = DepositManager::new(10.0);
+        let manager = DepositManager::new(DEFAULT_DEPOSIT_AMOUNT);
 
         // Create multiple deposits
         for i in 0..5 {

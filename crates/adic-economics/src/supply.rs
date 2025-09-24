@@ -63,13 +63,24 @@ impl TokenSupply {
             );
         }
 
+        let old_supply = metrics.total_supply;
         metrics.total_supply = amount;
-        info!("Genesis mint completed: {}", amount);
+
+        info!(
+            amount = amount.to_adic(),
+            total_supply_before = old_supply.to_adic(),
+            total_supply_after = metrics.total_supply.to_adic(),
+            "🌱 Genesis supply minted"
+        );
         Ok(())
     }
 
     pub async fn mint_emission(&self, amount: AdicAmount) -> Result<()> {
         let mut metrics = self.metrics.write().await;
+
+        let old_total = metrics.total_supply;
+        let old_emission = metrics.emission_issued;
+        let old_circulating = metrics.circulating_supply;
 
         let new_supply = metrics
             .total_supply
@@ -87,7 +98,16 @@ impl TokenSupply {
         metrics.emission_issued = metrics.emission_issued.saturating_add(amount);
         metrics.circulating_supply = metrics.circulating_supply.saturating_add(amount);
 
-        info!("Emission minted: {}. Total supply: {}", amount, new_supply);
+        info!(
+            amount = amount.to_adic(),
+            total_supply_before = old_total.to_adic(),
+            total_supply_after = new_supply.to_adic(),
+            emission_issued_before = old_emission.to_adic(),
+            emission_issued_after = metrics.emission_issued.to_adic(),
+            circulating_before = old_circulating.to_adic(),
+            circulating_after = metrics.circulating_supply.to_adic(),
+            "💰 Emission minted"
+        );
         Ok(())
     }
 
@@ -98,34 +118,81 @@ impl TokenSupply {
             bail!("Cannot burn more than circulating supply");
         }
 
+        let old_circulating = metrics.circulating_supply;
+        let old_burned = metrics.burned_amount;
+
         metrics.circulating_supply = metrics.circulating_supply.saturating_sub(amount);
         metrics.burned_amount = metrics.burned_amount.saturating_add(amount);
 
         info!(
-            "Burned: {}. Circulating supply: {}",
-            amount, metrics.circulating_supply
+            amount = amount.to_adic(),
+            circulating_before = old_circulating.to_adic(),
+            circulating_after = metrics.circulating_supply.to_adic(),
+            burned_before = old_burned.to_adic(),
+            burned_after = metrics.burned_amount.to_adic(),
+            "🔥 Tokens burned"
         );
         Ok(())
     }
 
     pub async fn update_treasury_balance(&self, balance: AdicAmount) {
         let mut metrics = self.metrics.write().await;
+        let old_balance = metrics.treasury_balance;
         metrics.treasury_balance = balance;
+
+        if old_balance != balance {
+            info!(
+                balance_before = old_balance.to_adic(),
+                balance_after = balance.to_adic(),
+                change = (balance.to_adic() - old_balance.to_adic()),
+                "🏛️ Treasury balance updated"
+            );
+        }
     }
 
     pub async fn update_liquidity_balance(&self, balance: AdicAmount) {
         let mut metrics = self.metrics.write().await;
+        let old_balance = metrics.liquidity_balance;
         metrics.liquidity_balance = balance;
+
+        if old_balance != balance {
+            info!(
+                balance_before = old_balance.to_adic(),
+                balance_after = balance.to_adic(),
+                change = (balance.to_adic() - old_balance.to_adic()),
+                "💧 Liquidity balance updated"
+            );
+        }
     }
 
     pub async fn update_genesis_balance(&self, balance: AdicAmount) {
         let mut metrics = self.metrics.write().await;
+        let old_balance = metrics.genesis_balance;
         metrics.genesis_balance = balance;
+
+        if old_balance != balance {
+            info!(
+                balance_before = old_balance.to_adic(),
+                balance_after = balance.to_adic(),
+                change = (balance.to_adic() - old_balance.to_adic()),
+                "🌟 Genesis balance updated"
+            );
+        }
     }
 
     pub async fn update_circulating_supply(&self, amount: AdicAmount) {
         let mut metrics = self.metrics.write().await;
+        let old_supply = metrics.circulating_supply;
         metrics.circulating_supply = amount;
+
+        if old_supply != amount {
+            info!(
+                supply_before = old_supply.to_adic(),
+                supply_after = amount.to_adic(),
+                change = (amount.to_adic() - old_supply.to_adic()),
+                "🔄 Circulating supply updated"
+            );
+        }
     }
 
     pub async fn get_total_supply(&self) -> AdicAmount {
@@ -145,12 +212,27 @@ impl TokenSupply {
 
     pub async fn add_transfer_event(&self, event: TransferEvent) {
         let mut history = self.transfer_history.write().await;
-        history.push(event);
+        let old_count = history.len();
+        history.push(event.clone());
 
         // Keep only last 10000 events to prevent unbounded growth
-        if history.len() > 10000 {
+        let pruned = if history.len() > 10000 {
             history.drain(0..1000);
-        }
+            1000
+        } else {
+            0
+        };
+
+        info!(
+            from = %event.from,
+            to = %event.to,
+            amount = event.amount.to_adic(),
+            reason = ?event.reason,
+            history_size_before = old_count,
+            history_size_after = history.len(),
+            events_pruned = pruned,
+            "📜 Transfer event recorded"
+        );
     }
 
     pub async fn get_transfer_history(&self, limit: usize) -> Vec<TransferEvent> {

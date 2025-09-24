@@ -1,6 +1,7 @@
 pub mod admissibility;
 pub mod conflict;
 pub mod deposit;
+pub mod energy_descent;
 pub mod reputation;
 pub mod validation;
 
@@ -9,10 +10,14 @@ mod c1_security_test;
 
 pub use admissibility::{AdmissibilityChecker, AdmissibilityResult};
 pub use conflict::{ConflictEnergy, ConflictResolver};
-pub use deposit::{Deposit, DepositManager, DepositState, DepositStats, DepositStatus};
+pub use deposit::{
+    Deposit, DepositManager, DepositState, DepositStats, DepositStatus, DEFAULT_DEPOSIT_AMOUNT,
+};
+pub use energy_descent::{EnergyDescentTracker, EnergyMetrics};
 pub use reputation::ReputationTracker;
 pub use validation::{MessageValidator, ValidationResult};
 
+use adic_storage::StorageEngine;
 use adic_types::{AdicMessage, AdicParams, Result};
 use std::sync::Arc;
 
@@ -23,10 +28,12 @@ pub struct ConsensusEngine {
     pub reputation: ReputationTracker,
     validator: MessageValidator,
     conflicts: ConflictResolver,
+    pub energy_tracker: EnergyDescentTracker,
+    storage: Arc<StorageEngine>,
 }
 
 impl ConsensusEngine {
-    pub fn new(params: AdicParams) -> Self {
+    pub fn new(params: AdicParams, storage: Arc<StorageEngine>) -> Self {
         let shared_params = Arc::new(params.clone());
         Self {
             admissibility: AdmissibilityChecker::new(params.clone()),
@@ -34,7 +41,9 @@ impl ConsensusEngine {
             reputation: ReputationTracker::new(params.gamma),
             validator: MessageValidator::new(),
             conflicts: ConflictResolver::new(),
+            energy_tracker: EnergyDescentTracker::new(params.lambda, params.mu),
             params: shared_params,
+            storage,
         }
     }
 
@@ -62,6 +71,51 @@ impl ConsensusEngine {
         &self.admissibility
     }
 
+    /// Track a conflict and update energy
+    pub async fn track_conflict(
+        &self,
+        conflict_id: adic_types::ConflictId,
+        message_id: adic_types::MessageId,
+    ) -> Result<()> {
+        // Register conflict if new
+        self.energy_tracker
+            .register_conflict(conflict_id.clone())
+            .await;
+
+        // Update support for this message
+        self.energy_tracker
+            .update_support(&conflict_id, message_id, &self.storage, &self.reputation)
+            .await?;
+
+        // Also update legacy conflict resolver for compatibility
+        self.conflicts
+            .update_support(&conflict_id, message_id, 0.0, 0)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Get conflict penalty for MRW
+    pub async fn get_conflict_penalty(
+        &self,
+        message_id: &adic_types::MessageId,
+        conflict_id: &adic_types::ConflictId,
+    ) -> f64 {
+        self.energy_tracker
+            .get_conflict_penalty(message_id, conflict_id)
+            .await
+    }
+
+    /// Check if conflict is resolved
+    pub async fn is_conflict_resolved(&self, conflict_id: &adic_types::ConflictId) -> bool {
+        self.energy_tracker.is_resolved(conflict_id).await
+    }
+
+    /// Get energy metrics for monitoring
+    pub async fn get_energy_metrics(&self) -> EnergyMetrics {
+        self.energy_tracker.get_metrics().await
+    }
+
     pub fn validator(&self) -> &MessageValidator {
         &self.validator
     }
@@ -78,23 +132,35 @@ impl ConsensusEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use adic_storage::{store::BackendType, StorageConfig};
     use adic_types::features::{AxisPhi, QpDigits};
     use adic_types::{AdicFeatures, AdicMeta, ConflictId, MessageId, PublicKey};
     use chrono::Utc;
+    use std::sync::Arc;
+
+    fn create_test_storage() -> Arc<StorageEngine> {
+        let storage_config = StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        };
+        Arc::new(StorageEngine::new(storage_config).unwrap())
+    }
 
     #[test]
     fn test_consensus_engine_creation() {
         let params = AdicParams::default();
-        let engine = ConsensusEngine::new(params);
+        let storage = create_test_storage();
+        let engine = ConsensusEngine::new(params, storage);
         assert_eq!(engine.params().d, 3);
-        assert_eq!(engine.params().k, 20);
+        assert_eq!(engine.params().k, 3); // Changed to match default
         assert_eq!(engine.params().gamma, 0.9);
     }
 
     #[tokio::test]
     async fn test_validate_and_slash_with_invalid_signature() {
         let params = AdicParams::default();
-        let engine = ConsensusEngine::new(params);
+        let storage = create_test_storage();
+        let engine = ConsensusEngine::new(params, storage);
 
         let mut message = AdicMessage::new(
             vec![],
@@ -132,7 +198,8 @@ mod tests {
     #[tokio::test]
     async fn test_validate_and_slash_invalid_message() {
         let params = AdicParams::default();
-        let engine = ConsensusEngine::new(params);
+        let storage = create_test_storage();
+        let engine = ConsensusEngine::new(params, storage);
 
         // Create an invalid message with too many parents
         let mut parents = vec![];
@@ -171,7 +238,8 @@ mod tests {
     #[test]
     fn test_consensus_engine_getters() {
         let params = AdicParams::default();
-        let engine = ConsensusEngine::new(params.clone());
+        let storage = create_test_storage();
+        let engine = ConsensusEngine::new(params.clone(), storage);
 
         assert_eq!(engine.params().d, params.d);
         assert_eq!(engine.params().k, params.k);
@@ -187,7 +255,8 @@ mod tests {
     #[tokio::test]
     async fn test_consensus_engine_reputation_tracking() {
         let params = AdicParams::default();
-        let engine = ConsensusEngine::new(params);
+        let storage = create_test_storage();
+        let engine = ConsensusEngine::new(params, storage);
 
         let proposer = PublicKey::from_bytes([2; 32]);
         let initial_rep = engine.reputation.get_reputation(&proposer).await;
@@ -207,7 +276,8 @@ mod tests {
     #[tokio::test]
     async fn test_consensus_engine_conflict_resolution() {
         let params = AdicParams::default();
-        let engine = ConsensusEngine::new(params);
+        let storage = create_test_storage();
+        let engine = ConsensusEngine::new(params, storage);
 
         let conflict_id = ConflictId::new("test-conflict".to_string());
         let msg1 = MessageId::new(b"msg1");

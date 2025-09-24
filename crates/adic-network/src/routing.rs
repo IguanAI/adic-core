@@ -54,6 +54,7 @@ impl RoutingTable {
     pub async fn add_axis_route(&self, axis_id: u32, ball_id: u64, peers: Vec<PeerId>) {
         let mut axis_routes = self.axis_routes.write().await;
         let routes = axis_routes.entry(axis_id).or_insert_with(Vec::new);
+        let routes_before = routes.len();
 
         // Check if route already exists
         let exists = routes.iter().any(|r| r.ball_id == ball_id);
@@ -71,33 +72,47 @@ impl RoutingTable {
 
             // Update peer-axis mapping
             let mut peer_axes = self.peer_axes.write().await;
+            let mut new_mappings = 0;
             for peer in &peers {
-                peer_axes
-                    .entry(*peer)
-                    .or_insert_with(HashSet::new)
-                    .insert(axis_id);
+                let axes = peer_axes.entry(*peer).or_insert_with(HashSet::new);
+                if axes.insert(axis_id) {
+                    new_mappings += 1;
+                }
             }
 
+            info!(
+                axis_id = axis_id,
+                ball_id = ball_id,
+                peer_count = peers.len(),
+                routes_before = routes_before,
+                routes_after = routes.len(),
+                new_peer_axis_mappings = new_mappings,
+                total_axes = axis_routes.len(),
+                "🎯 Route added to axis"
+            );
+        } else {
             debug!(
-                "Added route for axis {} ball {} with {} peers",
-                axis_id,
-                ball_id,
-                peers.len()
+                axis_id = axis_id,
+                ball_id = ball_id,
+                "Route already exists for axis/ball combination"
             );
         }
     }
 
     pub async fn find_route_for_message(&self, message: &AdicMessage) -> Vec<PeerId> {
         // Check cache first
-        {
+        let cache_hit = {
             let cache = self.routing_cache.read().await;
             if let Some(cached_peers) = cache.get(&message.id) {
                 return cached_peers.clone();
             }
-        }
+            false
+        };
 
         let mut selected_peers = HashSet::new();
         let axis_routes = self.axis_routes.read().await;
+        let mut routes_examined = 0;
+        let mut proximity_matches = 0;
 
         // Route based on p-adic features
         for axis_phi in &message.features.phi {
@@ -107,9 +122,11 @@ impl RoutingTable {
                 let target_ball = axis_phi.qp_digits.digits.first().copied().unwrap_or(0) as u64;
 
                 for route in routes {
+                    routes_examined += 1;
                     let distance = (route.ball_id as i64 - target_ball as i64).abs();
                     if distance < 10 {
                         // Within proximity threshold
+                        proximity_matches += 1;
                         selected_peers.extend(route.peers.iter().cloned());
                     }
                 }
@@ -117,7 +134,8 @@ impl RoutingTable {
         }
 
         // If no axis-specific routes, use all known peers for the axes
-        if selected_peers.is_empty() {
+        let fallback_used = selected_peers.is_empty();
+        if fallback_used {
             let peer_axes = self.peer_axes.read().await;
             for axis_phi in &message.features.phi {
                 for (peer, axes) in peer_axes.iter() {
@@ -129,17 +147,34 @@ impl RoutingTable {
         }
 
         let result: Vec<PeerId> = selected_peers.into_iter().collect();
+        let peer_count = result.len();
 
         // Cache the result
         {
             let mut cache = self.routing_cache.write().await;
+            let cache_size = cache.len();
             cache.insert(message.id, result.clone());
 
             // Limit cache size
             if cache.len() > 10000 {
+                info!(
+                    cache_size_before = cache_size,
+                    "Routing cache cleared (exceeded limit)"
+                );
                 cache.clear();
             }
         }
+
+        info!(
+            message_id = %message.id,
+            cache_hit = cache_hit,
+            routes_examined = routes_examined,
+            proximity_matches = proximity_matches,
+            fallback_used = fallback_used,
+            selected_peers = peer_count,
+            axes_count = message.features.phi.len(),
+            "📋 Route calculated for message"
+        );
 
         result
     }
@@ -148,12 +183,18 @@ impl RoutingTable {
         let mut bloom = self.message_bloom.write().await;
         let id_bytes = message_id.as_bytes();
 
-        if bloom.contains(id_bytes) {
-            true
-        } else {
+        let is_duplicate = bloom.contains(id_bytes);
+        if !is_duplicate {
             bloom.insert(id_bytes);
-            false
         }
+
+        debug!(
+            message_id = %message_id,
+            is_duplicate = is_duplicate,
+            "🔍 Duplicate check performed"
+        );
+
+        is_duplicate
     }
 
     pub async fn get_axis_peers(&self, axis_id: u32) -> Vec<PeerId> {
@@ -182,21 +223,38 @@ impl RoutingTable {
     pub async fn remove_peer(&self, peer_id: &PeerId) {
         // Remove from axis routes
         let mut axis_routes = self.axis_routes.write().await;
+        let mut routes_affected = 0;
+        let mut peers_removed = 0;
         for routes in axis_routes.values_mut() {
             for route in routes {
+                let before = route.peers.len();
                 route.peers.retain(|p| p != peer_id);
+                if before != route.peers.len() {
+                    routes_affected += 1;
+                    peers_removed += before - route.peers.len();
+                }
             }
         }
 
         // Remove from peer-axis mapping
         let mut peer_axes = self.peer_axes.write().await;
+        let axes_count = peer_axes.get(peer_id).map(|a| a.len()).unwrap_or(0);
         peer_axes.remove(peer_id);
 
         // Clear routing cache entries that include this peer
         let mut cache = self.routing_cache.write().await;
+        let cache_before = cache.len();
         cache.retain(|_, peers| !peers.contains(peer_id));
+        let cache_cleared = cache_before - cache.len();
 
-        info!("Removed peer {} from routing table", peer_id);
+        info!(
+            peer_id = %peer_id,
+            routes_affected = routes_affected,
+            peers_removed = peers_removed,
+            axes_removed = axes_count,
+            cache_entries_cleared = cache_cleared,
+            "🚫 Peer removed from routing table"
+        );
     }
 
     pub async fn clear_cache(&self) {

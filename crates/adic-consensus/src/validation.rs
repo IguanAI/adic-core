@@ -2,6 +2,7 @@ use adic_crypto::CryptoEngine;
 use adic_types::{AdicMessage, MessageId};
 use chrono::Utc;
 use std::collections::HashSet;
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct ValidationResult {
@@ -68,6 +69,20 @@ impl MessageValidator {
         self.validate_parents(message, &mut result);
         self.validate_payload(message, &mut result);
         self.validate_features(message, &mut result);
+
+        info!(
+            message_id = %message.id,
+            proposer = %message.proposer_pk.to_hex(),
+            is_valid = result.is_valid,
+            error_count = result.errors.len(),
+            warning_count = result.warnings.len(),
+            parents_count = message.parents.len(),
+            payload_size = message.payload.len(),
+            features_count = message.features.dimension(),
+            errors = ?result.errors,
+            warnings = ?result.warnings,
+            "🔍 Message validated"
+        );
 
         result
     }
@@ -179,7 +194,16 @@ impl MessageValidator {
         message: &AdicMessage,
         ancestor_ids: &HashSet<MessageId>,
     ) -> bool {
-        !ancestor_ids.contains(&message.id)
+        let is_acyclic = !ancestor_ids.contains(&message.id);
+
+        info!(
+            message_id = %message.id,
+            ancestor_count = ancestor_ids.len(),
+            is_acyclic = is_acyclic,
+            "🔄 Acyclicity checked"
+        );
+
+        is_acyclic
     }
 }
 

@@ -329,22 +329,29 @@ impl SyncProtocol {
 
         self.event_sender.send(SyncEvent::SyncStarted(peer)).ok();
 
-        // Request frontier
-        let _frontier_request_id = self.request_frontier(peer).await?;
+        // Store the request for tracking
+        let request_id = {
+            let mut state = self.state.write().await;
+            let id = state.generate_request_id();
+            state
+                .pending_requests
+                .insert(id, (SyncRequest::GetFrontier, peer, Instant::now()));
+            id
+        };
 
-        // Wait for frontier response
-        tokio::time::sleep(self.config.request_timeout).await;
+        info!(
+            "Starting incremental sync with peer {} (request {})",
+            peer, request_id
+        );
 
-        // In a real implementation, process frontier and request missing messages
+        // Note: The actual sync request sending is handled by the NetworkEngine
+        // which has access to the transport layer. This function just tracks the sync state.
+        // The NetworkEngine will call send_sync_request() to actually send the GetFrontier request.
 
         drop(permit);
 
-        self.event_sender.send(SyncEvent::SyncCompleted(peer)).ok();
-
-        {
-            let mut state = self.state.write().await;
-            state.syncing_from.remove(&peer);
-        }
+        // Don't mark as complete here - wait for actual response
+        // The sync will be marked complete when we receive and process the response
 
         Ok(())
     }

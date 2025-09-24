@@ -1,5 +1,5 @@
 # Multi-stage build for ADIC Core
-FROM rust:1.75-slim as builder
+FROM rust:1.89.0-slim as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -22,12 +22,18 @@ COPY crates/ ./crates/
 RUN cargo build --release --bin adic
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    libssl-dev \
+    curl \
+    build-essential \
+    pkg-config \
+    libclang-dev \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -49,4 +55,4 @@ WORKDIR /data
 EXPOSE 8080 9000
 
 # Default command
-CMD ["adic", "start", "--data-dir", "/data", "--api-port", "8080", "--port", "9000"]
+CMD ["adic", "start", "--data-dir", "/data", "--api-port", "8080", "--port", "9000", "--validator"]

@@ -127,11 +127,15 @@ impl PeerManager {
 
     pub async fn add_peer(&self, peer_info: PeerInfo) -> Result<()> {
         let mut peers = self.peers.write().await;
+        let peers_before = peers.len();
 
+        let mut evicted_peer = None;
         if peers.len() >= self.max_peers {
             // Find and remove lowest scoring peer
             if let Some(worst_peer) = self.find_worst_peer(&peers).await {
-                peers.remove(&worst_peer);
+                if let Some(evicted_info) = peers.remove(&worst_peer) {
+                    evicted_peer = Some((worst_peer, evicted_info.reputation_score));
+                }
                 self.event_sender
                     .send(PeerEvent::PeerDisconnected(worst_peer))
                     .map_err(|e| AdicError::Network(format!("Failed to send event: {}", e)))?;
@@ -139,25 +143,49 @@ impl PeerManager {
         }
 
         let peer_id = peer_info.peer_id;
+        let reputation = peer_info.reputation_score;
+        let connection_state = peer_info.connection_state;
+        let address_count = peer_info.addresses.len();
         peers.insert(peer_id, peer_info);
 
         self.event_sender
             .send(PeerEvent::PeerConnected(peer_id))
             .map_err(|e| AdicError::Network(format!("Failed to send event: {}", e)))?;
 
-        info!("Added peer: {}", peer_id);
+        info!(
+            peer_id = %peer_id,
+            peers_before = peers_before,
+            peers_after = peers.len(),
+            max_peers = self.max_peers,
+            reputation = reputation,
+            connection_state = ?connection_state,
+            address_count = address_count,
+            evicted_peer = ?evicted_peer,
+            "🤝 Peer added"
+        );
         Ok(())
     }
 
     pub async fn remove_peer(&self, peer_id: &PeerId) -> Option<PeerInfo> {
         let mut peers = self.peers.write().await;
+        let peers_before = peers.len();
         let peer = peers.remove(peer_id);
 
-        if peer.is_some() {
+        if let Some(ref peer_info) = peer {
+            info!(
+                peer_id = %peer_id,
+                peers_before = peers_before,
+                peers_after = peers.len(),
+                reputation_before = peer_info.reputation_score,
+                connection_state = ?peer_info.connection_state,
+                messages_sent = peer_info.message_stats.messages_sent,
+                messages_received = peer_info.message_stats.messages_received,
+                last_seen = ?peer_info.last_seen.elapsed(),
+                "👋 Peer removed"
+            );
             self.event_sender
                 .send(PeerEvent::PeerDisconnected(*peer_id))
                 .ok();
-            info!("Removed peer: {}", peer_id);
         }
 
         peer
@@ -171,10 +199,21 @@ impl PeerManager {
     pub async fn update_peer_score(&self, peer_id: &PeerId, delta: f64) {
         let mut peers = self.peers.write().await;
         if let Some(peer) = peers.get_mut(peer_id) {
+            let old_score = peer.reputation_score;
             peer.reputation_score = (peer.reputation_score + delta).clamp(0.0, 100.0);
+            let new_score = peer.reputation_score;
+
+            info!(
+                peer_id = %peer_id,
+                score_before = old_score,
+                score_after = new_score,
+                delta = delta,
+                clamped = (old_score + delta != new_score),
+                "📈 Peer score updated"
+            );
 
             self.event_sender
-                .send(PeerEvent::PeerScoreUpdated(*peer_id, peer.reputation_score))
+                .send(PeerEvent::PeerScoreUpdated(*peer_id, new_score))
                 .ok();
         }
     }
@@ -188,6 +227,8 @@ impl PeerManager {
     ) {
         let mut peers = self.peers.write().await;
         if let Some(peer) = peers.get_mut(peer_id) {
+            let old_stats = peer.message_stats.clone();
+
             if sent {
                 peer.message_stats.messages_sent += 1;
                 peer.message_stats.bytes_sent += bytes;
@@ -205,6 +246,22 @@ impl PeerManager {
             }
 
             peer.last_seen = Instant::now();
+
+            debug!(
+                peer_id = %peer_id,
+                sent = sent,
+                bytes = bytes,
+                valid = ?valid,
+                messages_sent_before = old_stats.messages_sent,
+                messages_sent_after = peer.message_stats.messages_sent,
+                messages_received_before = old_stats.messages_received,
+                messages_received_after = peer.message_stats.messages_received,
+                messages_validated_before = old_stats.messages_validated,
+                messages_validated_after = peer.message_stats.messages_validated,
+                messages_invalid_before = old_stats.messages_invalid,
+                messages_invalid_after = peer.message_stats.messages_invalid,
+                "📊 Peer stats updated"
+            );
         }
     }
 
@@ -250,15 +307,22 @@ impl PeerManager {
 
     pub async fn ensure_min_peers(&self) {
         let peers = self.peers.read().await;
+        let total_peers = peers.len();
         let connected_count = peers
             .values()
             .filter(|p| p.connection_state == ConnectionState::Connected)
             .count();
+        let disconnected_count = total_peers - connected_count;
 
         if connected_count < self.min_peers {
             info!(
-                "Connected peers ({}) below minimum ({}), discovering more",
-                connected_count, self.min_peers
+                connected_peers = connected_count,
+                disconnected_peers = disconnected_count,
+                total_peers = total_peers,
+                min_peers = self.min_peers,
+                max_peers = self.max_peers,
+                deficit = self.min_peers - connected_count,
+                "🔍 Peer discovery triggered (below minimum)"
             );
 
             // Trigger peer discovery via Kademlia
@@ -268,6 +332,13 @@ impl PeerManager {
     }
 
     pub async fn handle_handshake(&self, peer: PeerId) -> Result<()> {
+        let start_time = Instant::now();
+        info!(
+            peer_id = %peer,
+            timeout_ms = self.handshake_timeout.as_millis(),
+            "🤝 Starting handshake"
+        );
+
         // Set handshake timeout
         let timeout_result = tokio::time::timeout(
             self.handshake_timeout,
@@ -275,13 +346,37 @@ impl PeerManager {
         )
         .await;
 
+        let elapsed = start_time.elapsed();
         match timeout_result {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => Err(e),
-            Err(_) => Err(AdicError::Network(format!(
-                "Handshake timeout with peer {}",
-                peer
-            ))),
+            Ok(Ok(())) => {
+                info!(
+                    peer_id = %peer,
+                    duration_ms = elapsed.as_millis(),
+                    "✅ Handshake completed"
+                );
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                warn!(
+                    peer_id = %peer,
+                    duration_ms = elapsed.as_millis(),
+                    error = %e,
+                    "❌ Handshake failed"
+                );
+                Err(e)
+            }
+            Err(_) => {
+                warn!(
+                    peer_id = %peer,
+                    duration_ms = elapsed.as_millis(),
+                    timeout_ms = self.handshake_timeout.as_millis(),
+                    "⏰ Handshake timeout"
+                );
+                Err(AdicError::Network(format!(
+                    "Handshake timeout with peer {}",
+                    peer
+                )))
+            }
         }
     }
 
@@ -435,10 +530,10 @@ mod tests {
     #[tokio::test]
     async fn test_peer_manager_creation() {
         use crate::deposit_verifier::RealDepositVerifier;
-        use adic_consensus::DepositManager;
+        use adic_consensus::{DepositManager, DEFAULT_DEPOSIT_AMOUNT};
 
         let keypair = Keypair::generate_ed25519();
-        let deposit_mgr = Arc::new(DepositManager::new(1.0));
+        let deposit_mgr = Arc::new(DepositManager::new(DEFAULT_DEPOSIT_AMOUNT));
         let verifier: Arc<dyn DepositVerifier> = Arc::new(RealDepositVerifier::new(deposit_mgr));
         let manager = PeerManager::new(&keypair, 100, verifier);
 
@@ -449,10 +544,10 @@ mod tests {
     #[tokio::test]
     async fn test_peer_scoring() {
         use crate::deposit_verifier::RealDepositVerifier;
-        use adic_consensus::DepositManager;
+        use adic_consensus::{DepositManager, DEFAULT_DEPOSIT_AMOUNT};
 
         let keypair = Keypair::generate_ed25519();
-        let deposit_mgr = Arc::new(DepositManager::new(1.0));
+        let deposit_mgr = Arc::new(DepositManager::new(DEFAULT_DEPOSIT_AMOUNT));
         let verifier: Arc<dyn DepositVerifier> = Arc::new(RealDepositVerifier::new(deposit_mgr));
         let manager = PeerManager::new(&keypair, 100, verifier);
 

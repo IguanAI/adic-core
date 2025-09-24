@@ -55,6 +55,9 @@ pub enum NetworkMessage {
         version: u32,
         listening_port: Option<u16>,
     },
+    /// Sync protocol messages
+    SyncRequest(crate::protocol::sync::SyncRequest),
+    SyncResponse(crate::protocol::sync::SyncResponse),
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +138,9 @@ impl ConnectionPool {
         conn: Connection,
         is_outgoing: bool,
     ) -> Result<()> {
+        let connections_before = self.connections.read().await.len();
+        let available_permits = self.semaphore.available_permits();
+
         let permit = self
             .semaphore
             .clone()
@@ -142,8 +148,9 @@ impl ConnectionPool {
             .await
             .map_err(|_| TransportError::PoolExhausted)?;
 
+        let remote_addr = conn.remote_address();
         let mut connections = self.connections.write().await;
-        connections.insert(
+        let replaced = connections.insert(
             peer_id,
             ConnectionWithPermit {
                 connection: Arc::new(conn),
@@ -156,6 +163,19 @@ impl ConnectionPool {
             outgoing.insert(peer_id);
         }
 
+        info!(
+            peer_id = %peer_id,
+            remote_addr = %remote_addr,
+            is_outgoing = is_outgoing,
+            connections_before = connections_before,
+            connections_after = connections.len(),
+            available_permits_before = available_permits,
+            available_permits_after = self.semaphore.available_permits(),
+            max_connections = self.max_connections,
+            replaced_existing = replaced.is_some(),
+            "🔗 Connection added to pool"
+        );
+
         Ok(())
     }
 
@@ -166,8 +186,24 @@ impl ConnectionPool {
 
     pub async fn remove_connection(&self, peer_id: &PeerId) -> Option<Arc<Connection>> {
         let mut connections = self.connections.write().await;
-        connections.remove(peer_id).map(|cwp| cwp.connection)
+        let connections_before = connections.len();
+        let available_permits_before = self.semaphore.available_permits();
+
+        let result = connections.remove(peer_id).map(|cwp| {
+            let conn = cwp.connection;
+            info!(
+                peer_id = %peer_id,
+                remote_addr = %conn.remote_address(),
+                connections_before = connections_before,
+                connections_after = connections.len(),
+                available_permits_before = available_permits_before,
+                available_permits_after = self.semaphore.available_permits() + 1, // Will be +1 after drop
+                "🔴 Connection removed from pool"
+            );
+            conn
+        });
         // Permit is automatically released when ConnectionWithPermit is dropped
+        result
     }
 
     pub async fn connection_count(&self) -> usize {
@@ -447,10 +483,23 @@ impl HybridTransport {
                 .with_no_client_auth()
         } else {
             // Development mode: Still use verification but with custom verifier for self-signed certs
-            error!("⚠️  WARNING: TLS certificate verification is DISABLED!");
-            error!("⚠️  This is EXTREMELY UNSAFE and should NEVER be used in production!");
-            error!("⚠️  Set use_production_tls=true for secure operation.");
-            warn!("Using development TLS mode - not suitable for production!");
+            error!(
+                security_mode = "development",
+                production_required = true,
+                "⚠️ WARNING: TLS certificate verification is DISABLED!"
+            );
+            error!(
+                risk = "extremely_high",
+                "⚠️ This is EXTREMELY UNSAFE and should NEVER be used in production!"
+            );
+            error!(
+                fix = "set use_production_tls=true",
+                "⚠️ Set use_production_tls=true for secure operation"
+            );
+            warn!(
+                tls_mode = "development",
+                "⚠️ Using development TLS mode - not suitable for production"
+            );
             rustls::ClientConfig::builder()
                 .dangerous()
                 .with_custom_certificate_verifier(Arc::new(SkipServerVerification::new()))

@@ -1,13 +1,18 @@
 use crate::config::NodeConfig;
+use crate::genesis::{account_address_from_hex, GenesisConfig, GenesisHyperedge};
+use crate::wallet::NodeWallet;
+use crate::wallet_registry::WalletRegistry;
 use adic_consensus::ConsensusEngine;
 use adic_crypto::Keypair;
-use adic_economics::EconomicsEngine;
+use adic_economics::{AccountAddress, AdicAmount, EconomicsEngine};
 use adic_finality::{FinalityConfig, FinalityEngine};
 use adic_mrw::MrwEngine;
 use adic_network::{NetworkConfig, NetworkEngine};
 use adic_storage::store::BackendType;
 use adic_storage::{MessageIndex, StorageConfig, StorageEngine, TipManager};
-use adic_types::{AdicFeatures, AdicMessage, AdicMeta, AxisPhi, MessageId, QpDigits};
+use adic_types::{
+    AdicFeatures, AdicMessage, AdicMeta, AxisId, AxisPhi, MessageId, PublicKey, QpDigits,
+};
 use anyhow::Result;
 use chrono::Utc;
 use libp2p::identity::Keypair as LibP2pKeypair;
@@ -18,6 +23,8 @@ use tracing::{debug, info, warn};
 
 pub struct AdicNode {
     config: NodeConfig,
+    wallet: Arc<NodeWallet>,
+    pub wallet_registry: Arc<WalletRegistry>,
     keypair: Keypair,
     pub consensus: Arc<ConsensusEngine>,
     pub mrw: Arc<MrwEngine>,
@@ -34,18 +41,18 @@ impl AdicNode {
     pub async fn new(config: NodeConfig) -> Result<Self> {
         info!("Initializing ADIC node...");
 
-        // Load or generate keypair
-        let keypair = if let Some(key_path) = &config.node.keypair_path {
-            let key_bytes = std::fs::read(key_path)?;
-            Keypair::from_bytes(&key_bytes)?
-        } else {
-            info!("Generating new keypair");
-            Keypair::generate()
-        };
+        // Load or create wallet
+        let data_dir = config.node.data_dir.clone();
+        let node_id = config.node.name.clone();
+        let wallet = Arc::new(NodeWallet::load_or_create(&data_dir, &node_id)?);
+
+        // Get keypair from wallet
+        let keypair = wallet.keypair().clone();
 
         info!(
-            "Node public key: {}",
-            hex::encode(keypair.public_key().as_bytes())
+            address = %hex::encode(wallet.address().as_bytes()),
+            public_key = %hex::encode(wallet.public_key().as_bytes()),
+            "🔐 Node wallet loaded"
         );
 
         // Create storage engine using configured backend
@@ -65,15 +72,20 @@ impl AdicNode {
                     }
                     #[cfg(not(feature = "rocksdb"))]
                     {
-                        warn!("RocksDB backend requested but feature not enabled, falling back to memory");
+                        warn!(
+                            requested_backend = "rocksdb",
+                            fallback_backend = "memory",
+                            "⚠️ RocksDB feature not enabled, using memory backend"
+                        );
                         BackendType::Memory
                     }
                 }
                 "memory" => BackendType::Memory,
                 _ => {
                     warn!(
-                        "Unknown storage backend '{}', falling back to memory",
-                        config.storage.backend
+                        unknown_backend = %config.storage.backend,
+                        fallback_backend = "memory",
+                        "⚠️ Unknown storage backend, using memory"
                     );
                     BackendType::Memory
                 }
@@ -87,25 +99,109 @@ impl AdicNode {
 
         // Create consensus engine
         let adic_params = config.adic_params();
-        let consensus = Arc::new(ConsensusEngine::new(adic_params.clone()));
+        let consensus = Arc::new(ConsensusEngine::new(adic_params.clone(), storage.clone()));
 
         // Create MRW engine
         let mrw = Arc::new(MrwEngine::new(adic_params.clone()));
 
         // Create finality engine
         let finality_config = FinalityConfig::from(&adic_params);
-        let finality = Arc::new(FinalityEngine::new(finality_config, consensus.clone()));
+        let finality = Arc::new(FinalityEngine::new(
+            finality_config,
+            consensus.clone(),
+            storage.clone(),
+        ));
+
+        // Create wallet registry
+        let wallet_registry = Arc::new(WalletRegistry::new(storage.clone()));
+        wallet_registry.load_from_storage().await?;
 
         // Create economics engine
         let economics_storage = Arc::new(adic_economics::storage::MemoryStorage::new());
-        let economics = Arc::new(EconomicsEngine::new(economics_storage).await?);
+        let economics = Arc::new(EconomicsEngine::new(economics_storage.clone()).await?);
 
-        // Initialize genesis allocation if needed
-        if let Err(e) = economics.initialize_genesis().await {
-            warn!("Failed to initialize genesis allocation: {}", e);
+        // Initialize genesis in economics engine
+        economics
+            .initialize_genesis()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to initialize economics genesis: {}", e))?;
+
+        // Apply genesis allocations on first startup
+        // Check if genesis has been applied by looking for genesis marker file
+        let genesis_marker = config.node.data_dir.join(".genesis_applied");
+        let genesis_applied = genesis_marker.exists();
+
+        if !genesis_applied {
+            info!("🧬 Applying genesis allocations...");
+            let genesis_config = GenesisConfig::default();
+
+            // Verify genesis config
+            genesis_config
+                .verify()
+                .map_err(|e| anyhow::anyhow!("Invalid genesis config: {}", e))?;
+
+            // Apply allocations
+            let balance_manager = &economics.balances;
+            for (address_hex, amount_adic) in genesis_config.allocations.iter() {
+                let address = account_address_from_hex(address_hex).map_err(|e| {
+                    anyhow::anyhow!("Invalid genesis address {}: {}", address_hex, e)
+                })?;
+                let amount = AdicAmount::from_adic(*amount_adic as f64);
+
+                balance_manager
+                    .credit(address, amount)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to credit genesis allocation: {}", e))?;
+
+                debug!(
+                    "Genesis allocation: {} ADIC to {}",
+                    amount_adic,
+                    &address_hex[..8.min(address_hex.len())]
+                );
+            }
+
+            // Create genesis hyperedge
+            let genesis_hyperedge = GenesisHyperedge::new();
+            info!(
+                manifest_hash = %genesis_hyperedge.manifest_hash(),
+                timestamp = %chrono::Utc::now().to_rfc3339(),
+                "🧬 Genesis manifest created"
+            );
+
+            // Mark genesis as applied by creating marker file
+            std::fs::write(
+                &genesis_marker,
+                format!(
+                    "manifest: {}\ntimestamp: {}\n",
+                    genesis_hyperedge.manifest_hash(),
+                    chrono::Utc::now().to_rfc3339()
+                ),
+            )?;
+
+            info!(
+                total_supply_adic = genesis_config.total_supply().to_adic(),
+                allocation_count = genesis_config.allocations.len(),
+                "✅ Genesis allocations applied successfully"
+            );
         } else {
-            info!("Economics engine initialized with genesis allocation");
+            info!(
+                genesis_applied = true,
+                marker_exists = true,
+                "🧬 Genesis already applied, skipping"
+            );
         }
+
+        // Log node wallet balance
+        let wallet_balance = economics
+            .balances
+            .get_balance(wallet.address())
+            .await
+            .unwrap_or(AdicAmount::ZERO);
+        info!(
+            balance_adic = wallet_balance.to_adic(),
+            address = %hex::encode(wallet.address().as_bytes()),
+            "💎 Node wallet balance loaded"
+        );
 
         // Create indices
         let index = Arc::new(MessageIndex::new());
@@ -113,7 +209,7 @@ impl AdicNode {
 
         // Initialize network if enabled
         let network = if config.network.enabled {
-            info!("Initializing P2P network...");
+            info!("🌐 Initializing P2P network...");
 
             // Parse listen addresses
             let listen_addr = format!("/ip4/0.0.0.0/tcp/{}", config.network.p2p_port);
@@ -154,6 +250,13 @@ impl AdicNode {
                 bootstrap_peers,
                 max_peers: config.network.max_peers,
                 enable_metrics: false,
+                transport: adic_network::TransportConfig {
+                    quic_listen_addr: format!("0.0.0.0:{}", config.network.quic_port)
+                        .parse()
+                        .unwrap(),
+                    use_production_tls: config.network.use_production_tls,
+                    ..Default::default()
+                },
                 ..Default::default()
             };
 
@@ -178,6 +281,8 @@ impl AdicNode {
 
         Ok(Self {
             config,
+            wallet,
+            wallet_registry,
             keypair,
             consensus,
             mrw,
@@ -195,6 +300,23 @@ impl AdicNode {
         hex::encode(&self.keypair.public_key().as_bytes()[..8])
     }
 
+    pub fn public_key(&self) -> PublicKey {
+        *self.keypair.public_key()
+    }
+
+    pub fn get_deposit_amount(&self) -> AdicAmount {
+        // Get from genesis config - 0.1 ADIC per paper
+        AdicAmount::from_adic(0.1)
+    }
+
+    pub fn wallet_address(&self) -> AccountAddress {
+        self.wallet.address()
+    }
+
+    pub fn wallet(&self) -> &NodeWallet {
+        &self.wallet
+    }
+
     pub async fn run(&self) -> Result<()> {
         {
             let mut running = self.running.write().await;
@@ -210,9 +332,38 @@ impl AdicNode {
 
             // Connect to bootstrap peers
             for peer in &self.config.network.bootstrap_peers {
-                if let Ok(addr) = peer.parse::<SocketAddr>() {
-                    info!("Connecting to bootstrap peer: {}", addr);
-                    network.read().await.connect_peer(addr).await?;
+                // Try to parse as SocketAddr first, then try to resolve hostname
+                let addr_result = if let Ok(addr) = peer.parse::<SocketAddr>() {
+                    Ok(addr)
+                } else {
+                    // Try to resolve hostname:port
+                    use tokio::net::lookup_host;
+                    match lookup_host(peer).await {
+                        Ok(mut addrs) => {
+                            if let Some(addr) = addrs.next() {
+                                Ok(addr)
+                            } else {
+                                Err(anyhow::anyhow!("No addresses found for {}", peer))
+                            }
+                        }
+                        Err(e) => Err(anyhow::anyhow!("Failed to resolve {}: {}", peer, e)),
+                    }
+                };
+
+                match addr_result {
+                    Ok(addr) => {
+                        info!(
+                            peer = %peer,
+                            resolved_addr = %addr,
+                            "🔍 Connecting to bootstrap peer"
+                        );
+                        if let Err(e) = network.read().await.connect_peer(addr).await {
+                            warn!("Failed to connect to bootstrap peer {}: {}", addr, e);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to resolve bootstrap peer: {}", e);
+                    }
                 }
             }
         }
@@ -275,11 +426,30 @@ impl AdicNode {
                 // Create features with good p-adic proximity to the tip
                 let mut new_features = Vec::new();
                 for (i, axis_phi) in tip_msg.features.phi.iter().enumerate() {
-                    // Create a slightly modified version for proximity
-                    // Just increment the least significant digit to maintain p-adic closeness
                     let mut new_digits = axis_phi.qp_digits.digits.clone();
-                    if !new_digits.is_empty() {
-                        new_digits[0] = (new_digits[0] + 1) % 3; // Increment in base 3
+
+                    // For p-adic proximity, we need to keep most digits the same
+                    // Only modify higher-order digits to maintain closeness
+                    // This ensures high vp (valuation) differences, resulting in scores close to 1.0 per axis
+
+                    // Strategy: Keep first ρ[i] digits mostly the same (for ball membership)
+                    // and only perturb higher digits
+                    let params = self.config.adic_params();
+                    let radius = params.rho.get(i).copied().unwrap_or(2) as usize;
+
+                    // Modify a digit beyond the radius to maintain proximity
+                    if new_digits.len() > radius {
+                        // Modify a digit at position radius or higher (less significant in p-adic metric)
+                        // This gives vp >= radius, ensuring term = 1.0 in admissibility score
+                        let modify_pos = radius; // Modify the digit just beyond the ball radius
+                        if modify_pos < new_digits.len() {
+                            new_digits[modify_pos] = (new_digits[modify_pos] + 1) % 3;
+                        }
+                    } else if new_digits.len() > 0 {
+                        // If we don't have enough digits, add variation at the end
+                        // This maintains p-adic closeness
+                        let last_pos = new_digits.len() - 1;
+                        new_digits[last_pos] = (new_digits[last_pos] + 1) % 3;
                     }
 
                     // Create new QpDigits with modified digits
@@ -351,31 +521,47 @@ impl AdicNode {
             let mut parent_reputations = Vec::new();
 
             for parent_id in &parents {
-                if let Ok(Some(parent)) = self.storage.get_message(parent_id).await {
-                    // Extract parent features for C1 check
-                    let mut features = Vec::new();
-                    for axis_phi in &parent.features.phi {
-                        features.push(axis_phi.qp_digits.clone());
-                    }
-                    parent_features.push(features);
+                match self.storage.get_message(parent_id).await {
+                    Ok(Some(parent)) => {
+                        // Extract parent features for C1 check
+                        let mut features = Vec::new();
+                        for axis_phi in &parent.features.phi {
+                            features.push(axis_phi.qp_digits.clone());
+                        }
+                        parent_features.push(features);
 
-                    // Get parent reputation for C3 check
-                    parent_reputations.push(
-                        self.consensus
-                            .reputation
-                            .get_reputation(&parent.proposer_pk)
-                            .await,
-                    );
-                } else {
-                    warn!(
-                        "Parent message {} not found",
-                        hex::encode(parent_id.as_bytes())
-                    );
-                    return Err(anyhow::anyhow!("Missing parent message"));
+                        // Get parent reputation for C3 check
+                        parent_reputations.push(
+                            self.consensus
+                                .reputation
+                                .get_reputation(&parent.proposer_pk)
+                                .await,
+                        );
+                    }
+                    Ok(None) => {
+                        warn!(
+                            "Parent message {} not found in storage - may not be synced yet",
+                            hex::encode(parent_id.as_bytes())
+                        );
+                        return Err(anyhow::anyhow!("Missing parent message"));
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Error fetching parent message {}: {}",
+                            hex::encode(parent_id.as_bytes()),
+                            e
+                        );
+                        return Err(anyhow::anyhow!("Error fetching parent message: {}", e));
+                    }
                 }
             }
 
             // Check C1-C3 admissibility
+            warn!(
+                "DEBUG: C1-C3 check: {} parents with reputations: {:?}",
+                parent_reputations.len(),
+                parent_reputations
+            );
             let admissibility_result = self
                 .consensus
                 .admissibility()
@@ -419,8 +605,16 @@ impl AdicNode {
         // Store message
         self.storage.store_message(&message).await?;
 
-        // Update indices
-        let parent_depths: Vec<u32> = Vec::new(); // Would need to fetch actual depths
+        // Update indices - fetch actual parent depths
+        let mut parent_depths: Vec<u32> = Vec::new();
+        for parent_id in &message.parents {
+            if let Some(depth) = self.index.get_depth(parent_id).await {
+                parent_depths.push(depth);
+            } else {
+                // Genesis messages or unknown parents have depth 0
+                parent_depths.push(0);
+            }
+        }
         self.index.add_message(&message, parent_depths).await;
 
         // Add to tip manager
@@ -457,6 +651,368 @@ impl AdicNode {
         }
 
         info!("Message submitted: {}", hex::encode(message.id.as_bytes()));
+
+        Ok(message.id)
+    }
+
+    pub async fn submit_message_with_parents(
+        &self,
+        content: Vec<u8>,
+        parents: Vec<MessageId>,
+        features_opt: Option<crate::api::SubmitFeatures>,
+    ) -> Result<MessageId> {
+        debug!(
+            "Submitting message with explicit parents: {} parents",
+            parents.len()
+        );
+
+        // Create features - either from provided data or generate default
+        let features = if let Some(submit_features) = features_opt {
+            // Convert simplified {axis, value} format to proper p-adic QpDigits
+            let mut axis_features = Vec::new();
+            for axis_value in submit_features.axes {
+                let qp_digits = QpDigits::from_u64(axis_value.value as u64, 3, 10);
+                axis_features.push(AxisPhi::new(axis_value.axis, qp_digits));
+            }
+            AdicFeatures::new(axis_features)
+        } else if parents.is_empty() {
+            // Genesis message - use simple default features
+            AdicFeatures::new(vec![
+                AxisPhi::new(0, QpDigits::from_u64(1, 3, 10)),
+                AxisPhi::new(1, QpDigits::from_u64(1, 3, 10)),
+                AxisPhi::new(2, QpDigits::from_u64(1, 3, 10)),
+            ])
+        } else {
+            // CRITICAL FIX: Generate features that are p-adic close to ALL parents, not just first parent
+            // The admissibility formula requires proximity to ALL parents for each axis
+
+            // Collect all parent messages and their features
+            let mut all_parent_features = Vec::new();
+            for parent_id in &parents {
+                if let Ok(Some(parent_msg)) = self.storage.get_message(parent_id).await {
+                    all_parent_features.push(parent_msg.features.clone());
+                }
+            }
+
+            if !all_parent_features.is_empty() {
+                let params = self.config.adic_params();
+                let mut new_features = Vec::new();
+
+                // For each axis, generate a feature that is close to ALL parents
+                for axis_idx in 0..3 {
+                    let radius = params.rho.get(axis_idx).copied().unwrap_or(2) as usize;
+
+                    // Collect features from all parents for this axis
+                    let parent_axis_features: Vec<&QpDigits> = all_parent_features
+                        .iter()
+                        .filter_map(|pf| {
+                            pf.get_axis(AxisId(axis_idx as u32)).map(|ap| &ap.qp_digits)
+                        })
+                        .collect();
+
+                    if !parent_axis_features.is_empty() {
+                        // Strategy: Find the common p-adic ball that contains all parents
+                        // Use the first parent as a base, but ensure compatibility with all others
+                        let base_feature = &parent_axis_features[0];
+                        let mut new_digits = base_feature.digits.clone();
+
+                        // Ensure we have enough digits for the ball radius
+                        while new_digits.len() <= radius {
+                            new_digits.push(0);
+                        }
+
+                        // For p-adic closeness to ALL parents:
+                        // 1. Keep the first 'radius' digits to ensure we're in the same balls
+                        // 2. Only modify digits beyond position 'radius'
+
+                        // Check if all parents share the same ball (same first 'radius' digits)
+                        let mut all_in_same_ball = true;
+                        for parent_feature in &parent_axis_features {
+                            for pos in 0..radius
+                                .min(parent_feature.digits.len())
+                                .min(new_digits.len())
+                            {
+                                if parent_feature.digits[pos] != new_digits[pos] {
+                                    all_in_same_ball = false;
+                                    break;
+                                }
+                            }
+                            if !all_in_same_ball {
+                                break;
+                            }
+                        }
+
+                        if all_in_same_ball {
+                            // All parents are in the same ball - safe to modify beyond radius
+                            if new_digits.len() > radius {
+                                let modify_pos = radius;
+                                let old_digit = new_digits[modify_pos];
+                                new_digits[modify_pos] = (new_digits[modify_pos] + 1) % 3;
+                                log::debug!("Axis {}: Modified digit beyond radius at pos {} from {} to {} (radius={})", 
+                                    axis_idx, modify_pos, old_digit, new_digits[modify_pos], radius);
+                            }
+                        } else {
+                            // Parents are in different balls - use conservative approach
+                            // Find the longest common prefix among all parents
+                            let mut common_prefix_len = 0;
+                            let max_check_len = parent_axis_features
+                                .iter()
+                                .map(|pf| pf.digits.len())
+                                .min()
+                                .unwrap_or(0);
+
+                            for pos in 0..max_check_len {
+                                let first_digit = parent_axis_features[0].digits[pos];
+                                let all_same = parent_axis_features
+                                    .iter()
+                                    .all(|pf| pf.digits.get(pos) == Some(&first_digit));
+
+                                if all_same {
+                                    common_prefix_len = pos + 1;
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            // Use the common prefix, then add variation beyond it
+                            new_digits = parent_axis_features[0].digits
+                                [..common_prefix_len.min(new_digits.len())]
+                                .to_vec();
+
+                            // Ensure we have enough length and add variation safely
+                            while new_digits.len() <= common_prefix_len {
+                                new_digits.push(0);
+                            }
+
+                            if new_digits.len() > common_prefix_len {
+                                let modify_pos = common_prefix_len;
+                                new_digits[modify_pos] =
+                                    (new_digits[modify_pos] + axis_idx as u8) % 3;
+                                log::debug!("Axis {}: Used common prefix len={}, modified pos {} to {} for diversity", 
+                                    axis_idx, common_prefix_len, modify_pos, new_digits[modify_pos]);
+                            }
+                        }
+
+                        log::debug!(
+                            "Axis {}: Generated digits={:?} (first 5) from {} parents",
+                            axis_idx,
+                            &new_digits[..5.min(new_digits.len())],
+                            parent_axis_features.len()
+                        );
+
+                        let new_qp = QpDigits {
+                            digits: new_digits,
+                            p: base_feature.p,
+                        };
+                        new_features.push(AxisPhi::new(axis_idx as u32, new_qp));
+                    } else {
+                        // Fallback if no parent features found for this axis
+                        let default_qp = QpDigits::from_u64(1 + axis_idx as u64, 3, 10);
+                        new_features.push(AxisPhi::new(axis_idx as u32, default_qp));
+                    }
+                }
+
+                AdicFeatures::new(new_features)
+            } else {
+                // Fallback to default if no parents found
+                AdicFeatures::new(vec![
+                    AxisPhi::new(0, QpDigits::from_u64(1, 3, 10)),
+                    AxisPhi::new(1, QpDigits::from_u64(2, 3, 10)),
+                    AxisPhi::new(2, QpDigits::from_u64(3, 3, 10)),
+                ])
+            }
+        };
+
+        // Create the message
+        let mut message = AdicMessage::new(
+            parents.clone(),
+            features,
+            AdicMeta::new(Utc::now()),
+            *self.keypair.public_key(),
+            content,
+        );
+
+        // Sign the message
+        let signature = self.keypair.sign(&message.to_bytes());
+        message.signature = signature;
+
+        // Escrow deposit
+        let proposer_pk = *self.keypair.public_key();
+        self.consensus
+            .deposits
+            .escrow(message.id, proposer_pk)
+            .await?;
+
+        // IMPORTANT: Only perform C1-C3 checks if this is NOT a genesis message
+        if !parents.is_empty() {
+            // Debug: Log the generated features for analysis
+            warn!(
+                "DEBUG: Generated features for message: {:?}",
+                message
+                    .features
+                    .phi
+                    .iter()
+                    .map(|ap| format!(
+                        "axis_{}: digits={:?}",
+                        ap.axis.0,
+                        &ap.qp_digits.digits[..3.min(ap.qp_digits.digits.len())]
+                    ))
+                    .collect::<Vec<_>>()
+            );
+
+            // Non-genesis messages must pass C1-C3
+            let mut parent_features = Vec::new();
+            let mut parent_reputations = Vec::new();
+
+            warn!(
+                "DEBUG: Processing {} parents for C1-C3 check: {:?}",
+                parents.len(),
+                parents
+                    .iter()
+                    .map(|p| hex::encode(p.as_bytes()))
+                    .collect::<Vec<_>>()
+            );
+
+            for parent_id in &parents {
+                warn!(
+                    "DEBUG: Looking up parent message: {}",
+                    hex::encode(parent_id.as_bytes())
+                );
+                match self.storage.get_message(parent_id).await {
+                    Ok(Some(parent)) => {
+                        warn!(
+                            "DEBUG: Parent features: {:?}",
+                            parent
+                                .features
+                                .phi
+                                .iter()
+                                .map(|ap| format!(
+                                    "axis_{}: digits={:?}",
+                                    ap.axis.0,
+                                    &ap.qp_digits.digits[..3.min(ap.qp_digits.digits.len())]
+                                ))
+                                .collect::<Vec<_>>()
+                        );
+
+                        let mut features = Vec::new();
+                        for axis_phi in &parent.features.phi {
+                            features.push(axis_phi.qp_digits.clone());
+                        }
+                        parent_features.push(features);
+
+                        parent_reputations.push(
+                            self.consensus
+                                .reputation
+                                .get_reputation(&parent.proposer_pk)
+                                .await,
+                        );
+                    }
+                    Ok(None) => {
+                        warn!(
+                            "Parent message {:?} not found in storage - may not be synced yet",
+                            hex::encode(parent_id.as_bytes())
+                        );
+                        // Parent not in storage - fail early
+                        return Err(anyhow::anyhow!(
+                            "Parent message {:?} not found in storage",
+                            hex::encode(parent_id.as_bytes())
+                        ));
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Error fetching parent message {:?}: {}",
+                            hex::encode(parent_id.as_bytes()),
+                            e
+                        );
+                        return Err(anyhow::anyhow!("Error fetching parent message: {}", e));
+                    }
+                }
+            }
+
+            warn!(
+                "DEBUG: C1-C3 check (submit_message_with_parents): {} parents with reputations: {:?}",
+                parent_reputations.len(),
+                parent_reputations
+            );
+            let admissibility_result = self.consensus.admissibility().check_message(
+                &message,
+                &parent_features,
+                &parent_reputations,
+            )?;
+
+            if !admissibility_result.is_admissible() {
+                warn!(
+                    "Message failed C1-C3 admissibility: {}",
+                    admissibility_result.details
+                );
+                self.consensus
+                    .deposits
+                    .slash(&message.id, &admissibility_result.details)
+                    .await?;
+                return Err(anyhow::anyhow!(
+                    "C1-C3 admissibility failed: {}",
+                    admissibility_result.details
+                ));
+            }
+
+            info!(
+                "Message passed C1-C3 checks (score: {:.2})",
+                admissibility_result.score
+            );
+        } else {
+            info!("Genesis message - skipping C1-C3 checks");
+        }
+
+        // Validate the message
+        let validation_result = self.consensus.validate_and_slash(&message).await?;
+        if !validation_result.is_valid {
+            warn!(
+                "Message failed validation and was slashed: {:?}",
+                validation_result.errors
+            );
+            return Err(anyhow::anyhow!(
+                "Message failed validation: {:?}",
+                validation_result.errors
+            ));
+        }
+
+        // Store message
+        self.storage.store_message(&message).await?;
+
+        // Update indices - calculate parent depths
+        let mut parent_depths: Vec<u32> = Vec::new();
+        for parent_id in &parents {
+            if let Some(depth) = self.index.get_depth(parent_id).await {
+                parent_depths.push(depth);
+            }
+        }
+        self.index.add_message(&message, parent_depths).await;
+
+        // Add to tip manager
+        self.tip_manager.add_tip(message.id, 1.0).await;
+
+        // Remove parents from tips
+        for parent_id in &parents {
+            self.tip_manager.remove_tip(parent_id).await;
+        }
+
+        // Add to finality engine
+        let mut ball_ids = std::collections::HashMap::new();
+        for axis_phi in &message.features.phi {
+            ball_ids.insert(axis_phi.axis.0, axis_phi.qp_digits.ball_id(3));
+        }
+
+        self.finality
+            .add_message(message.id, parents, 1.0, ball_ids)
+            .await?;
+
+        // Broadcast to network if available
+        if let Some(ref network) = self.network {
+            let net = network.read().await;
+            net.broadcast_message(message.clone()).await?;
+        }
+
+        info!("Successfully submitted message: {}", message.id);
 
         Ok(message.id)
     }
@@ -498,6 +1054,11 @@ impl AdicNode {
         self.finality.get_artifact(id).await
     }
 
+    /// Get the depth of a message from the index
+    pub async fn get_message_depth(&self, id: &MessageId) -> Option<u32> {
+        self.index.get_depth(id).await
+    }
+
     async fn process_incoming_messages(&self) -> Result<()> {
         // Process messages from the network if enabled
         if let Some(ref network) = self.network {
@@ -521,6 +1082,21 @@ impl AdicNode {
 
                     // Update tips
                     self.tip_manager.add_tip(msg.id, 1.0).await;
+
+                    // Add to finality engine
+                    let mut ball_ids = std::collections::HashMap::new();
+                    for axis_phi in &msg.features.phi {
+                        ball_ids.insert(axis_phi.axis.0, axis_phi.qp_digits.ball_id(3));
+                    }
+
+                    self.finality
+                        .add_message(
+                            msg.id,
+                            msg.parents.clone(),
+                            1.0, // Initial reputation
+                            ball_ids,
+                        )
+                        .await?;
 
                     // Broadcast to other peers
                     network.read().await.broadcast_message(msg).await?;
@@ -615,6 +1191,8 @@ impl Clone for AdicNode {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
+            wallet: Arc::clone(&self.wallet),
+            wallet_registry: Arc::clone(&self.wallet_registry),
             keypair: self.keypair.clone(),
             consensus: Arc::clone(&self.consensus),
             mrw: Arc::clone(&self.mrw),

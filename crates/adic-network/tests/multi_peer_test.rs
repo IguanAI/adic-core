@@ -64,10 +64,11 @@ async fn create_test_node_with_discovery(
     std::mem::forget(temp_dir);
 
     let params = AdicParams::default();
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality = Arc::new(FinalityEngine::new(
         FinalityConfig::from(&params),
         consensus.clone(),
+        storage.clone(),
     ));
 
     // Use port 0 for auto-assignment to avoid conflicts

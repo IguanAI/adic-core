@@ -69,7 +69,7 @@ async fn test_economics_api_endpoints_integration() {
     let node = create_test_node().await;
 
     // Start the API server on a test port
-    let api_handle = adic_node::api::start_api_server((*node).clone(), 0); // Port 0 = random port
+    let api_handle = adic_node::api::start_api_server((*node).clone(), "127.0.0.1".to_string(), 0); // Port 0 = random port
 
     // Give the server a moment to start
     tokio::time::sleep(Duration::from_millis(100)).await;

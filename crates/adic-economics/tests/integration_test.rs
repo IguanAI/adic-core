@@ -319,3 +319,227 @@ async fn test_treasury_multisig_threshold() {
     let balance = economics.balances.get_balance(recipient).await.unwrap();
     assert_eq!(balance, amount);
 }
+
+#[tokio::test]
+async fn test_transaction_history_paginated() {
+    let storage = Arc::new(MemoryStorage::new());
+    let economics = EconomicsEngine::new(storage.clone()).await.unwrap();
+
+    let sender = AccountAddress::from_bytes([1u8; 32]);
+    let recipient = AccountAddress::from_bytes([2u8; 32]);
+
+    // Create initial balance
+    economics
+        .balances
+        .credit(sender, AdicAmount::from_adic(1000000.0))
+        .await
+        .unwrap();
+
+    // Create 20 transactions
+    for i in 0..20 {
+        let amount = AdicAmount::from_adic(100.0 + i as f64);
+        economics
+            .balances
+            .transfer(sender, recipient, amount)
+            .await
+            .unwrap();
+        // Small delay to ensure different timestamps
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    // Test: First page with limit 5
+    let (page1, cursor1) = economics
+        .get_transaction_history_paginated(sender, 5, None)
+        .await
+        .unwrap();
+
+    assert_eq!(page1.len(), 5);
+    assert!(cursor1.is_some());
+
+    // Verify transactions are in chronological order (newest first)
+    for i in 0..page1.len() - 1 {
+        assert!(page1[i].timestamp >= page1[i + 1].timestamp);
+    }
+
+    // Test: Second page using cursor
+    let (page2, cursor2) = economics
+        .get_transaction_history_paginated(sender, 5, cursor1)
+        .await
+        .unwrap();
+
+    assert_eq!(page2.len(), 5);
+    assert!(cursor2.is_some());
+
+    // Verify no overlap between pages
+    let page1_ids: std::collections::HashSet<_> =
+        page1.iter().map(|tx| tx.tx_hash.clone()).collect();
+    let page2_ids: std::collections::HashSet<_> =
+        page2.iter().map(|tx| tx.tx_hash.clone()).collect();
+    assert!(page1_ids.is_disjoint(&page2_ids));
+
+    // Continue until we get all transactions
+    let mut all_txs = vec![];
+    all_txs.extend(page1);
+    all_txs.extend(page2);
+
+    let mut current_cursor = cursor2;
+    loop {
+        let (page, next_cursor) = economics
+            .get_transaction_history_paginated(sender, 5, current_cursor)
+            .await
+            .unwrap();
+
+        if page.is_empty() {
+            break;
+        }
+
+        all_txs.extend(page);
+        current_cursor = next_cursor;
+
+        if current_cursor.is_none() {
+            break;
+        }
+    }
+
+    // Should have all 20 transactions
+    assert_eq!(all_txs.len(), 20);
+}
+
+#[tokio::test]
+async fn test_transaction_ordering_by_timestamp() {
+    let storage = Arc::new(MemoryStorage::new());
+    let economics = EconomicsEngine::new(storage.clone()).await.unwrap();
+
+    let account = AccountAddress::from_bytes([3u8; 32]);
+    let other = AccountAddress::from_bytes([4u8; 32]);
+
+    // Create balance
+    economics
+        .balances
+        .credit(account, AdicAmount::from_adic(10000.0))
+        .await
+        .unwrap();
+
+    // Create transactions with deliberate delays
+    let mut expected_order = vec![];
+
+    for i in 0..5 {
+        let amount = AdicAmount::from_adic(100.0 + i as f64);
+        economics
+            .balances
+            .transfer(account, other, amount)
+            .await
+            .unwrap();
+
+        expected_order.push(amount);
+        // Ensure distinct timestamps
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    // Get all transactions
+    let (txs, _) = economics
+        .get_transaction_history_paginated(account, 10, None)
+        .await
+        .unwrap();
+
+    assert_eq!(txs.len(), 5);
+
+    // Verify chronological ordering (newest first)
+    for i in 0..txs.len() - 1 {
+        assert!(
+            txs[i].timestamp >= txs[i + 1].timestamp,
+            "Transaction {} timestamp {} should be >= transaction {} timestamp {}",
+            i,
+            txs[i].timestamp,
+            i + 1,
+            txs[i + 1].timestamp
+        );
+    }
+
+    // Verify amounts match expected order (reversed since newest first)
+    expected_order.reverse();
+    for (i, tx) in txs.iter().enumerate() {
+        assert_eq!(tx.amount, expected_order[i]);
+    }
+}
+
+#[tokio::test]
+async fn test_pagination_cursor_stability() {
+    let storage = Arc::new(MemoryStorage::new());
+    let economics = EconomicsEngine::new(storage.clone()).await.unwrap();
+
+    let account = AccountAddress::from_bytes([5u8; 32]);
+    let other = AccountAddress::from_bytes([6u8; 32]);
+
+    // Create balance and transactions
+    economics
+        .balances
+        .credit(account, AdicAmount::from_adic(5000.0))
+        .await
+        .unwrap();
+
+    for i in 0..10 {
+        let amount = AdicAmount::from_adic(100.0 + i as f64);
+        economics
+            .balances
+            .transfer(account, other, amount)
+            .await
+            .unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    // Get first page and cursor
+    let (page1_a, cursor_a) = economics
+        .get_transaction_history_paginated(account, 3, None)
+        .await
+        .unwrap();
+
+    // Use same parameters again - should get same results
+    let (page1_b, cursor_b) = economics
+        .get_transaction_history_paginated(account, 3, None)
+        .await
+        .unwrap();
+
+    assert_eq!(page1_a.len(), page1_b.len());
+    assert_eq!(cursor_a, cursor_b);
+
+    // Verify transaction IDs match
+    for (tx_a, tx_b) in page1_a.iter().zip(page1_b.iter()) {
+        assert_eq!(tx_a.tx_hash, tx_b.tx_hash);
+        assert_eq!(tx_a.amount, tx_b.amount);
+        assert_eq!(tx_a.timestamp, tx_b.timestamp);
+    }
+
+    // Test cursor stability - using same cursor should give same results
+    let (page2_a, _) = economics
+        .get_transaction_history_paginated(account, 3, cursor_a.clone())
+        .await
+        .unwrap();
+
+    let (page2_b, _) = economics
+        .get_transaction_history_paginated(account, 3, cursor_a)
+        .await
+        .unwrap();
+
+    assert_eq!(page2_a.len(), page2_b.len());
+    for (tx_a, tx_b) in page2_a.iter().zip(page2_b.iter()) {
+        assert_eq!(tx_a.tx_hash, tx_b.tx_hash);
+    }
+}
+
+#[tokio::test]
+async fn test_empty_transaction_history() {
+    let storage = Arc::new(MemoryStorage::new());
+    let economics = EconomicsEngine::new(storage.clone()).await.unwrap();
+
+    let account = AccountAddress::from_bytes([7u8; 32]);
+
+    // Query empty history
+    let (txs, cursor) = economics
+        .get_transaction_history_paginated(account, 10, None)
+        .await
+        .unwrap();
+
+    assert_eq!(txs.len(), 0);
+    assert!(cursor.is_none());
+}

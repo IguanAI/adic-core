@@ -185,7 +185,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_deposit_verifier_real() {
-        let deposit_manager = Arc::new(adic_consensus::DepositManager::new(1.0));
+        let deposit_manager = Arc::new(adic_consensus::DepositManager::new(
+            adic_consensus::DEFAULT_DEPOSIT_AMOUNT,
+        ));
         let verifier: Arc<dyn DepositVerifier> =
             Arc::new(RealDepositVerifier::new(deposit_manager.clone()));
         let keypair = Keypair::generate_ed25519();

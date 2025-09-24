@@ -1,6 +1,7 @@
 use adic_types::AdicParams;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,8 @@ pub struct NodeConfig {
     pub storage: StorageConfig,
     pub api: ApiConfig,
     pub network: NetworkConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,8 +83,44 @@ pub struct ApiConfig {
 pub struct NetworkConfig {
     pub enabled: bool,
     pub p2p_port: u16,
+    pub quic_port: u16,
     pub bootstrap_peers: Vec<String>,
+    pub dns_seeds: Vec<String>,
     pub max_peers: usize,
+    pub use_production_tls: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    pub level: String,
+    pub format: String,
+    pub use_emojis: bool,
+    pub show_fields_at: String, // "always", "debug", "trace", "never"
+    pub file_output: Option<PathBuf>,
+    pub file_rotation_size_mb: usize,
+    pub show_boot_banner: bool,
+    pub show_emoji_legend: bool,
+    #[serde(default)]
+    pub module_filters: HashMap<String, String>,
+    #[serde(default)]
+    pub field_filters: HashMap<String, bool>, // Which fields to always show/hide
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: "info".to_string(),
+            format: "pretty".to_string(),
+            use_emojis: true,
+            show_fields_at: "debug".to_string(), // Show fields at debug level and above
+            file_output: None,
+            file_rotation_size_mb: 100,
+            show_boot_banner: true,
+            show_emoji_legend: true,
+            module_filters: HashMap::new(),
+            field_filters: HashMap::new(),
+        }
+    }
 }
 
 impl Default for NodeConfig {
@@ -103,10 +142,10 @@ impl Default for NodeConfig {
                 delta: 5,
                 r_sum_min: 4.0, // Phase-0 default
                 r_min: 1.0,     // Phase-0 default
-                deposit: 1.0,
-                lambda: 1.0, // Phase-0 default
-                beta: 0.5,   // Phase-0 default
-                mu: 1.0,     // Phase-0 default
+                deposit: 0.1,   // Per whitepaper: refundable anti-spam deposit
+                lambda: 1.0,    // Phase-0 default
+                beta: 0.5,      // Phase-0 default
+                mu: 1.0,        // Phase-0 default
                 gamma: 0.9,
             },
             storage: StorageConfig {
@@ -124,9 +163,13 @@ impl Default for NodeConfig {
             network: NetworkConfig {
                 enabled: false,
                 p2p_port: 9000,
+                quic_port: 9001,
                 bootstrap_peers: vec![],
+                dns_seeds: vec!["_seeds.adicl1.com".to_string()],
                 max_peers: 50,
+                use_production_tls: false,
             },
+            logging: LoggingConfig::default(),
         }
     }
 }
@@ -185,6 +228,11 @@ impl NodeConfig {
                 self.network.p2p_port = port;
             }
         }
+        if let Ok(quic_port) = env::var("QUIC_PORT") {
+            if let Ok(port) = quic_port.parse() {
+                self.network.quic_port = port;
+            }
+        }
         if let Ok(max_peers) = env::var("MAX_PEERS") {
             if let Ok(max) = max_peers.parse() {
                 self.network.max_peers = max;
@@ -194,6 +242,12 @@ impl NodeConfig {
             if !bootstrap.is_empty() {
                 self.network.bootstrap_peers =
                     bootstrap.split(',').map(|s| s.trim().to_string()).collect();
+            }
+        }
+        if let Ok(dns_seeds) = env::var("DNS_SEEDS") {
+            if !dns_seeds.is_empty() {
+                self.network.dns_seeds =
+                    dns_seeds.split(',').map(|s| s.trim().to_string()).collect();
             }
         }
 
@@ -235,6 +289,26 @@ impl NodeConfig {
         // Debug mode
         if let Ok(_debug) = env::var("DEBUG_MODE") {
             // This would affect logging level, already handled by RUST_LOG
+        }
+
+        // Logging configuration
+        if let Ok(log_level) = env::var("LOG_LEVEL") {
+            self.logging.level = log_level;
+        }
+        if let Ok(log_format) = env::var("LOG_FORMAT") {
+            if log_format == "json" || log_format == "pretty" || log_format == "compact" {
+                self.logging.format = log_format;
+            }
+        }
+        if let Ok(use_emojis) = env::var("LOG_USE_EMOJIS") {
+            self.logging.use_emojis = use_emojis.to_lowercase() == "true" || use_emojis == "1";
+        }
+        if let Ok(log_file) = env::var("LOG_FILE") {
+            self.logging.file_output = Some(PathBuf::from(log_file));
+        }
+        if let Ok(show_banner) = env::var("LOG_SHOW_BANNER") {
+            self.logging.show_boot_banner =
+                show_banner.to_lowercase() == "true" || show_banner == "1";
         }
     }
 

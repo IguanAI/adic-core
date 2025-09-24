@@ -1,3 +1,5 @@
+use crate::address_encoding;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -67,6 +69,28 @@ impl AccountAddress {
         &self.0
     }
 
+    pub fn to_bech32(&self) -> Result<String> {
+        address_encoding::encode_address(&self.0)
+    }
+
+    pub fn from_bech32(address: &str) -> Result<Self> {
+        let bytes = address_encoding::decode_address(address)?;
+        Ok(Self(bytes))
+    }
+
+    pub fn from_string(address: &str) -> Result<Self> {
+        // Try bech32 format first
+        if address.starts_with("adic") {
+            Self::from_bech32(address)
+        } else if address_encoding::is_hex_address(address) {
+            // Fall back to hex format for compatibility
+            let bytes = address_encoding::from_hex_address(address)?;
+            Ok(Self(bytes))
+        } else {
+            Err(anyhow::anyhow!("Invalid address format"))
+        }
+    }
+
     pub fn treasury() -> Self {
         Self([0xFF; 32])
     }
@@ -92,7 +116,12 @@ impl AccountAddress {
 
 impl fmt::Display for AccountAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "0x{}", hex::encode(&self.0[..8]))
+        // Use bech32 format by default
+        match self.to_bech32() {
+            Ok(addr) => write!(f, "{}", addr),
+            // Fall back to hex if encoding fails (shouldn't happen in practice)
+            Err(_) => write!(f, "0x{}", hex::encode(&self.0[..8])),
+        }
     }
 }
 

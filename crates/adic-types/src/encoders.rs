@@ -165,6 +165,7 @@ impl EncoderSet {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EncoderData {
     pub timestamp: i64,
     pub topic: String,

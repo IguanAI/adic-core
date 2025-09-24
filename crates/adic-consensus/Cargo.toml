@@ -10,13 +10,19 @@ adic-types = { path = "../adic-types" }
 adic-math = { path = "../adic-math" }
 adic-crypto = { path = "../adic-crypto" }
 adic-economics = { path = "../adic-economics" }
+adic-storage = { path = "../adic-storage" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 chrono = { workspace = true }
+log = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
 adic-storage = { path = "../adic-storage" }
+adic-finality = { path = "../adic-finality" }
+adic-mrw = { path = "../adic-mrw" }
+tempfile = "3.8"

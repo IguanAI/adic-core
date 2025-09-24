@@ -1,7 +1,8 @@
-use adic_types::{ConflictId, MessageId, Result};
+use adic_types::{ConflictId, MessageId, PublicKey, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct ConflictEnergy {
@@ -54,6 +55,8 @@ impl ConflictEnergy {
 
 pub struct ConflictResolver {
     conflicts: Arc<RwLock<HashMap<ConflictId, ConflictEnergy>>>,
+    message_conflicts: Arc<RwLock<HashMap<MessageId, Vec<ConflictId>>>>,
+    proposer_conflicts: Arc<RwLock<HashMap<PublicKey, usize>>>,
     energy_cap: f64,
 }
 
@@ -67,15 +70,26 @@ impl ConflictResolver {
     pub fn new() -> Self {
         Self {
             conflicts: Arc::new(RwLock::new(HashMap::new())),
+            message_conflicts: Arc::new(RwLock::new(HashMap::new())),
+            proposer_conflicts: Arc::new(RwLock::new(HashMap::new())),
             energy_cap: 10.0,
         }
     }
 
     pub async fn register_conflict(&self, conflict_id: ConflictId) {
         let mut conflicts = self.conflicts.write().await;
+        let is_new = !conflicts.contains_key(&conflict_id);
         conflicts
             .entry(conflict_id.clone())
-            .or_insert_with(|| ConflictEnergy::new(conflict_id));
+            .or_insert_with(|| ConflictEnergy::new(conflict_id.clone()));
+
+        if is_new {
+            info!(
+                conflict_id = %conflict_id,
+                total_conflicts = conflicts.len(),
+                "⚠️ Conflict registered"
+            );
+        }
     }
 
     pub async fn update_support(
@@ -87,15 +101,37 @@ impl ConflictResolver {
     ) -> Result<()> {
         let mut conflicts = self.conflicts.write().await;
 
+        let support_value = reputation / (1.0 + depth as f64);
+        let (old_energy, old_winner) = if let Some(conflict) = conflicts.get(conflict_id) {
+            (conflict.energy, conflict.get_winner())
+        } else {
+            (0.0, None)
+        };
+
         if let Some(conflict) = conflicts.get_mut(conflict_id) {
-            let support_value = reputation / (1.0 + depth as f64);
             conflict.update_support(message_id, support_value);
         } else {
             let mut conflict = ConflictEnergy::new(conflict_id.clone());
-            let support_value = reputation / (1.0 + depth as f64);
             conflict.update_support(message_id, support_value);
             conflicts.insert(conflict_id.clone(), conflict);
         }
+
+        let conflict = conflicts.get(conflict_id).unwrap();
+        let new_energy = conflict.energy;
+        let new_winner = conflict.get_winner();
+
+        info!(
+            conflict_id = %conflict_id,
+            message_id = %message_id,
+            support_value = support_value,
+            reputation = reputation,
+            depth = depth,
+            energy_before = old_energy,
+            energy_after = new_energy,
+            winner_before = ?old_winner,
+            winner_after = ?new_winner,
+            "📈 Conflict support updated"
+        );
 
         Ok(())
     }
@@ -135,11 +171,24 @@ impl ConflictResolver {
     pub async fn cleanup_resolved(&self, threshold: f64, max_age: i64) {
         let now = chrono::Utc::now().timestamp();
         let mut conflicts = self.conflicts.write().await;
+        let initial_count = conflicts.len();
 
         conflicts.retain(|_, conflict| {
             let age = now - conflict.last_update;
             age < max_age || conflict.energy.abs() <= threshold
         });
+
+        let removed = initial_count - conflicts.len();
+        if removed > 0 {
+            info!(
+                removed_count = removed,
+                conflicts_before = initial_count,
+                conflicts_after = conflicts.len(),
+                threshold = threshold,
+                max_age_seconds = max_age,
+                "🧹 Resolved conflicts cleaned up"
+            );
+        }
     }
 
     pub async fn get_all_conflicts(&self) -> HashMap<ConflictId, ConflictEnergy> {
@@ -159,6 +208,65 @@ impl ConflictResolver {
     pub async fn get_conflict_details(&self, conflict_id: &ConflictId) -> Option<ConflictEnergy> {
         let conflicts = self.conflicts.read().await;
         conflicts.get(conflict_id).cloned()
+    }
+
+    /// Register that a message is part of a conflict
+    pub async fn register_conflict_with_messages(
+        &self,
+        conflict_id: &str,
+        message_ids: Vec<MessageId>,
+    ) {
+        let conflict_id = ConflictId::new(conflict_id.to_string());
+        let message_count = message_ids.len();
+
+        // Register the conflict
+        self.register_conflict(conflict_id.clone()).await;
+
+        // Track which messages are in this conflict
+        let mut message_conflicts = self.message_conflicts.write().await;
+        for msg_id in &message_ids {
+            message_conflicts
+                .entry(*msg_id)
+                .or_insert_with(Vec::new)
+                .push(conflict_id.clone());
+        }
+
+        info!(
+            conflict_id = %conflict_id,
+            message_count = message_count,
+            message_ids = ?message_ids,
+            "🔗 Messages linked to conflict"
+        );
+    }
+
+    /// Get all conflicts that a message is involved in
+    pub async fn get_conflicts_for_message(&self, message_id: &MessageId) -> Vec<ConflictId> {
+        let message_conflicts = self.message_conflicts.read().await;
+        message_conflicts
+            .get(message_id)
+            .cloned()
+            .unwrap_or_else(Vec::new)
+    }
+
+    /// Track conflicts by proposer and get count
+    pub async fn register_proposer_conflict(&self, proposer: &PublicKey) {
+        let mut proposer_conflicts = self.proposer_conflicts.write().await;
+        let old_count = proposer_conflicts.get(proposer).copied().unwrap_or(0);
+        *proposer_conflicts.entry(*proposer).or_insert(0) += 1;
+        let new_count = proposer_conflicts.get(proposer).copied().unwrap_or(0);
+
+        info!(
+            proposer = %proposer.to_hex(),
+            conflicts_before = old_count,
+            conflicts_after = new_count,
+            "🚨 Proposer conflict count increased"
+        );
+    }
+
+    /// Get the number of conflicts a proposer has been involved in
+    pub async fn get_proposer_conflict_count(&self, proposer: &PublicKey) -> usize {
+        let proposer_conflicts = self.proposer_conflicts.read().await;
+        proposer_conflicts.get(proposer).copied().unwrap_or(0)
     }
 }
 

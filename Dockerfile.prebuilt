@@ -1,0 +1,86 @@
+# Optimized multi-stage build for ADIC Core with better caching
+FROM rust:1.89.0-slim AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    protobuf-compiler \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src/adic-core
+
+# First, copy only the workspace Cargo files for dependency caching
+COPY Cargo.toml Cargo.lock ./
+
+# Copy all crate Cargo.toml files to preserve workspace structure
+COPY crates/adic-types/Cargo.toml ./crates/adic-types/
+COPY crates/adic-crypto/Cargo.toml ./crates/adic-crypto/
+COPY crates/adic-math/Cargo.toml ./crates/adic-math/
+COPY crates/adic-storage/Cargo.toml ./crates/adic-storage/
+COPY crates/adic-mrw/Cargo.toml ./crates/adic-mrw/
+COPY crates/adic-consensus/Cargo.toml ./crates/adic-consensus/
+COPY crates/adic-finality/Cargo.toml ./crates/adic-finality/
+COPY crates/adic-economics/Cargo.toml ./crates/adic-economics/
+COPY crates/adic-network/Cargo.toml ./crates/adic-network/
+COPY crates/adic-node/Cargo.toml ./crates/adic-node/
+COPY crates/adic-bench/Cargo.toml ./crates/adic-bench/
+
+# Create dummy src files to build dependencies
+RUN mkdir -p crates/adic-types/src && echo "fn main() {}" > crates/adic-types/src/lib.rs && \
+    mkdir -p crates/adic-crypto/src && echo "fn main() {}" > crates/adic-crypto/src/lib.rs && \
+    mkdir -p crates/adic-math/src && echo "fn main() {}" > crates/adic-math/src/lib.rs && \
+    mkdir -p crates/adic-storage/src && echo "fn main() {}" > crates/adic-storage/src/lib.rs && \
+    mkdir -p crates/adic-mrw/src && echo "fn main() {}" > crates/adic-mrw/src/lib.rs && \
+    mkdir -p crates/adic-consensus/src && echo "fn main() {}" > crates/adic-consensus/src/lib.rs && \
+    mkdir -p crates/adic-finality/src && echo "fn main() {}" > crates/adic-finality/src/lib.rs && \
+    mkdir -p crates/adic-economics/src && echo "fn main() {}" > crates/adic-economics/src/lib.rs && \
+    mkdir -p crates/adic-network/src && echo "fn main() {}" > crates/adic-network/src/lib.rs && \
+    mkdir -p crates/adic-node/src && echo "fn main() {}" > crates/adic-node/src/main.rs && \
+    mkdir -p crates/adic-bench/src && echo "fn main() {}" > crates/adic-bench/src/main.rs
+
+# Build dependencies only - this layer will be cached
+RUN cargo build --release || true
+
+# Now copy the actual source code
+COPY crates/ ./crates/
+
+# Touch the main files to ensure they're newer than the dummy files
+RUN find . -name "*.rs" -exec touch {} +
+
+# Build the actual application
+RUN cargo build --release --bin adic
+
+# Runtime stage
+FROM debian:trixie-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 adic
+
+# Copy binary from builder
+COPY --from=builder /usr/src/adic-core/target/release/adic /usr/local/bin/adic
+
+# Create data directory
+RUN mkdir -p /data && chown adic:adic /data
+
+# Switch to non-root user
+USER adic
+
+# Set working directory
+WORKDIR /data
+
+# Expose ports
+EXPOSE 8080 9000
+
+# Default command
+CMD ["adic", "start", "--data-dir", "/data", "--api-port", "8080", "--port", "9000", "--validator"]

@@ -306,10 +306,19 @@ fn test_signature_and_encryption_integration() {
 #[tokio::test]
 async fn test_full_consensus_flow() {
     use adic_consensus::ConsensusEngine;
+    use adic_storage::{StorageConfig, StorageEngine};
+    use std::sync::Arc;
+
+    // Create storage for consensus engine
+    let storage_config = StorageConfig {
+        backend_type: adic_storage::store::BackendType::Memory,
+        ..Default::default()
+    };
+    let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
 
     // Create consensus engine
     let params = AdicParams::default();
-    let engine = ConsensusEngine::new(params.clone());
+    let engine = ConsensusEngine::new(params.clone(), storage);
 
     // Create test message
     let message = AdicMessage::new(

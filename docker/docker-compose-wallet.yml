@@ -1,0 +1,186 @@
+version: '3.8'
+
+# ADIC 6-Node Network with Wallet Support
+# This configuration sets up a complete ADIC network with wallet functionality
+
+services:
+  # Node 1 - Genesis Node (starts first, applies genesis)
+  adic-node-1:
+    image: adic:wallet
+    container_name: adic-node-1
+    hostname: node-1
+    volumes:
+      - ./data/node-1:/data
+    environment:
+      - ADIC_NODE_NAME=node-1
+      - ADIC_DATA_DIR=/data
+      - ADIC_API_PORT=8080
+      - ADIC_P2P_PORT=19001
+      - ADIC_VALIDATOR=true
+      - RUST_LOG=info
+    ports:
+      - "8081:8080"  # API
+      - "19001:19001" # P2P
+    networks:
+      - adic-network
+    command: ["start", "--data-dir", "/data", "--validator"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/wallet/info"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  # Node 2
+  adic-node-2:
+    image: adic:wallet
+    container_name: adic-node-2
+    hostname: node-2
+    volumes:
+      - ./data/node-2:/data
+    environment:
+      - ADIC_NODE_NAME=node-2
+      - ADIC_DATA_DIR=/data
+      - ADIC_API_PORT=8080
+      - ADIC_P2P_PORT=19002
+      - ADIC_VALIDATOR=true
+      - ADIC_BOOTSTRAP_PEERS=/dns4/node-1/tcp/19001
+      - RUST_LOG=info
+    ports:
+      - "8082:8080"
+      - "19002:19002"
+    networks:
+      - adic-network
+    depends_on:
+      adic-node-1:
+        condition: service_healthy
+    command: ["start", "--data-dir", "/data", "--validator"]
+
+  # Node 3
+  adic-node-3:
+    image: adic:wallet
+    container_name: adic-node-3
+    hostname: node-3
+    volumes:
+      - ./data/node-3:/data
+    environment:
+      - ADIC_NODE_NAME=node-3
+      - ADIC_DATA_DIR=/data
+      - ADIC_API_PORT=8080
+      - ADIC_P2P_PORT=19003
+      - ADIC_VALIDATOR=true
+      - ADIC_BOOTSTRAP_PEERS=/dns4/node-1/tcp/19001,/dns4/node-2/tcp/19002
+      - RUST_LOG=info
+    ports:
+      - "8083:8080"
+      - "19003:19003"
+    networks:
+      - adic-network
+    depends_on:
+      adic-node-1:
+        condition: service_healthy
+    command: ["start", "--data-dir", "/data", "--validator"]
+
+  # Node 4
+  adic-node-4:
+    image: adic:wallet
+    container_name: adic-node-4
+    hostname: node-4
+    volumes:
+      - ./data/node-4:/data
+    environment:
+      - ADIC_NODE_NAME=node-4
+      - ADIC_DATA_DIR=/data
+      - ADIC_API_PORT=8080
+      - ADIC_P2P_PORT=19004
+      - ADIC_VALIDATOR=true
+      - ADIC_BOOTSTRAP_PEERS=/dns4/node-1/tcp/19001,/dns4/node-2/tcp/19002
+      - RUST_LOG=info
+    ports:
+      - "8084:8080"
+      - "19004:19004"
+    networks:
+      - adic-network
+    depends_on:
+      adic-node-1:
+        condition: service_healthy
+    command: ["start", "--data-dir", "/data", "--validator"]
+
+  # Node 5
+  adic-node-5:
+    image: adic:wallet
+    container_name: adic-node-5
+    hostname: node-5
+    volumes:
+      - ./data/node-5:/data
+    environment:
+      - ADIC_NODE_NAME=node-5
+      - ADIC_DATA_DIR=/data
+      - ADIC_API_PORT=8080
+      - ADIC_P2P_PORT=19005
+      - ADIC_VALIDATOR=true
+      - ADIC_BOOTSTRAP_PEERS=/dns4/node-1/tcp/19001,/dns4/node-3/tcp/19003
+      - RUST_LOG=info
+    ports:
+      - "8085:8080"
+      - "19005:19005"
+    networks:
+      - adic-network
+    depends_on:
+      adic-node-1:
+        condition: service_healthy
+    command: ["start", "--data-dir", "/data", "--validator"]
+
+  # Node 6
+  adic-node-6:
+    image: adic:wallet
+    container_name: adic-node-6
+    hostname: node-6
+    volumes:
+      - ./data/node-6:/data
+    environment:
+      - ADIC_NODE_NAME=node-6
+      - ADIC_DATA_DIR=/data
+      - ADIC_API_PORT=8080
+      - ADIC_P2P_PORT=19006
+      - ADIC_VALIDATOR=true
+      - ADIC_BOOTSTRAP_PEERS=/dns4/node-1/tcp/19001,/dns4/node-4/tcp/19004
+      - RUST_LOG=info
+    ports:
+      - "8086:8080"
+      - "19006:19006"
+    networks:
+      - adic-network
+    depends_on:
+      adic-node-1:
+        condition: service_healthy
+    command: ["start", "--data-dir", "/data", "--validator"]
+
+  # Optional: Explorer Frontend
+  explorer:
+    image: adic-explorer:latest
+    container_name: adic-explorer
+    ports:
+      - "3000:3000"
+    environment:
+      - VUE_APP_API_URL=http://localhost:8081
+      - VUE_APP_NETWORK_NAME=ADIC Testnet
+    networks:
+      - adic-network
+    depends_on:
+      - adic-node-1
+
+networks:
+  adic-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  node-1-data:
+  node-2-data:
+  node-3-data:
+  node-4-data:
+  node-5-data:
+  node-6-data:

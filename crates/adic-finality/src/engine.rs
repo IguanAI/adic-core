@@ -1,9 +1,10 @@
 use crate::{
     artifact::{FinalityArtifact, FinalityGate, FinalityParams, FinalityWitness},
     homology::{HomologyAnalyzer, HomologyResult},
-    kcore::{KCoreAnalyzer, KCoreResult, MessageGraph},
+    kcore::{KCoreAnalyzer, KCoreResult},
 };
 use adic_consensus::ConsensusEngine;
+use adic_storage::StorageEngine;
 use adic_types::{AdicParams, MessageId, Result};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -38,14 +39,18 @@ pub struct FinalityEngine {
     config: FinalityConfig,
     analyzer: KCoreAnalyzer,
     homology: HomologyAnalyzer,
-    graph: Arc<RwLock<MessageGraph>>,
+    storage: Arc<StorageEngine>,
     finalized: Arc<RwLock<HashMap<MessageId, FinalityArtifact>>>,
     pending: Arc<RwLock<VecDeque<MessageId>>>,
     consensus: Arc<ConsensusEngine>,
 }
 
 impl FinalityEngine {
-    pub fn new(config: FinalityConfig, consensus: Arc<ConsensusEngine>) -> Self {
+    pub fn new(
+        config: FinalityConfig,
+        consensus: Arc<ConsensusEngine>,
+        storage: Arc<StorageEngine>,
+    ) -> Self {
         let analyzer = KCoreAnalyzer::new(
             config.k,
             config.min_depth,
@@ -58,7 +63,7 @@ impl FinalityEngine {
             config,
             analyzer,
             homology,
-            graph: Arc::new(RwLock::new(MessageGraph::new())),
+            storage,
             finalized: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(RwLock::new(VecDeque::new())),
             consensus,
@@ -69,31 +74,21 @@ impl FinalityEngine {
     pub async fn add_message(
         &self,
         id: MessageId,
-        parents: Vec<MessageId>,
-        reputation: f64,
-        ball_ids: HashMap<u32, Vec<u8>>,
+        _parents: Vec<MessageId>,
+        _reputation: f64,
+        _ball_ids: HashMap<u32, Vec<u8>>,
     ) -> Result<()> {
-        let mut graph = self.graph.write().await;
-        graph.add_message(
-            id,
-            parents.clone(),
-            crate::kcore::MessageInfo {
-                reputation,
-                ball_ids,
-            },
-        );
-
         // Add to homology complex for F2 analysis
-        self.homology
-            .add_simplex(
-                {
-                    let mut vertices = vec![id];
-                    vertices.extend(parents);
-                    vertices
-                },
-                reputation,
-            )
-            .await?;
+        // self.homology
+        //     .add_simplex(
+        //         {
+        //             let mut vertices = vec![id];
+        //             vertices.extend(parents);
+        //             vertices
+        //         },
+        //         reputation,
+        //     )
+        //     .await?;
 
         let mut pending = self.pending.write().await;
         pending.push_back(id);
@@ -126,14 +121,17 @@ impl FinalityEngine {
         };
 
         let mut newly_finalized = Vec::new();
-        let graph = self.graph.read().await;
 
         for msg_id in pending_list {
             if self.is_finalized(&msg_id).await {
                 continue;
             }
 
-            match self.analyzer.analyze(msg_id, &graph) {
+            match self
+                .analyzer
+                .analyze(msg_id, &self.storage, &self.consensus.reputation)
+                .await
+            {
                 Ok(result) if result.is_final => {
                     let artifact = self.create_artifact(msg_id, result);
 
@@ -237,6 +235,28 @@ impl FinalityEngine {
             total_messages: finalized_count + pending_count,
         }
     }
+
+    /// Check k-core finality for a specific message
+    pub async fn check_kcore_finality(
+        &self,
+        msg_id: &MessageId,
+    ) -> Result<Option<KCoreFinalityResult>> {
+        // Analyze k-core starting from this message
+        let result = self
+            .analyzer
+            .analyze(*msg_id, &self.storage, &self.consensus.reputation)
+            .await?;
+
+        // Calculate diversity score as the minimum diversity across all axes
+        let diversity_score = result.distinct_balls.values().min().copied().unwrap_or(0);
+
+        Ok(Some(KCoreFinalityResult {
+            k_value: self.config.k,
+            depth: result.depth,
+            diversity_score,
+            is_final: result.is_final,
+        }))
+    }
 }
 
 impl Clone for FinalityEngine {
@@ -245,7 +265,7 @@ impl Clone for FinalityEngine {
             config: self.config.clone(),
             analyzer: self.analyzer.clone(),
             homology: HomologyAnalyzer::new(self.consensus.params().clone()), // Create new instance with same params
-            graph: Arc::clone(&self.graph),
+            storage: Arc::clone(&self.storage),
             finalized: Arc::clone(&self.finalized),
             pending: Arc::clone(&self.pending),
             consensus: Arc::clone(&self.consensus),
@@ -260,13 +280,64 @@ pub struct FinalityStats {
     pub total_messages: usize,
 }
 
+/// K-core finality result for API responses
+#[derive(Debug, Clone)]
+pub struct KCoreFinalityResult {
+    pub k_value: usize,
+    pub depth: u32,
+    pub diversity_score: usize,
+    pub is_final: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adic_types::{AdicParams, PublicKey};
+    use adic_storage::{store::BackendType, StorageConfig};
+    use adic_types::{
+        AdicFeatures, AdicMessage, AdicMeta, AdicParams, AxisPhi, PublicKey, QpDigits, Signature,
+    };
+    use tempfile::tempdir;
 
     fn make_ball_ids(axis_vals: &[(u32, &[u8])]) -> HashMap<u32, Vec<u8>> {
         axis_vals.iter().map(|(a, v)| (*a, v.to_vec())).collect()
+    }
+
+    fn create_test_message(
+        id: MessageId,
+        parents: Vec<MessageId>,
+        ball_vals: &[(u32, u64)],
+    ) -> AdicMessage {
+        let features = AdicFeatures::new(
+            ball_vals
+                .iter()
+                .map(|(axis, val)| AxisPhi::new(*axis, QpDigits::from_u64(*val, 3, 10)))
+                .collect(),
+        );
+
+        let mut msg = AdicMessage::new(
+            parents,
+            features,
+            AdicMeta::new(chrono::Utc::now()),
+            PublicKey::from_bytes([1; 32]),
+            vec![],
+        );
+        // Override the computed ID with our test ID
+        msg.id = id;
+        msg.signature = Signature::empty();
+        msg
+    }
+
+    fn create_test_storage() -> Arc<StorageEngine> {
+        let temp_dir = tempdir().unwrap();
+        let storage_config = StorageConfig {
+            backend_type: BackendType::RocksDB {
+                path: temp_dir.path().to_str().unwrap().to_string(),
+            },
+            cache_size: 10,
+            flush_interval_ms: 1000,
+            max_batch_size: 100,
+        };
+        Arc::new(StorageEngine::new(storage_config).unwrap())
     }
 
     #[tokio::test]
@@ -280,18 +351,32 @@ mod tests {
             ..Default::default()
         };
 
-        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let storage = create_test_storage();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(
+            params.clone(),
+            storage.clone(),
+        ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone());
 
         // Create a tiny chain: root -> child
-        let root = MessageId::new(b"root");
-        let child = MessageId::new(b"child");
+        let root_id = MessageId::new(b"root");
+        let child_id = MessageId::new(b"child");
 
-        // Add root (no parents)
+        // Create and store root message
+        let root_msg = create_test_message(root_id, vec![], &[(0, 0), (1, 10)]);
+        storage.store_message(&root_msg).await.unwrap();
+
+        // Track reputation for the proposer
+        consensus
+            .reputation
+            .set_reputation(&root_msg.proposer_pk, 1.0)
+            .await;
+
+        // Add root to finality engine (no parents)
         engine
             .add_message(
-                root,
+                root_id,
                 vec![],
                 1.0,
                 make_ball_ids(&[(0, &[0, 0]), (1, &[1, 0])]),
@@ -299,11 +384,21 @@ mod tests {
             .await
             .unwrap();
 
-        // Add child referencing root
+        // Create and store child message
+        let child_msg = create_test_message(child_id, vec![root_id], &[(0, 1), (1, 11)]);
+        storage.store_message(&child_msg).await.unwrap();
+
+        // Track reputation for the child proposer
+        consensus
+            .reputation
+            .set_reputation(&child_msg.proposer_pk, 1.0)
+            .await;
+
+        // Add child to finality engine
         engine
             .add_message(
-                child,
-                vec![root],
+                child_id,
+                vec![root_id],
                 1.0,
                 make_ball_ids(&[(0, &[0, 1]), (1, &[1, 0])]),
             )
@@ -313,8 +408,8 @@ mod tests {
         // Run finality check; with permissive thresholds root should finalize
         let finalized = engine.check_finality().await.unwrap();
         assert!(!finalized.is_empty());
-        assert!(engine.is_finalized(&root).await);
-        assert!(engine.get_artifact(&root).await.is_some());
+        assert!(engine.is_finalized(&root_id).await);
+        assert!(engine.get_artifact(&root_id).await.is_some());
     }
 
     #[tokio::test]
@@ -340,15 +435,24 @@ mod tests {
     #[tokio::test]
     async fn test_finality_engine_window_management() {
         let params = AdicParams::default();
-        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let storage = create_test_storage();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(
+            params.clone(),
+            storage.clone(),
+        ));
         let mut finality_cfg = FinalityConfig::from(&params);
         finality_cfg.window_size = 5; // Small window for testing
 
-        let engine = FinalityEngine::new(finality_cfg, consensus);
+        let engine = FinalityEngine::new(finality_cfg, consensus, storage.clone());
 
         // Add more messages than window size
         for i in 0..10 {
             let msg_id = MessageId::new(&[i; 32]);
+
+            // Create and store the message
+            let msg = create_test_message(msg_id, vec![], &[(0, i as u64)]);
+            storage.store_message(&msg).await.unwrap();
+
             engine
                 .add_message(msg_id, vec![], 1.0, HashMap::new())
                 .await
@@ -363,13 +467,22 @@ mod tests {
     #[tokio::test]
     async fn test_finality_engine_stats() {
         let params = AdicParams::default();
-        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let storage = create_test_storage();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(
+            params.clone(),
+            storage.clone(),
+        ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus);
+        let engine = FinalityEngine::new(finality_cfg, consensus, storage.clone());
 
         // Add some messages
         for i in 0..3 {
             let msg_id = MessageId::new(&[i; 32]);
+
+            // Create and store the message
+            let msg = create_test_message(msg_id, vec![], &[(0, i as u64)]);
+            storage.store_message(&msg).await.unwrap();
+
             engine
                 .add_message(msg_id, vec![], 1.0, HashMap::new())
                 .await
@@ -392,20 +505,32 @@ mod tests {
             ..Default::default()
         };
 
-        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let storage = create_test_storage();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(
+            params.clone(),
+            storage.clone(),
+        ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone());
 
-        let root = MessageId::new(b"root");
+        let root_id = MessageId::new(b"root");
         let proposer = PublicKey::from_bytes([1; 32]);
 
+        // Create and store root message
+        let mut root_msg = create_test_message(root_id, vec![], &[(0, 0), (1, 10)]);
+        root_msg.proposer_pk = proposer;
+        storage.store_message(&root_msg).await.unwrap();
+
+        // Initialize reputation
+        consensus.reputation.set_reputation(&proposer, 1.0).await;
+
         // Escrow deposit for the message
-        consensus.deposits.escrow(root, proposer).await.unwrap();
+        consensus.deposits.escrow(root_id, proposer).await.unwrap();
 
         // Add message to finality engine
         engine
             .add_message(
-                root,
+                root_id,
                 vec![],
                 1.0,
                 make_ball_ids(&[(0, &[0, 0]), (1, &[1, 0])]),
@@ -413,12 +538,21 @@ mod tests {
             .await
             .unwrap();
 
-        // Add child to trigger finality
-        let child = MessageId::new(b"child");
+        // Create and store child to trigger finality
+        let child_id = MessageId::new(b"child");
+        let child_msg = create_test_message(child_id, vec![root_id], &[(0, 1), (1, 11)]);
+        storage.store_message(&child_msg).await.unwrap();
+
+        // Initialize reputation for child proposer
+        consensus
+            .reputation
+            .set_reputation(&child_msg.proposer_pk, 1.0)
+            .await;
+
         engine
             .add_message(
-                child,
-                vec![root],
+                child_id,
+                vec![root_id],
                 1.0,
                 make_ball_ids(&[(0, &[0, 1]), (1, &[1, 0])]),
             )
@@ -430,7 +564,7 @@ mod tests {
         assert!(!finalized.is_empty());
 
         // Deposit should be refunded
-        let deposit_state = consensus.deposits.get_state(&root).await;
+        let deposit_state = consensus.deposits.get_state(&root_id).await;
         assert_eq!(deposit_state, Some(adic_consensus::DepositState::Refunded));
 
         // Reputation should be updated
@@ -441,9 +575,13 @@ mod tests {
     #[tokio::test]
     async fn test_finality_artifact_creation() {
         let params = AdicParams::default();
-        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let storage = create_test_storage();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(
+            params.clone(),
+            storage.clone(),
+        ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg.clone(), consensus);
+        let engine = FinalityEngine::new(finality_cfg.clone(), consensus, storage);
 
         let msg_id = MessageId::new(b"test");
         let kcore_result = KCoreResult {
@@ -469,11 +607,18 @@ mod tests {
     #[tokio::test]
     async fn test_finality_engine_clone() {
         let params = AdicParams::default();
-        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let storage = create_test_storage();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(
+            params.clone(),
+            storage.clone(),
+        ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus);
+        let engine = FinalityEngine::new(finality_cfg, consensus, storage.clone());
 
         let msg_id = MessageId::new(b"test");
+        let msg = create_test_message(msg_id, vec![], &[(0, 1)]);
+        storage.store_message(&msg).await.unwrap();
+
         engine
             .add_message(msg_id, vec![], 1.0, HashMap::new())
             .await
@@ -497,30 +642,58 @@ mod tests {
             ..Default::default()
         };
 
-        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let storage = create_test_storage();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(
+            params.clone(),
+            storage.clone(),
+        ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus);
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone());
 
         // Create a chain: root -> middle -> tip
-        let root = MessageId::new(b"root");
-        let middle = MessageId::new(b"middle");
-        let tip = MessageId::new(b"tip");
+        let root_id = MessageId::new(b"root");
+        let middle_id = MessageId::new(b"middle");
+        let tip_id = MessageId::new(b"tip");
+
+        // Store root message
+        let root_msg = create_test_message(root_id, vec![], &[(0, 0)]);
+        storage.store_message(&root_msg).await.unwrap();
+        consensus
+            .reputation
+            .set_reputation(&root_msg.proposer_pk, 1.0)
+            .await;
 
         engine
-            .add_message(root, vec![], 1.0, make_ball_ids(&[(0, &[0])]))
+            .add_message(root_id, vec![], 1.0, make_ball_ids(&[(0, &[0])]))
             .await
             .unwrap();
 
+        // Store middle message
+        let middle_msg = create_test_message(middle_id, vec![root_id], &[(0, 1)]);
+        storage.store_message(&middle_msg).await.unwrap();
+        consensus
+            .reputation
+            .set_reputation(&middle_msg.proposer_pk, 1.0)
+            .await;
+
         engine
-            .add_message(middle, vec![root], 1.0, make_ball_ids(&[(0, &[1])]))
+            .add_message(middle_id, vec![root_id], 1.0, make_ball_ids(&[(0, &[1])]))
             .await
             .unwrap();
 
         // First check might finalize root
         let finalized1 = engine.check_finality().await.unwrap();
 
+        // Store tip message
+        let tip_msg = create_test_message(tip_id, vec![middle_id], &[(0, 2)]);
+        storage.store_message(&tip_msg).await.unwrap();
+        consensus
+            .reputation
+            .set_reputation(&tip_msg.proposer_pk, 1.0)
+            .await;
+
         engine
-            .add_message(tip, vec![middle], 1.0, make_ball_ids(&[(0, &[2])]))
+            .add_message(tip_id, vec![middle_id], 1.0, make_ball_ids(&[(0, &[2])]))
             .await
             .unwrap();
 
@@ -541,21 +714,41 @@ mod tests {
             ..Default::default()
         };
 
-        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(params.clone()));
+        let storage = create_test_storage();
+        let consensus = Arc::new(adic_consensus::ConsensusEngine::new(
+            params.clone(),
+            storage.clone(),
+        ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone());
 
-        let root = MessageId::new(b"root");
-        let child = MessageId::new(b"child");
+        let root_id = MessageId::new(b"root");
+        let child_id = MessageId::new(b"child");
+
+        // Store root message
+        let root_msg = create_test_message(root_id, vec![], &[(0, 0)]);
+        storage.store_message(&root_msg).await.unwrap();
+        consensus
+            .reputation
+            .set_reputation(&root_msg.proposer_pk, 1.0)
+            .await;
 
         // Add messages without escrowing deposits
         engine
-            .add_message(root, vec![], 1.0, make_ball_ids(&[(0, &[0])]))
+            .add_message(root_id, vec![], 1.0, make_ball_ids(&[(0, &[0])]))
             .await
             .unwrap();
 
+        // Store child message
+        let child_msg = create_test_message(child_id, vec![root_id], &[(0, 1)]);
+        storage.store_message(&child_msg).await.unwrap();
+        consensus
+            .reputation
+            .set_reputation(&child_msg.proposer_pk, 1.0)
+            .await;
+
         engine
-            .add_message(child, vec![root], 1.0, make_ball_ids(&[(0, &[1])]))
+            .add_message(child_id, vec![root_id], 1.0, make_ball_ids(&[(0, &[1])]))
             .await
             .unwrap();
 

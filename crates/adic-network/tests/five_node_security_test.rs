@@ -84,7 +84,7 @@ async fn create_secure_node(
         "create_secure_node - Creating consensus engine for node {}",
         node_id
     );
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     info!(
         "create_secure_node - Creating finality engine for node {}",
         node_id
@@ -92,6 +92,7 @@ async fn create_secure_node(
     let finality = Arc::new(FinalityEngine::new(
         FinalityConfig::from(&params),
         consensus.clone(),
+        storage.clone(),
     ));
 
     // Use dynamic ports based on base_port to avoid conflicts

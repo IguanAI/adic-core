@@ -55,18 +55,8 @@ impl StorageBackend for MemoryBackend {
 
         messages.insert(message.id, message.clone());
 
-        // Update parent-child relationships
-        let mut parents_map = self.parents.write().await;
-        let mut children_map = self.children.write().await;
-
-        parents_map.insert(message.id, message.parents.clone());
-
-        for parent_id in &message.parents {
-            children_map
-                .entry(*parent_id)
-                .or_insert_with(Vec::new)
-                .push(message.id);
-        }
+        // Note: Parent-child relationships are now handled by store_message in store.rs
+        // to ensure consistency across all backends
 
         Ok(())
     }
@@ -262,6 +252,52 @@ impl StorageBackend for MemoryBackend {
             conflict_sets: conflicts.len(),
             total_size_bytes: None,
         })
+    }
+
+    async fn get_recently_finalized(&self, limit: usize) -> Result<Vec<MessageId>> {
+        let finalized = self.finalized.read().await;
+        let mut finalized_ids: Vec<MessageId> = finalized.keys().cloned().collect();
+        finalized_ids.truncate(limit);
+        Ok(finalized_ids)
+    }
+
+    async fn get_messages_in_time_range(
+        &self,
+        start_timestamp_millis: i64,
+        end_timestamp_millis: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<MessageId>> {
+        let messages = self.messages.read().await;
+        let end_ts = end_timestamp_millis.unwrap_or(i64::MAX);
+
+        let mut matching_messages: Vec<(MessageId, i64)> = messages
+            .iter()
+            .filter_map(|(id, msg)| {
+                let ts = msg.meta.timestamp.timestamp_millis();
+                if ts >= start_timestamp_millis && ts < end_ts {
+                    Some((*id, ts))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by timestamp
+        matching_messages.sort_by_key(|(_, ts)| *ts);
+
+        // Take only up to limit
+        matching_messages.truncate(limit);
+
+        Ok(matching_messages.into_iter().map(|(id, _)| id).collect())
+    }
+
+    async fn get_messages_after_timestamp(
+        &self,
+        timestamp_millis: i64,
+        limit: usize,
+    ) -> Result<Vec<MessageId>> {
+        self.get_messages_in_time_range(timestamp_millis, None, limit)
+            .await
     }
 }
 

@@ -5,6 +5,183 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2024-12-23
+
+### Added
+- **Wallet Implementation**: Complete wallet system with transaction support
+  - Wallet creation and management (`wallet.rs`)
+  - Wallet API endpoints (`api_wallet.rs`, `api_wallet_tx.rs`)
+  - Transaction history tracking
+  - Faucet functionality for testing
+  - Digital signature support
+
+- **Genesis System**: Full genesis implementation
+  - Genesis configuration and allocations (`genesis.rs`)
+  - Genesis hyperedge creation
+  - Address derivation from node IDs
+  - Initial balance allocations
+
+- **Transaction Storage**: RocksDB implementation for transaction persistence
+  - Store transactions indexed by hash
+  - Query transaction history by address (sender/receiver)
+  - Automatic sorting by timestamp
+  - Transaction references for efficient lookups
+
+- **Energy Descent Tracking**: Energy descent consensus mechanism
+  - Energy metrics calculation (`energy_descent.rs`)
+  - Conflict resolution tracking
+  - Expected drift calculations
+
+- **Finalization Metrics**: Real-time calculation of k-core statistics
+  - Average k-value calculation from recent finalizations
+  - Average depth tracking for finalized messages
+  - Dynamic statistics in API responses
+
+- **TLS Configuration**: Production TLS support now configurable
+  - Added `use_production_tls` flag in network config
+  - Configurable via config file or environment variables
+  - Defaults to false for development
+
+- **Code Quality Tools**: Added linting and formatting configurations
+  - Created rustfmt.toml for consistent code formatting
+  - Added clippy.toml with project-specific linting rules
+  - Enforced code quality standards
+
+- **Docker Support**: Enhanced Docker configurations
+  - Added `Dockerfile.prebuilt` for faster deployments
+  - Wallet integration dockerfile (`docker/wallet-integration.dockerfile`)
+  - Docker Compose for wallet network (`docker/docker-compose-wallet.yml`)
+
+- **Scripts**: New utility scripts for wallet operations
+  - `deploy-wallet-network.sh` - Deploy multi-node wallet network
+  - `monitor-wallets.sh` - Monitor wallet balances
+  - `test-wallet-integration.sh` - Test wallet functionality
+  - `wallet-backup.sh` - Backup wallet data
+
+- **Documentation**: Comprehensive wallet documentation
+  - Wallet implementation guide (`docs/wallet-implementation.md`)
+  - Wallet migration guide (`docs/wallet-migration-guide.md`)
+  - Integration status tracking (`INTEGRATION-STATUS.md`)
+  - Alignment summary (`ALIGNMENT-SUMMARY.md`)
+
+- **Examples**: Added economics examples
+  - Example implementations in `crates/adic-economics/examples/`
+
+- **Comprehensive Structured Logging**: Complete overhaul of logging system
+  - Contextual state changes with before/after values across all modules
+  - Structured fields automatically visible at debug level
+  - Performance metrics (duration, throughput) for all operations
+  - Visual emoji indicators for different operation types
+  - Over 200 logging improvements across the codebase
+  - Millisecond-precision timing for storage operations
+  - Enhanced emoji legend with operation indicators (💰 Credit, 💸 Debit, 📝 Transaction, 🔄 State Change)
+  - Performance warnings for queries exceeding 100ms
+
+- **Logging Documentation and Tools**:
+  - Best practices guide (`docs/LOGGING_BEST_PRACTICES.md`)
+  - Example configurations for different environments (`config/logging-example.toml`)
+  - Implementation summary (`LOGGING_IMPROVEMENTS.md`)
+  - Helper macros for consistent structured logging patterns
+
+- **Storage Query Optimizations**: Timestamp-based indexing with O(log n) query performance
+  - New methods: `get_messages_in_time_range` and `get_messages_after_timestamp`
+  - RocksDB optimizations: bloom filters (10-bit), 256MB block cache, prefix extractors
+  - Comprehensive storage tests with performance benchmarks showing sub-10ms queries
+
+- **Transaction Pagination**: Cursor-based pagination for transaction history
+  - `get_transaction_history_paginated` method in EconomicsEngine
+  - Configurable page size with efficient cursor handling
+  - Memory storage implementation with proper timestamp sorting (newest first)
+
+- **Wallet Registry System**: Internal wallet registry implementation (`wallet_registry.rs`)
+  - Metadata tracking for wallets (label, wallet_type, trusted status)
+  - Registry statistics: total, active, and trusted wallet counts
+  - Wallet lifecycle management: `mark_used`, `unregister_wallet`, and `get_stats` methods
+
+### Changed
+- **Project Organization**: Improved directory structure
+  - Moved test data to `test-data/` directory (now gitignored)
+  - Moved node configs to `config/` directory (now gitignored)
+  - Cleaner root directory layout
+
+- **Version Updates**: Bumped to 0.1.5
+  - Updated all workspace crates to 0.1.5
+  - Synchronized dependency versions across workspace
+
+- **API Enhancements**: Significant API improvements
+  - Enhanced message submission with features
+  - Improved finality checking
+  - Better error handling and responses
+  - Added wallet endpoints
+
+- **Storage Improvements**: Enhanced storage layer with performance optimizations
+  - Better RocksDB integration with bloom filters and block cache
+  - Improved memory backend with proper sorting for transactions
+  - Transaction storage support with timestamp-based indexes
+  - Efficient range queries for time-series data
+  - RocksDB performance tuning for time-series workloads
+
+### Fixed
+- **API Improvements**:
+  - Removed duplicate struct definitions (WalletInfo, BalanceResponse)
+  - Implemented missing wallet transaction functionality
+  - Fixed admissibility calculations
+
+- **Build Issues**:
+  - Fixed missing DEFAULT_DEPOSIT_AMOUNT export in tests
+  - Fixed macOS CI build compatibility (from commit df587a7)
+  - Fixed test failures in deposit slashing
+
+- **Consensus Fixes**:
+  - Fixed reputation tracking
+  - Improved admissibility checking
+  - Better deposit management
+  - Fixed mathematical invariant test for MRW tip selection diversity
+
+### Security (Critical Updates for v0.1.5)
+- **Transaction Hashing**: Replaced insecure DefaultHasher with Blake3 for cryptographically secure transaction hashes
+- **Wallet Encryption**: Implemented p-adic encryption for private keys using PadicCrypto from the paper
+  - Private keys now encrypted at rest using password-derived p-adic keys
+  - Key derivation using iterative SHA256 with salt (100,000 iterations)
+  - Backwards compatible with v2 unencrypted wallets (with warnings)
+- **Password Protection**: Added WALLET_PASSWORD environment variable support
+  - Default testnet password provided with security warning
+  - Salt stored with wallet for proper key derivation
+- Enhanced transaction security with proper signature verification
+- Address encoding improvements with bech32 support
+- Better validation of wallet operations
+
+### Added (Wallet Enhancements)
+- **External Wallet Registry**: Complete external wallet integration system
+  - Wallet registration API endpoints for external wallets
+  - Public key storage and management
+  - Signature verification for all external wallet operations
+  - Support for both bech32 and hex address formats
+
+- **Wallet Import/Export**: Secure wallet portability
+  - Export wallets to encrypted JSON files
+  - Import wallets with password protection
+  - CLI commands: `adic wallet export`, `adic wallet import`, `adic wallet info`
+  - JSON string export/import for programmatic use
+
+- **Enhanced Security**: Comprehensive wallet security improvements
+  - All exports use p-adic encryption with PBKDF2-like key derivation
+  - Ed25519-dalek signature verification for external wallets
+  - Password-protected wallet operations with rpassword integration
+  - Secure salt generation for each export
+
+- **API Documentation**: Complete wallet API documentation
+  - Created `docs/wallet-api.md` with all endpoint specifications
+  - Created `examples/wallet-usage.md` with practical examples
+  - Python, JavaScript/TypeScript, and Rust integration examples
+  - Security best practices and troubleshooting guide
+
+### Known Security Limitations (Testnet Only)
+⚠️ **WARNING**: This release is for TESTNET USE ONLY
+- TLS development mode bypass still present
+- Storage range queries not optimized
+- Some consensus mechanisms simplified from paper specification
+
 ## [0.1.4] - 2025-08-29
 
 ### Phase 0 Complete 🎉

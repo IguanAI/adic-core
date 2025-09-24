@@ -15,7 +15,7 @@ mod codecs_tests;
 #[cfg(test)]
 mod peer_tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -114,7 +114,9 @@ impl NetworkEngine {
 
         // Initialize peer manager with real deposit verifier
         info!("NetworkEngine::new - Creating peer manager");
-        let deposit_manager = Arc::new(adic_consensus::DepositManager::new(0.1));
+        let deposit_manager = Arc::new(adic_consensus::DepositManager::new(
+            adic_consensus::DEFAULT_DEPOSIT_AMOUNT,
+        ));
         let deposit_verifier: Arc<dyn DepositVerifier> =
             Arc::new(RealDepositVerifier::new(deposit_manager));
         let peer_manager = Arc::new(PeerManager::new(
@@ -210,12 +212,17 @@ impl NetworkEngine {
     }
 
     pub async fn start(&self) -> Result<()> {
-        info!("Starting network engine for peer {}", self.peer_id);
+        info!(
+            peer_id = %self.peer_id,
+            listen_addresses = ?self.config.listen_addresses,
+            bootstrap_peers = self.config.bootstrap_peers.len(),
+            "🌐 Starting network engine"
+        );
 
         // Start accepting incoming connections
-        info!("Starting accept loop...");
+        info!(transport = "hybrid", "⏳ Starting accept loop");
         self.start_accept_loop().await;
-        info!("Accept loop started");
+        info!(transport = "hybrid", "✅ Accept loop started");
 
         // Start listening on configured addresses
         for addr in &self.config.listen_addresses {
@@ -224,14 +231,14 @@ impl NetworkEngine {
 
         // Get actual listening ports for logging
         if let Some(port) = self.local_quic_port().await {
-            info!("QUIC endpoint listening on port {}", port);
+            info!(port = port, protocol = "quic", "📡 QUIC endpoint listening");
         }
 
         // Connect to bootstrap peers via discovery protocol
         if !self.config.bootstrap_peers.is_empty() {
             info!(
-                "Connecting to {} bootstrap peers",
-                self.config.bootstrap_peers.len()
+                bootstrap_count = self.config.bootstrap_peers.len(),
+                "🔍 Discovering bootstrap peers"
             );
             // Clone the transport Arc to avoid holding lock during async operation
             let transport_clone = self.transport.clone();
@@ -242,7 +249,10 @@ impl NetworkEngine {
             {
                 warn!("Failed to query bootstrap nodes: {}", e);
             } else {
-                info!("Bootstrap node queries completed");
+                info!(
+                    bootstrap_count = self.config.bootstrap_peers.len(),
+                    "✅ Bootstrap discovery completed"
+                );
             }
         }
 
@@ -358,6 +368,27 @@ impl NetworkEngine {
                                                         "Accepted connection from peer {}",
                                                         remote_peer_id
                                                     );
+
+                                                    // Trigger message sync with the newly connected peer
+                                                    info!(
+                                                        "Starting incremental sync with peer {}",
+                                                        remote_peer_id
+                                                    );
+                                                    if let Err(e) = net
+                                                        .sync_protocol
+                                                        .start_incremental_sync(remote_peer_id)
+                                                        .await
+                                                    {
+                                                        warn!(
+                                                            "Failed to start sync with peer {}: {}",
+                                                            remote_peer_id, e
+                                                        );
+                                                    }
+                                                    // Send the actual sync request
+                                                    if let Err(e) = net.send_sync_request(remote_peer_id, 
+                                                        crate::protocol::sync::SyncRequest::GetFrontier).await {
+                                                        warn!("Failed to send sync request to peer {}: {}", remote_peer_id, e);
+                                                    }
                                                 }
                                             }
                                             Err(e) => {
@@ -431,6 +462,30 @@ impl NetworkEngine {
         self.start_quic_receiver(connection, remote_peer_id).await;
 
         info!("Connected to peer {} at {}", remote_peer_id, addr);
+
+        // Trigger message sync with the newly connected peer
+        info!("Starting incremental sync with peer {}", remote_peer_id);
+        if let Err(e) = self
+            .sync_protocol
+            .start_incremental_sync(remote_peer_id)
+            .await
+        {
+            warn!("Failed to start sync with peer {}: {}", remote_peer_id, e);
+        }
+        // Send the actual sync request
+        if let Err(e) = self
+            .send_sync_request(
+                remote_peer_id,
+                crate::protocol::sync::SyncRequest::GetFrontier,
+            )
+            .await
+        {
+            warn!(
+                "Failed to send sync request to peer {}: {}",
+                remote_peer_id, e
+            );
+        }
+
         Ok(())
     }
 
@@ -711,6 +766,9 @@ impl NetworkEngine {
             metrics.record_message_sent(&message.id).await;
         }
 
+        // Trigger sync with peers to share this new message
+        self.trigger_sync_with_peers().await;
+
         Ok(())
     }
 
@@ -723,9 +781,13 @@ impl NetworkEngine {
         let data = serde_json::to_vec(message)
             .map_err(|e| AdicError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
-        // Send only to peers we initiated connections to
-        let connections = pool.get_outgoing_connections().await;
-        debug!("Broadcasting to {} outgoing connections", connections.len());
+        // Get ALL connections to ensure full message propagation
+        let connections = pool.get_all_connections().await;
+        info!(
+            "Broadcasting message {} to {} peers",
+            hex::encode(&message.id.as_bytes()[..8]),
+            connections.len()
+        );
 
         for (peer_id, conn) in connections {
             // Open a unidirectional stream to send the message
@@ -817,6 +879,20 @@ impl NetworkEngine {
                     info!("Peer {} is listening on port {}", from_peer, port);
                 }
                 Ok(())
+            }
+            NetworkMessage::SyncRequest(sync_request) => {
+                debug!(
+                    "Received sync request from peer {}: {:?}",
+                    from_peer, sync_request
+                );
+                self.handle_sync_request(sync_request, from_peer).await
+            }
+            NetworkMessage::SyncResponse(sync_response) => {
+                debug!(
+                    "Received sync response from peer {}: {:?}",
+                    from_peer, sync_response
+                );
+                self.handle_sync_response(sync_response, from_peer).await
             }
         }
     }
@@ -1065,12 +1141,39 @@ impl NetworkEngine {
 
     async fn start_sync_handler(&self) {
         let sync = self.sync_protocol.clone();
+        let network = self.clone();
 
         tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+
             loop {
+                interval.tick().await;
+
                 // Cleanup stale sync requests
                 sync.cleanup_stale_requests().await;
-                tokio::time::sleep(Duration::from_secs(10)).await;
+
+                // Periodic sync with all connected peers
+                let transport = network.transport.read().await;
+                let pool = transport.connection_pool();
+                let connections = pool.get_all_connections().await;
+                drop(transport); // Release lock early
+
+                for (peer_id, _conn) in connections {
+                    info!("Periodic sync with peer {}", peer_id);
+
+                    // Start incremental sync
+                    if let Err(e) = sync.start_incremental_sync(peer_id).await {
+                        warn!("Failed to start periodic sync with {}: {}", peer_id, e);
+                    }
+
+                    // Send sync request
+                    if let Err(e) = network
+                        .send_sync_request(peer_id, crate::protocol::sync::SyncRequest::GetFrontier)
+                        .await
+                    {
+                        warn!("Failed to send periodic sync request to {}: {}", peer_id, e);
+                    }
+                }
             }
         });
     }
@@ -1141,6 +1244,228 @@ impl NetworkEngine {
                 resilience.check_network_health().await;
             }
         });
+    }
+
+    /// Handle incoming sync requests from peers
+    async fn handle_sync_request(
+        &self,
+        request: crate::protocol::sync::SyncRequest,
+        from_peer: PeerId,
+    ) -> Result<()> {
+        use crate::protocol::sync::{SyncRequest, SyncResponse};
+
+        let response = match request {
+            SyncRequest::GetFrontier => {
+                // Get tips as our frontier - tips represent the latest messages
+                let tips = self
+                    .storage
+                    .get_tips()
+                    .await
+                    .map_err(|e| AdicError::Storage(format!("Failed to get tips: {}", e)))?;
+                info!(
+                    "Sending frontier of {} tips to peer {}",
+                    tips.len(),
+                    from_peer
+                );
+                SyncResponse::Frontier(tips)
+            }
+            SyncRequest::GetMessages(message_ids) => {
+                // Fetch requested messages from storage
+                let mut messages = Vec::new();
+                for id in &message_ids {
+                    if let Ok(Some(msg)) = self.storage.get_message(id).await {
+                        messages.push(msg);
+                    }
+                }
+                info!(
+                    "Sending {} messages to peer {} (requested {})",
+                    messages.len(),
+                    from_peer,
+                    message_ids.len()
+                );
+                SyncResponse::Messages(messages)
+            }
+            _ => {
+                // Handle other sync request types if needed
+                SyncResponse::Error("Unsupported sync request type".to_string())
+            }
+        };
+
+        // Send response back to peer
+        self.send_sync_response(from_peer, response).await
+    }
+
+    /// Handle incoming sync responses from peers
+    async fn handle_sync_response(
+        &self,
+        response: crate::protocol::sync::SyncResponse,
+        from_peer: PeerId,
+    ) -> Result<()> {
+        use crate::protocol::sync::SyncResponse;
+
+        match response {
+            SyncResponse::Frontier(peer_tips) => {
+                info!(
+                    "Received frontier of {} tips from peer {}",
+                    peer_tips.len(),
+                    from_peer
+                );
+
+                // Get our local tips
+                let our_tips = self
+                    .storage
+                    .get_tips()
+                    .await
+                    .map_err(|e| AdicError::Storage(format!("Failed to get tips: {}", e)))?;
+                let our_set: HashSet<_> = our_tips.into_iter().collect();
+
+                // Find tips we don't have - these represent branches we're missing
+                let missing: Vec<MessageId> = peer_tips
+                    .into_iter()
+                    .filter(|id| !our_set.contains(id))
+                    .collect();
+
+                if !missing.is_empty() {
+                    info!(
+                        "Requesting {} missing tips/messages from peer {}",
+                        missing.len(),
+                        from_peer
+                    );
+                    // Request the missing messages
+                    self.send_sync_request(
+                        from_peer,
+                        crate::protocol::sync::SyncRequest::GetMessages(missing),
+                    )
+                    .await?;
+                } else {
+                    info!("No missing tips from peer {}", from_peer);
+                }
+            }
+            SyncResponse::Messages(messages) => {
+                info!(
+                    "Received {} messages from peer {} via sync",
+                    messages.len(),
+                    from_peer
+                );
+                // Process each message
+                for msg in messages {
+                    // Handle the message as if it came through normal channels
+                    if let Err(e) = self.handle_incoming_message(&msg, from_peer).await {
+                        warn!(
+                            "Failed to process synced message {}: {}",
+                            hex::encode(&msg.id.as_bytes()[..8]),
+                            e
+                        );
+                    }
+                }
+            }
+            SyncResponse::Error(err) => {
+                warn!("Sync error from peer {}: {}", from_peer, err);
+            }
+            _ => {
+                debug!("Unhandled sync response type from peer {}", from_peer);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send a sync request to a peer
+    async fn send_sync_request(
+        &self,
+        peer: PeerId,
+        request: crate::protocol::sync::SyncRequest,
+    ) -> Result<()> {
+        let msg = NetworkMessage::SyncRequest(request);
+        let data = serde_json::to_vec(&msg).map_err(|e| {
+            AdicError::Serialization(format!("Failed to serialize sync request: {}", e))
+        })?;
+
+        // Get connection to peer
+        let transport = self.transport.read().await;
+        let pool = transport.connection_pool();
+
+        if let Some(conn) = pool.get_connection(&peer).await {
+            match conn.open_uni().await {
+                Ok(mut stream) => {
+                    stream.write_all(&data).await.map_err(|e| {
+                        AdicError::Network(format!("Failed to send sync request: {}", e))
+                    })?;
+                    stream.finish().map_err(|e| {
+                        AdicError::Network(format!("Failed to finish stream: {}", e))
+                    })?;
+                    debug!("Sent sync request to peer {}", peer);
+                    Ok(())
+                }
+                Err(e) => Err(AdicError::Network(format!(
+                    "Failed to open stream to peer {}: {}",
+                    peer, e
+                ))),
+            }
+        } else {
+            Err(AdicError::Network(format!(
+                "No connection to peer {}",
+                peer
+            )))
+        }
+    }
+
+    /// Send a sync response to a peer
+    async fn send_sync_response(
+        &self,
+        peer: PeerId,
+        response: crate::protocol::sync::SyncResponse,
+    ) -> Result<()> {
+        let msg = NetworkMessage::SyncResponse(response);
+        let data = serde_json::to_vec(&msg).map_err(|e| {
+            AdicError::Serialization(format!("Failed to serialize sync response: {}", e))
+        })?;
+
+        // Get connection to peer
+        let transport = self.transport.read().await;
+        let pool = transport.connection_pool();
+
+        if let Some(conn) = pool.get_connection(&peer).await {
+            match conn.open_uni().await {
+                Ok(mut stream) => {
+                    stream.write_all(&data).await.map_err(|e| {
+                        AdicError::Network(format!("Failed to send sync response: {}", e))
+                    })?;
+                    stream.finish().map_err(|e| {
+                        AdicError::Network(format!("Failed to finish stream: {}", e))
+                    })?;
+                    debug!("Sent sync response to peer {}", peer);
+                    Ok(())
+                }
+                Err(e) => Err(AdicError::Network(format!(
+                    "Failed to open stream to peer {}: {}",
+                    peer, e
+                ))),
+            }
+        } else {
+            Err(AdicError::Network(format!(
+                "No connection to peer {}",
+                peer
+            )))
+        }
+    }
+
+    /// Trigger sync with all connected peers (used after adding new messages)
+    async fn trigger_sync_with_peers(&self) {
+        let transport = self.transport.read().await;
+        let pool = transport.connection_pool();
+        let connections = pool.get_all_connections().await;
+        drop(transport);
+
+        for (peer_id, _) in connections {
+            // Send our frontier to trigger sync
+            if let Err(e) = self
+                .send_sync_request(peer_id, crate::protocol::sync::SyncRequest::GetFrontier)
+                .await
+            {
+                debug!("Failed to trigger sync with {}: {}", peer_id, e);
+            }
+        }
     }
 
     pub async fn shutdown(&self) -> Result<()> {

@@ -1,5 +1,7 @@
+use crate::genesis::{account_address_from_hex, GenesisConfig};
+use crate::wallet::NodeWallet;
 use adic_consensus::ConsensusEngine;
-use adic_crypto::Keypair;
+use adic_economics::{AdicAmount, BalanceManager};
 use adic_finality::{FinalityConfig, FinalityEngine};
 use adic_mrw::MrwEngine;
 use adic_storage::{StorageConfig, StorageEngine, TipManager};
@@ -21,27 +23,65 @@ pub async fn run_local_test(count: usize) -> Result<()> {
 
     // Create storage engine
     let storage_config = StorageConfig::default();
-    let storage = StorageEngine::new(storage_config)?;
+    let storage = Arc::new(StorageEngine::new(storage_config)?);
 
     // Create consensus engine
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
 
     // Create MRW engine
     let mrw = MrwEngine::new(params.clone());
 
     // Create finality engine
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus.clone());
+    let finality = FinalityEngine::new(finality_config, consensus.clone(), storage.clone());
 
     // Create tip manager
     let tip_manager = TipManager::new();
 
-    // Generate a keypair
-    let keypair = Keypair::generate();
-    info!(
-        "Test keypair: {}",
-        hex::encode(keypair.public_key().as_bytes())
-    );
+    // Create or load test wallet
+    let wallet_path = std::env::temp_dir().join("adic-test-wallet");
+    let test_wallet = NodeWallet::load_or_create(&wallet_path, "test-node")?;
+    let keypair = test_wallet.keypair();
+    let address = test_wallet.address();
+    info!("Test wallet address: {}", hex::encode(address.as_bytes()));
+
+    // Initialize balance manager and apply genesis if first run
+    use adic_economics::storage::MemoryStorage;
+    let economics_storage = Arc::new(MemoryStorage::new());
+    let balance_manager = BalanceManager::new(economics_storage);
+
+    // Check if genesis has been applied
+    let genesis_applied = balance_manager.get_balance(address).await? > AdicAmount::ZERO;
+
+    if !genesis_applied {
+        info!("Applying genesis allocations for test...");
+        let genesis_config = GenesisConfig::test();
+
+        for (address_hex, amount_adic) in &genesis_config.allocations {
+            let alloc_address = account_address_from_hex(address_hex)
+                .map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?;
+            let amount = AdicAmount::from_adic(*amount_adic as f64);
+            balance_manager.credit(alloc_address, amount).await?;
+            info!("Allocated {} ADIC to {}", amount_adic, &address_hex[..16]);
+        }
+
+        // Also give test wallet some ADIC
+        let test_amount = AdicAmount::from_adic(1000.0);
+        balance_manager.credit(address, test_amount).await?;
+        info!("Allocated 1000 ADIC to test wallet");
+    }
+
+    // Check balance
+    let balance = balance_manager.get_balance(address).await?;
+    info!("Test wallet balance: {} ADIC", balance.to_adic());
+
+    let deposit_amount = AdicAmount::from_adic(GenesisConfig::default().deposit_amount);
+    if balance < deposit_amount {
+        return Err(anyhow::anyhow!(
+            "Insufficient balance for deposits. Need at least {} ADIC",
+            deposit_amount.to_adic()
+        ));
+    }
 
     // Create genesis message
     let genesis_features = AdicFeatures::new(vec![
@@ -63,6 +103,7 @@ pub async fn run_local_test(count: usize) -> Result<()> {
     genesis.signature = signature;
 
     // Escrow deposit for genesis
+    balance_manager.debit(address, deposit_amount).await?;
     consensus
         .deposits
         .escrow(genesis.id, *keypair.public_key())
@@ -134,7 +175,15 @@ pub async fn run_local_test(count: usize) -> Result<()> {
         let signature = keypair.sign(&message.to_bytes());
         message.signature = signature;
 
+        // Check balance for deposit
+        let current_balance = balance_manager.get_balance(address).await?;
+        if current_balance < deposit_amount {
+            info!("Insufficient balance for message {}. Stopping test.", i + 1);
+            break;
+        }
+
         // Escrow deposit
+        balance_manager.debit(address, deposit_amount).await?;
         consensus
             .deposits
             .escrow(message.id, *keypair.public_key())
@@ -145,6 +194,9 @@ pub async fn run_local_test(count: usize) -> Result<()> {
         let is_valid = validation_result.is_valid;
 
         if is_valid {
+            // Refund deposit on valid message
+            balance_manager.credit(address, deposit_amount).await?;
+
             // Store message
             storage.store_message(&message).await?;
 

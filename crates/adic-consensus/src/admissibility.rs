@@ -2,6 +2,7 @@ use adic_crypto::UltrametricValidator;
 use adic_math::{count_distinct_balls, vp_diff};
 use adic_types::{AdicError, AdicMessage, AdicParams, AxisId, QpDigits, Result};
 use std::sync::Arc;
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct AdmissibilityResult {
@@ -124,13 +125,31 @@ impl AdmissibilityChecker {
             if c3_result.0 { "PASS" } else { &c3_result.1 }
         );
 
-        Ok(AdmissibilityResult::new(
+        let result = AdmissibilityResult::new(
             score,
             score_passed,
             c2_result.0,
             c3_result.0,
-            details,
-        ))
+            details.clone(),
+        );
+
+        info!(
+            message_id = %message.id,
+            proposer = %message.proposer_pk.to_hex(),
+            score = score,
+            score_threshold = self.params.d,
+            score_passed = score_passed,
+            c2_passed = c2_result.0,
+            c3_passed = c3_result.0,
+            is_admissible = result.is_admissible,
+            parent_count = parent_features.len(),
+            min_reputation = parent_reputations.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).copied().unwrap_or(0.0),
+            sum_reputation = parent_reputations.iter().sum::<f64>(),
+            details = %details,
+            "🔍 Admissibility checked"
+        );
+
+        Ok(result)
     }
 
     fn check_c2_diversity(&self, parent_features: &[Vec<QpDigits>]) -> Result<(bool, String)> {
@@ -201,19 +220,49 @@ impl AdmissibilityChecker {
         // S(x; A) = Σ(j=1 to d) min(a∈A) p^(-max{0, ρj - vp(φj(x) - φj(a))})
         let mut total_score = 0.0;
 
+        // Add debug logging
+        log::debug!(
+            "Computing admissibility score for message {}",
+            message.id.to_hex()
+        );
+        log::debug!(
+            "Parameters: p={}, d={}, rho={:?}",
+            self.params.p,
+            self.params.d,
+            self.params.rho
+        );
+
         for (axis_idx, &radius) in self.params.rho.iter().enumerate() {
             let axis_id = AxisId(axis_idx as u32);
             let msg_phi = match message.features.get_axis(axis_id) {
                 Some(phi) => &phi.qp_digits,
-                None => continue,
+                None => {
+                    log::warn!("Message missing axis {}", axis_idx);
+                    continue;
+                }
             };
 
+            log::debug!(
+                "Axis {}: msg digits = {:?} (first 5)",
+                axis_idx,
+                &msg_phi.digits[..5.min(msg_phi.digits.len())]
+            );
+
             let mut min_parent_term = f64::INFINITY;
+            let mut best_parent_idx = 0;
+            let mut best_vp = 0;
 
             // Find the minimum term T_j(a) for the current axis j
-            for parent_axis_features in parent_features {
+            for (parent_idx, parent_axis_features) in parent_features.iter().enumerate() {
                 if let Some(parent_phi) = parent_axis_features.get(axis_idx) {
                     let valuation = vp_diff(msg_phi, parent_phi);
+                    log::debug!(
+                        "  Parent {}: parent digits = {:?} (first 5), vp_diff = {}",
+                        parent_idx,
+                        &parent_phi.digits[..5.min(parent_phi.digits.len())],
+                        valuation
+                    );
+
                     // Term is p^{-max(0, ρ - vp)}
                     // When vp ≥ ρ: max(0, ρ - vp) = 0, so term = p^0 = 1.0
                     // When vp < ρ: max(0, ρ - vp) = ρ - vp, so term = p^(-(ρ-vp))
@@ -221,8 +270,19 @@ impl AdmissibilityChecker {
                     let exponent = -max_diff;
                     let term = (self.params.p as f64).powi(exponent);
 
+                    log::debug!(
+                        "    radius={}, vp={}, max_diff={}, exponent={}, term={}",
+                        radius,
+                        valuation,
+                        max_diff,
+                        exponent,
+                        term
+                    );
+
                     if term < min_parent_term {
                         min_parent_term = term;
+                        best_parent_idx = parent_idx;
+                        best_vp = valuation;
                     }
                 }
             }
@@ -232,9 +292,23 @@ impl AdmissibilityChecker {
                 min_parent_term = 0.0;
             }
 
+            log::debug!(
+                "  Axis {} contribution: {} (best parent={}, vp={})",
+                axis_idx,
+                min_parent_term,
+                best_parent_idx,
+                best_vp
+            );
+
             // Add the minimum term for this axis to the total score
             total_score += min_parent_term;
         }
+
+        log::info!(
+            "Total admissibility score: {} (need >= {})",
+            total_score,
+            self.params.d
+        );
 
         total_score
     }

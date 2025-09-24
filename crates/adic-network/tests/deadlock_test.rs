@@ -27,12 +27,13 @@ async fn test_network_creation_deadlock() {
     std::mem::forget(temp_dir);
 
     println!("DEADLOCK TEST - Creating consensus");
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
 
     println!("DEADLOCK TEST - Creating finality");
     let finality = Arc::new(FinalityEngine::new(
         FinalityConfig::from(&params),
         consensus.clone(),
+        storage.clone(),
     ));
 
     println!("DEADLOCK TEST - Creating config");

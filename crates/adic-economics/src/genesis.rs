@@ -175,7 +175,13 @@ impl GenesisAllocator {
             executed: true,
         });
 
-        info!("Genesis allocation completed successfully");
+        info!(
+            total_allocated = %allocated,
+            treasury = %treasury_amount,
+            liquidity = %liquidity_amount,
+            genesis_pool = %genesis_amount,
+            "✅ Genesis allocation completed successfully"
+        );
         info!("Total allocated: {}", allocated);
         info!("Treasury (20%): {}", treasury_amount);
         info!("Liquidity & Grants (30%): {}", liquidity_amount);

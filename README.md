@@ -43,6 +43,8 @@ ADIC-DAG Core is a Rust implementation of the **ADIC-DAG protocol** as specified
 
 ## Implementation Status
 
+> **📋 For detailed integration status with the Explorer Backend, see [INTEGRATION-STATUS.md](./INTEGRATION-STATUS.md)**
+
 This implementation provides a foundation for the ADIC-DAG protocol but contains several simplified components that require further development:
 
 ### ✅ Fully Implemented
@@ -53,7 +55,8 @@ This implementation provides a foundation for the ADIC-DAG protocol but contains
 - **Multi-axis Random Walk**: Tip selection with ultrametric weighting
 - **Deposit System**: Anti-spam deposits with refund mechanism
 - **Network Gossip**: P2P message propagation with axis-aware overlays
-- **Economics Integration**: ✅ **NEWLY INTEGRATED** - Full token accounting, balance management, and API endpoints
+- **Economics Integration**: ✅ **Fully Implemented** - Token accounting, balance management, and API endpoints
+- **Wallet System**: ✅ **Fully Implemented** - Complete wallet with transactions, signing, and faucet
 
 ### ⚠️ Partially Implemented / Simplified
 - **F2 Homology Finality**: Heuristic approximation, not full persistent homology pipeline
@@ -143,7 +146,7 @@ curl http://localhost:8080/status
 curl -X POST http://localhost:8080/submit \
   -H "Content-Type: application/json" \
   -d '{
-    "payload": "Hello, ADIC-DAG!",
+    "content": "Hello, ADIC-DAG!",
     "features": {
       "axes": [
         {"axis": 0, "value": 42},
@@ -202,7 +205,7 @@ The ADIC node exposes a comprehensive REST API for interacting with the network.
 
 #### Basic Operations
 - `GET /health` - Health check
-- `GET /status` - Node status with finality metrics
+- `GET /status` - Node status with finality metrics and capability flags
 - `POST /submit` - Submit a message to the DAG
 - `GET /message/:id` - Retrieve a specific message
 - `GET /tips` - Get current DAG tips

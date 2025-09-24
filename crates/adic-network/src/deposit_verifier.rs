@@ -125,10 +125,11 @@ impl DepositVerifier for RealDepositVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use adic_consensus::DEFAULT_DEPOSIT_AMOUNT;
 
     #[test]
     fn test_pow_hash_verification() {
-        let deposit_manager = Arc::new(DepositManager::new(1.0));
+        let deposit_manager = Arc::new(DepositManager::new(DEFAULT_DEPOSIT_AMOUNT));
         let verifier = RealDepositVerifier::with_difficulty(deposit_manager, 8);
 
         // Hash with 1 leading zero byte (8 bits)
@@ -140,8 +141,10 @@ mod tests {
         assert!(!verifier.verify_pow_hash(&hash2));
 
         // Hash with 2 leading zero bytes (16 bits)
-        let verifier2 =
-            RealDepositVerifier::with_difficulty(Arc::new(DepositManager::new(1.0)), 16);
+        let verifier2 = RealDepositVerifier::with_difficulty(
+            Arc::new(DepositManager::new(DEFAULT_DEPOSIT_AMOUNT)),
+            16,
+        );
         let hash3 = vec![0x00, 0x00, 0xFF, 0xFF];
         assert!(verifier2.verify_pow_hash(&hash3));
         assert!(!verifier2.verify_pow_hash(&hash1)); // Only 8 bits, need 16
@@ -149,7 +152,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pow_challenge_and_response() {
-        let deposit_manager = Arc::new(DepositManager::new(1.0));
+        let deposit_manager = Arc::new(DepositManager::new(DEFAULT_DEPOSIT_AMOUNT));
         let verifier = RealDepositVerifier::with_difficulty(deposit_manager, 8);
 
         let challenge = verifier.generate_pow_challenge().await;
@@ -179,7 +182,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deposit_verification() {
-        let deposit_manager = Arc::new(DepositManager::new(1.0));
+        let deposit_manager = Arc::new(DepositManager::new(DEFAULT_DEPOSIT_AMOUNT));
         let verifier = RealDepositVerifier::new(deposit_manager.clone());
 
         // Create a test deposit

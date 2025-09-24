@@ -119,6 +119,7 @@ impl StateSync {
             return Err(AdicError::Network("Sync already in progress".to_string()));
         }
 
+        let local_height_before = state.local_height;
         state.is_syncing = true;
         state.target_height = target_height;
         state.sync_start_time = Some(Instant::now());
@@ -128,8 +129,13 @@ impl StateSync {
             .ok();
 
         info!(
-            "Starting fast sync to height {} from peer {}",
-            target_height, peer
+            peer_id = %peer,
+            local_height_before = local_height_before,
+            target_height = target_height,
+            height_deficit = target_height.saturating_sub(local_height_before),
+            batch_size = self.config.batch_size,
+            parallel_downloads = self.config.parallel_downloads,
+            "🚀 Fast sync started"
         );
 
         // Start sync process
@@ -159,19 +165,28 @@ impl StateSync {
             return Err(AdicError::Network("Sync already in progress".to_string()));
         }
 
+        let frontier_count = frontier.len();
+        let synced_before = state.synced_messages;
         state.is_syncing = true;
         state.pending_messages = frontier.into_iter().collect();
         state.sync_start_time = Some(Instant::now());
 
         info!(
-            "Starting incremental sync with {} frontier messages",
-            state.pending_messages.len()
+            frontier_messages = frontier_count,
+            synced_before = synced_before,
+            local_height = state.local_height,
+            checkpoint_count = state.verified_checkpoints.len(),
+            "🔄 Incremental sync started"
         );
 
         Ok(())
     }
 
     pub async fn download_messages(&self, message_ids: Vec<MessageId>) -> Vec<AdicMessage> {
+        let start_time = Instant::now();
+        let total_messages = message_ids.len();
+        let batch_count = (total_messages + self.config.batch_size - 1) / self.config.batch_size;
+
         let permits = self.download_semaphore.clone();
         let mut handles = Vec::new();
 
@@ -188,11 +203,24 @@ impl StateSync {
         }
 
         let mut all_messages = Vec::new();
+        let mut failed_batches = 0;
         for handle in handles {
-            if let Ok(messages) = handle.await {
-                all_messages.extend(messages);
+            match handle.await {
+                Ok(messages) => all_messages.extend(messages),
+                Err(_) => failed_batches += 1,
             }
         }
+
+        let elapsed = start_time.elapsed();
+        info!(
+            requested_messages = total_messages,
+            downloaded_messages = all_messages.len(),
+            batch_count = batch_count,
+            failed_batches = failed_batches,
+            duration_ms = elapsed.as_millis(),
+            throughput_msg_per_sec = (all_messages.len() as f64 / elapsed.as_secs_f64()),
+            "📦 Messages downloaded"
+        );
 
         self.event_sender
             .send(SyncEvent::MessagesDownloaded(all_messages.len()))
@@ -204,20 +232,41 @@ impl StateSync {
     pub async fn verify_checkpoint(&self, checkpoint: Checkpoint) -> Result<bool> {
         // Verify checkpoint signature
         // In real implementation, verify against known validators
+        let start_time = Instant::now();
 
         // Verify merkle root
         let calculated_root = self
             .calculate_merkle_root(&checkpoint.finalized_messages)
             .await?;
-        if calculated_root != checkpoint.root_hash {
+        let root_matches = calculated_root == checkpoint.root_hash;
+
+        if !root_matches {
+            warn!(
+                checkpoint_height = checkpoint.height,
+                expected_root = hex::encode(checkpoint.root_hash),
+                calculated_root = hex::encode(calculated_root),
+                "❌ Checkpoint verification failed (root mismatch)"
+            );
             return Ok(false);
         }
 
         // Store verified checkpoint
         let mut state = self.state.write().await;
+        let checkpoints_before = state.verified_checkpoints.len();
         state
             .verified_checkpoints
             .insert(checkpoint.height, checkpoint.clone());
+
+        let elapsed = start_time.elapsed();
+        info!(
+            checkpoint_height = checkpoint.height,
+            message_count = checkpoint.finalized_messages.len(),
+            k_core = checkpoint.k_core_value,
+            checkpoints_before = checkpoints_before,
+            checkpoints_after = state.verified_checkpoints.len(),
+            verification_time_ms = elapsed.as_millis(),
+            "✅ Checkpoint verified"
+        );
 
         self.event_sender
             .send(SyncEvent::CheckpointVerified(checkpoint.height))
@@ -239,6 +288,11 @@ impl StateSync {
     }
 
     pub async fn apply_checkpoint(&self, checkpoint: &Checkpoint) -> Result<()> {
+        let start_time = Instant::now();
+        let total_messages = checkpoint.finalized_messages.len();
+        let mut applied = 0;
+        let mut missing = 0;
+
         // Apply checkpoint to storage and finality engine
         for message_id in &checkpoint.finalized_messages {
             // Verify message exists in storage
@@ -248,7 +302,12 @@ impl StateSync {
                 .await
                 .map_err(|e| AdicError::Storage(format!("Failed to get message: {}", e)))?;
             if message_exists.is_none() {
-                warn!("Checkpoint references unknown message: {}", message_id);
+                missing += 1;
+                warn!(
+                    message_id = %message_id,
+                    checkpoint_height = checkpoint.height,
+                    "Message missing for checkpoint"
+                );
                 continue;
             }
 
@@ -268,14 +327,27 @@ impl StateSync {
                     ball_ids,
                 )
                 .await?;
+
+            applied += 1;
         }
 
         // Run finality check to process the checkpoint messages
         let finalized = self.finality_engine.check_finality().await?;
+        let elapsed = start_time.elapsed();
+
         info!(
-            "Applied checkpoint at height {}, finalized {} messages",
-            checkpoint.height,
-            finalized.len()
+            checkpoint_height = checkpoint.height,
+            total_messages = total_messages,
+            applied_messages = applied,
+            missing_messages = missing,
+            finalized_count = finalized.len(),
+            duration_ms = elapsed.as_millis(),
+            success_rate = if total_messages > 0 {
+                applied as f64 / total_messages as f64
+            } else {
+                1.0
+            },
+            "✅ Checkpoint applied"
         );
 
         // Update sync state

@@ -3,10 +3,10 @@ use adic_crypto::Keypair;
 use adic_finality::{FinalityConfig, FinalityEngine};
 use adic_math::{proximity_score, vp_diff};
 use adic_mrw::{MrwSelector, ParentCandidate, SelectionParams, WeightCalculator};
-use adic_storage::{StorageConfig, StorageEngine};
+use adic_storage::{store::BackendType, StorageConfig, StorageEngine};
 use adic_types::*;
 use chrono::Utc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -19,15 +19,15 @@ async fn test_full_consensus_flow() {
         backend_type: adic_storage::store::BackendType::Memory,
         ..Default::default()
     };
-    let storage = StorageEngine::new(storage_config).unwrap();
+    let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
 
     // Create consensus engine
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let _checker = AdmissibilityChecker::new(params.clone());
 
     // Create finality engine
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus.clone());
+    let finality = FinalityEngine::new(finality_config, consensus.clone(), storage.clone());
 
     // Generate keypair
     let keypair = Keypair::generate();
@@ -235,9 +235,17 @@ fn test_padic_mathematics() {
 #[tokio::test]
 async fn test_finality_kcore() {
     let params = AdicParams::default();
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+
+    // Create storage for finality engine
+    let storage_config = StorageConfig {
+        backend_type: adic_storage::store::BackendType::Memory,
+        ..Default::default()
+    };
+    let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
+
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus.clone());
+    let finality = FinalityEngine::new(finality_config, consensus.clone(), storage);
 
     // Create a k-core structure
     // Need at least k nodes with degree >= k
@@ -294,4 +302,265 @@ fn create_test_message(parents: Vec<MessageId>, index: u64, keypair: &Keypair) -
     )
 }
 
-use std::collections::HashSet;
+#[tokio::test]
+async fn test_wallet_registration_flow() {
+    use adic_crypto::Keypair;
+    use adic_economics::AccountAddress;
+    use adic_node::wallet_registry::{WalletMetadata, WalletRegistrationRequest, WalletRegistry};
+
+    // Create storage and registry
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    let registry = WalletRegistry::new(storage);
+
+    // Generate test keypair
+    let keypair = Keypair::generate();
+    let public_key = keypair.public_key();
+    let address = AccountAddress::from_public_key(&public_key);
+
+    // Create registration message
+    let registration_message = format!(
+        "ADIC Wallet Registration\nAddress: {}\nPublic Key: {}\nTimestamp: {}",
+        hex::encode(address.as_bytes()),
+        hex::encode(public_key.as_bytes()),
+        chrono::Utc::now().timestamp()
+    );
+
+    // Sign the message
+    let signature = keypair.sign(registration_message.as_bytes());
+
+    // Create registration request
+    let request = WalletRegistrationRequest {
+        address: hex::encode(address.as_bytes()),
+        public_key: hex::encode(public_key.as_bytes()),
+        signature: hex::encode(signature.as_bytes()),
+        metadata: Some(WalletMetadata {
+            label: Some("Test Wallet".to_string()),
+            wallet_type: Some("hardware".to_string()),
+            trusted: true,
+        }),
+    };
+
+    // Register the wallet
+    registry.register_wallet(request.clone()).await.unwrap();
+
+    // Verify registration
+    assert!(registry.is_registered(&address).await);
+    assert_eq!(registry.get_public_key(&address).await, Some(*public_key));
+
+    // Get wallet info
+    let info = registry.get_wallet_info(&address).await.unwrap();
+    assert_eq!(info.address, address);
+    assert_eq!(info.public_key, *public_key);
+    assert_eq!(info.metadata.label, Some("Test Wallet".to_string()));
+    assert_eq!(info.metadata.wallet_type, Some("hardware".to_string()));
+    assert!(info.metadata.trusted);
+
+    // Mark wallet as used
+    registry.mark_used(&address).await.unwrap();
+
+    // Get updated info
+    let updated_info = registry.get_wallet_info(&address).await.unwrap();
+    assert!(updated_info.last_used.is_some());
+
+    // Test re-registration (update)
+    let updated_request = WalletRegistrationRequest {
+        address: hex::encode(address.as_bytes()),
+        public_key: hex::encode(public_key.as_bytes()),
+        signature: hex::encode(signature.as_bytes()),
+        metadata: Some(WalletMetadata {
+            label: Some("Updated Wallet".to_string()),
+            wallet_type: Some("software".to_string()),
+            trusted: false,
+        }),
+    };
+
+    registry.register_wallet(updated_request).await.unwrap();
+
+    // Verify update
+    let updated = registry.get_wallet_info(&address).await.unwrap();
+    assert_eq!(updated.metadata.label, Some("Updated Wallet".to_string()));
+    assert_eq!(updated.metadata.wallet_type, Some("software".to_string()));
+    assert!(!updated.metadata.trusted);
+
+    // Unregister wallet
+    registry.unregister_wallet(&address).await.unwrap();
+
+    // Verify unregistration
+    assert!(!registry.is_registered(&address).await);
+    assert!(registry.get_wallet_info(&address).await.is_none());
+}
+
+#[tokio::test]
+async fn test_wallet_registry_stats() {
+    use adic_crypto::Keypair;
+    use adic_economics::AccountAddress;
+    use adic_node::wallet_registry::{WalletMetadata, WalletRegistrationRequest, WalletRegistry};
+
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    let registry = WalletRegistry::new(storage);
+
+    // Register multiple wallets of different types
+    let wallet_configs = vec![
+        ("hardware", true),
+        ("hardware", false),
+        ("software", true),
+        ("software", false),
+        ("multisig", true),
+    ];
+
+    for (i, (wallet_type, trusted)) in wallet_configs.iter().enumerate() {
+        let keypair = Keypair::generate();
+        let public_key = keypair.public_key();
+        let address = AccountAddress::from_public_key(&public_key);
+
+        let registration_message = format!(
+            "ADIC Wallet Registration\nAddress: {}\nPublic Key: {}\nTimestamp: {}",
+            hex::encode(address.as_bytes()),
+            hex::encode(public_key.as_bytes()),
+            chrono::Utc::now().timestamp()
+        );
+
+        let signature = keypair.sign(registration_message.as_bytes());
+
+        let request = WalletRegistrationRequest {
+            address: hex::encode(address.as_bytes()),
+            public_key: hex::encode(public_key.as_bytes()),
+            signature: hex::encode(signature.as_bytes()),
+            metadata: Some(WalletMetadata {
+                label: Some(format!("Wallet {}", i)),
+                wallet_type: Some(wallet_type.to_string()),
+                trusted: *trusted,
+            }),
+        };
+
+        registry.register_wallet(request).await.unwrap();
+
+        // Mark some as recently used
+        if i < 2 {
+            registry.mark_used(&address).await.unwrap();
+        }
+    }
+
+    // Get stats
+    let stats = registry.get_stats().await;
+
+    assert_eq!(stats.total_wallets, 5);
+    assert_eq!(stats.trusted_wallets, 3);
+    assert!(stats.last_registration.is_some());
+
+    // Check wallet type counts
+    assert_eq!(*stats.wallet_types.get("hardware").unwrap_or(&0), 2);
+    assert_eq!(*stats.wallet_types.get("software").unwrap_or(&0), 2);
+    assert_eq!(*stats.wallet_types.get("multisig").unwrap_or(&0), 1);
+}
+
+#[tokio::test]
+async fn test_wallet_list_operations() {
+    use adic_crypto::Keypair;
+    use adic_economics::AccountAddress;
+    use adic_node::wallet_registry::{WalletRegistrationRequest, WalletRegistry};
+
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    let registry = WalletRegistry::new(storage);
+
+    let mut addresses = Vec::new();
+
+    // Register 3 wallets
+    for i in 0..3 {
+        let keypair = Keypair::generate();
+        let public_key = keypair.public_key();
+        let address = AccountAddress::from_public_key(&public_key);
+        addresses.push(address);
+
+        let registration_message = format!(
+            "ADIC Wallet Registration\nAddress: {}\nPublic Key: {}\nTimestamp: {}",
+            hex::encode(address.as_bytes()),
+            hex::encode(public_key.as_bytes()),
+            chrono::Utc::now().timestamp()
+        );
+
+        let signature = keypair.sign(registration_message.as_bytes());
+
+        let request = WalletRegistrationRequest {
+            address: hex::encode(address.as_bytes()),
+            public_key: hex::encode(public_key.as_bytes()),
+            signature: hex::encode(signature.as_bytes()),
+            metadata: None,
+        };
+
+        registry.register_wallet(request).await.unwrap();
+
+        // Small delay to ensure different timestamps
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    // List all wallets
+    let wallets = registry.list_wallets().await;
+    assert_eq!(wallets.len(), 3);
+
+    // Verify all addresses are present
+    let listed_addresses: Vec<_> = wallets.iter().map(|w| w.address).collect();
+    for addr in &addresses {
+        assert!(listed_addresses.contains(addr));
+    }
+
+    // No ordering guaranteed for list_wallets (uses HashMap internally)
+}
+
+#[tokio::test]
+async fn test_wallet_json_export_import() {
+    use adic_node::wallet::NodeWallet;
+    use tempfile::TempDir;
+
+    // Create test wallet
+    let temp_dir = TempDir::new().unwrap();
+    let data_dir = temp_dir.path();
+    let node_id = "test_node";
+
+    let wallet = NodeWallet::load_or_create(data_dir, node_id).unwrap();
+    let original_address = wallet.address();
+    let original_pubkey = wallet.public_key();
+
+    // Export to JSON
+    let password = "test_password_123";
+    let json_str = wallet.export_to_json(password).unwrap();
+
+    // Verify JSON structure
+    let json_value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+    assert_eq!(json_value["version"], 3);
+    assert!(json_value["encrypted_private_key"].is_string());
+    assert!(json_value["salt"].is_string());
+    // node_id is intentionally not exported for security/portability
+    assert!(json_value["node_id"].is_null());
+
+    // Import from JSON
+    let imported_wallet =
+        NodeWallet::import_from_json(&json_str, password, "imported_node").unwrap();
+
+    // Verify imported wallet matches original
+    assert_eq!(imported_wallet.address(), original_address);
+    assert_eq!(imported_wallet.public_key(), original_pubkey);
+
+    // Test wrong password
+    let wrong_password = "wrong_password";
+    let result = NodeWallet::import_from_json(&json_str, wrong_password, "imported_node");
+    assert!(result.is_err());
+}

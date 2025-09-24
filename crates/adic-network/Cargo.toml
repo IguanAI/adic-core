@@ -36,6 +36,7 @@ sha2 = "0.10"
 rand = "0.8"
 hex = { workspace = true }
 ed25519-dalek = "2.1"
+hickory-resolver = { version = "0.24", features = ["tokio-runtime"] }
 
 [features]
 # Default features avoid system C toolchains for CI portability

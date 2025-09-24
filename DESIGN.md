@@ -3,7 +3,7 @@
 **Status:** Draft v0.3 (final polish after core‑dev review)
 **Scope:** Production‑like Phase‑0 design with clarified MRW trust rationale and a formal parameter‑calibration checkpoint; **Vue 3 + Vite** explorer
 **Owner:** ADIC Core (Protocol · Node · Ops · Explorer)
-**Languages & Stacks:** Rust (node/services), **TypeScript + Vue 3 + Vite** (Explorer), Python (sims/oracles)
+**Languages & Stacks:** Rust (node/services), **FastAPI/Python 3.13+** (Explorer Backend), **TypeScript + Vue 3 + Vite** (Explorer UI), Python (sims/oracles)
 **External math lib:** libadic (C++/Py) for sims/oracles; node uses a lean Rust p‑adic surface (vp, vp\_diff, ball\_id)
 
 ---
@@ -42,13 +42,13 @@ Phase‑0 delivers a public, permissionless ADIC DAG testnet with **Admissibilit
 ### 2.1 Components
 
 * **`adic-node`** (Rust): consensus, storage, networking, APIs.
-* **`adic-explorer-api`** (Rust or TS): read‑only REST/GraphQL over node/read‑replicas.
+* **`adic-explorer-api`** (FastAPI/Python 3.13+): read‑only REST/GraphQL/WebSocket over node polling + TimescaleDB analytics.
 * **`ui-explorer`** (**Vue 3 + Vite**): Live DAG, MRW traces, finality monitor, conflict energy, params panel.
 * **`adic-sim`** (Python): Monte Carlo workloads; libadic oracles for cross‑checks.
 
 ### 2.2 Boundaries & streams
 
-* Node exposes **gRPC** (internal) + **HTTP/JSON** and **SSE** (public). Explorer consumes read APIs/streams; sim drives via HTTP/gRPC.
+* Node exposes **HTTP/JSON** (public). **SSE** (planned) and **gRPC** (internal) are planned for future versions. Explorer consumes read APIs via HTTP polling; sim drives via HTTP.
 * Optional F2/SSF gates via trait (in‑proc) or gRPC (out‑of‑proc).
 
 ### 2.3 Repository layout (monorepo)
@@ -179,8 +179,8 @@ periodic_finalize(): if final_by_kcore(x): refund; emit_finality_artifact
 ## 8) Public APIs & streams
 
 HTTP: `/v1/params`, `/v1/message/:id`, `/v1/finality/:id`, `/v1/conflict/:cid/energy`, `/v1/metrics`.
-SSE: `/v1/stream/tips`, `/v1/stream/finality`.
-Internal gRPC: `SelectParents`, `FinalizeWindow`.
+SSE (planned): `/v1/stream/events` with multiple event types.
+Internal gRPC (planned): `SelectParents`, `FinalizeWindow`.
 
 ---
 
@@ -229,7 +229,7 @@ Unit/property tests (vp/vp\_diff, ball stability, C1/C2/C3); fuzz (malformed pay
 ## 13) CI/CD & releases
 
 Pipeline: lint → unit/property → fuzz (time‑boxed) → integration (docker) → build containers → SBOM → sign.
-Artifacts: static Linux binary; Docker images (`adic-node`, `adic-explorer-api`, `ui-explorer`).
+Artifacts: static Linux binary; Docker images (`adic-node`, `adic-explorer-backend`, `adic-explorer-ui`).
 Versioning: `v0.y.z-testnet` with reproducible notes.
 
 ---

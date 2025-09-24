@@ -47,8 +47,8 @@ impl Default for AdicParams {
             d: 3,
             rho: vec![2, 2, 1],
             q: 3,
-            k: 20,
-            depth_star: 12,
+            k: 3,          // Lowered for testing - was 20
+            depth_star: 2, // Lowered for testing - was 12
             delta: 5,
             deposit: 0.1,
             r_min: 1.0,

@@ -1,0 +1,28 @@
+# Clippy linting configuration for ADIC-Core
+
+# Set the MSRV (Minimum Supported Rust Version)
+msrv = "1.70"
+
+# Warn on TODOs and FIXMEs
+warn-on-all-wildcard-imports = true
+
+# Maximum cognitive complexity
+cognitive-complexity-threshold = 30
+
+# Maximum number of lines in a function
+too-many-lines-threshold = 100
+
+# Maximum number of arguments to a function
+too-many-arguments-threshold = 7
+
+# Maximum nesting level
+excessive-nesting-threshold = 10
+
+# Enforce docs on public items
+missing-docs-in-crate-items = true
+
+# Disallow unsafe code unless explicitly allowed
+disallowed-macros = []
+
+# Maximum single char binding names to allow
+single-char-binding-names-threshold = 4

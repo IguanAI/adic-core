@@ -1,7 +1,9 @@
 [package]
 name = "adic-economics"
-version = "0.1.4"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 
 [features]
 default = []
@@ -20,10 +22,12 @@ anyhow = "1.0"
 chrono = "0.4"
 hex = "0.4"
 blake3 = "1.5"
+bech32 = "0.11"
 
 [dev-dependencies]
 tokio-test = "0.4"
 proptest = "1.0"
+tempfile = "3.8"
 arbitrary = { version = "1.0", features = ["derive"] }
 rand = "0.8"
 criterion = "0.5"

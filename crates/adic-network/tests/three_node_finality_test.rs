@@ -56,12 +56,13 @@ impl TestNode {
             r_sum_min: 0.0, // no reputation sum threshold
             ..Default::default()
         };
-        let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+        let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
 
         // Create finality engine
         let finality = Arc::new(FinalityEngine::new(
             FinalityConfig::from(&params),
             consensus.clone(),
+            storage.clone(),
         ));
 
         // Create network config

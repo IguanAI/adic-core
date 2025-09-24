@@ -1,0 +1,22 @@
+# Rust formatting configuration for ADIC-Core
+
+# Max width of each line
+max_width = 100
+
+# How many spaces per tab
+tab_spaces = 4
+
+# Use Unix-style newlines
+newline_style = "Unix"
+
+# Use spaces instead of tabs
+hard_tabs = false
+
+# Imports
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+reorder_imports = true
+reorder_modules = true
+
+# Use field init shorthand
+use_field_init_shorthand = true

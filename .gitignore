@@ -86,3 +86,342 @@ rocksdb/
 /test-*.sh
 /*.key
 node.key
+
+# Test data and config directories
+/test-data/
+/config/
+
+# Local test files and configurations
+test_*.sh
+testnet-config.toml
+adic-config.toml
+
+# Local documentation drafts
+LOGGING_IMPROVEMENTS.md
+ALIGNMENT-SUMMARY.md
+INTEGRATION-STATUS.md
+
+# Security and wallet files
+*.wallet
+*.wallet.encrypted
+wallet.json
+wallets/
+.wallet/
+
+# Private keys and secrets
+*.pem
+*.key
+*.priv
+*.private
+private_key*
+secret*
+credentials*
+
+# Local development files
+local-test/
+.local/
+*.local.*
+
+# Coverage reports
+coverage/
+*.lcov
+*.gcov
+
+# Performance profiling
+perf.data
+perf.data.old
+flamegraph.svg
+*.trace
+
+# Core dumps
+core
+core.*
+*.core
+
+# macOS specific
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows specific
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux specific
+.directory
+.Trash-*
+.nfs*
+
+# Editor backups and swap files
+\#*\#
+.\#*
+*.orig
+*.rej
+*.patch
+
+# Debug symbols
+*.dSYM/
+*.pdb
+
+# Package files
+*.tar
+*.tar.*
+*.zip
+*.gz
+*.bz2
+*.xz
+*.7z
+*.rar
+
+# Temporary directories
+tmp/
+temp/
+.tmp/
+.temp/
+
+# Session files
+Session.vim
+*.session
+
+# Auto-generated documentation
+/docs/generated/
+/target/doc/
+
+# Benchmark results
+/benches/results/
+*.bench
+
+# CI/CD artifacts
+.gitlab-ci-local/
+.github-ci-local/
+ci-artifacts/
+
+# Node-specific runtime data
+node_data/
+node_state/
+*.state
+*.checkpoint
+
+# P2P networking
+peers.json
+banned_peers.json
+known_hosts
+
+# Genesis files (except the default one)
+genesis-*.json
+!genesis.json
+
+# Configuration overrides
+*-override.toml
+*.override.toml
+local-config/
+
+# Simulation outputs
+simulation/output/
+simulation/results/
+*.sim
+
+# Cache directories
+.cache/
+cache/
+*.cache
+
+# Lock files for various package managers (in case of multi-language support)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+poetry.lock
+Pipfile.lock
+
+# Environment-specific files
+.env.*
+!.env.example
+*.env
+!example.env
+
+# Build directories for various tools
+_build/
+cmake-build-*/
+out/
+
+# Test coverage databases
+*.coverage
+.coverage.*
+htmlcov/
+.tox/
+.pytest_cache/
+.hypothesis/
+
+# Rust-specific additions
+**/*.rs.bk
+*.pdb
+/target
+Cargo.lock
+!Cargo.lock  # Include for binary crates if needed
+
+# WASM artifacts
+pkg/
+wasm-pack.log
+
+# RocksDB specific
+*.sst
+*.log
+CURRENT
+IDENTITY
+LOCK
+LOG*
+MANIFEST-*
+OPTIONS-*
+
+# LevelDB specific
+*.ldb
+LOG.old
+
+# SQLite databases
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Backup and archive files
+backup/
+backups/
+archive/
+archives/
+*.old
+*.save
+
+# Monitoring and observability
+grafana-storage/
+prometheus-data/
+metrics/
+traces/
+
+# Docker volumes
+docker-volumes/
+volumes/
+
+# Kubernetes
+*.kubeconfig
+kubeconfig
+.kube/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraformrc
+terraform.rc
+
+# Ansible
+*.retry
+/ansible/vault_pass.txt
+
+# Vagrant
+.vagrant/
+
+# Nix
+result
+result-*
+
+# direnv
+.envrc
+.direnv/
+
+# asdf
+.tool-versions
+
+# Miscellaneous runtime files
+*.pid
+*.seed
+*.dat
+nohup.out
+
+# Large files that shouldn't be in repo
+*.iso
+*.dmg
+*.img
+*.qcow2
+*.vdi
+*.vmdk
+*.ova
+*.ovf
+
+# Archives created during release
+release/
+releases/
+*.tar.gz
+*.tar.xz
+*.zip
+!docs/*.zip  # Allow documentation archives if needed
+
+# Crash logs
+crash.log
+hs_err_pid*
+
+# Memory dumps
+*.hprof
+*.heap
+*.dump
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+.history/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+tags
+.tags
+Session.vim
+Sessionx.vim
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+.org-id-locations
+*_archive
+*_flymake.*
+/eshell/history
+/eshell/lastdir
+/elpa/
+*.rel
+/auto/
+.cask/
+dist/
+flycheck_*.el
+.projectile
+.dir-locals.el
+/network-security.data

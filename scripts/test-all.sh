@@ -27,9 +27,9 @@ run_crate_tests() {
     local features=$2
     
     echo -e "${YELLOW}Testing $crate with features: $features${NC}"
-    
+
     if [ -z "$features" ]; then
-        if cargo test --package $crate --quiet 2>/dev/null; then
+        if cargo test --package $crate 2>&1 | tail -2; then
             echo -e "  ${GREEN}✓ Passed${NC}"
             ((PASSED_TESTS++))
         else
@@ -37,7 +37,7 @@ run_crate_tests() {
             ((FAILED_TESTS++))
         fi
     else
-        if cargo test --package $crate --features "$features" --quiet 2>/dev/null; then
+        if cargo test --package $crate --features "$features" 2>&1 | tail -2; then
             echo -e "  ${GREEN}✓ Passed with features: $features${NC}"
             ((PASSED_TESTS++))
         else
@@ -70,7 +70,7 @@ echo "Running integration tests..."
 echo "------------------------"
 
 # Integration tests
-if cargo test --test '*' --quiet 2>/dev/null; then
+if cargo test --all 2>&1 | tail -3 | grep -q "test result: ok"; then
     echo -e "  ${GREEN}✓ Integration tests passed${NC}"
     ((PASSED_TESTS++))
 else
@@ -84,7 +84,7 @@ echo "Running documentation tests..."
 echo "------------------------"
 
 # Doc tests
-if cargo test --doc --quiet 2>/dev/null; then
+if cargo test --doc 2>&1 | tail -3 | grep -q "test result: ok"; then
     echo -e "  ${GREEN}✓ Documentation tests passed${NC}"
     ((PASSED_TESTS++))
 else

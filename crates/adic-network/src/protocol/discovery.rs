@@ -7,12 +7,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use super::dns_seeds::DnsSeedDiscovery;
 use adic_types::Result;
 
 /// Configuration for peer discovery
 #[derive(Clone, Debug)]
 pub struct DiscoveryConfig {
     pub bootstrap_nodes: Vec<Multiaddr>,
+    pub dns_seed_domains: Vec<String>,
     pub min_peers: usize,
     pub max_peers: usize,
     pub discovery_interval: Duration,
@@ -23,6 +25,7 @@ impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
             bootstrap_nodes: vec![],
+            dns_seed_domains: vec!["_seeds.adicl1.com".to_string()],
             min_peers: 5,
             max_peers: 50,
             discovery_interval: Duration::from_secs(30),
@@ -127,12 +130,57 @@ impl DiscoveryProtocol {
         Ok(discovered_peers)
     }
 
+    /// Discover bootstrap nodes from DNS seeds
+    pub async fn discover_dns_seeds(&self) -> Result<Vec<Multiaddr>> {
+        if self.config.dns_seed_domains.is_empty() {
+            debug!("No DNS seed domains configured");
+            return Ok(vec![]);
+        }
+
+        info!(
+            "Discovering bootstrap nodes from {} DNS seed domains",
+            self.config.dns_seed_domains.len()
+        );
+
+        let dns_discovery = DnsSeedDiscovery::new(self.config.dns_seed_domains.clone()).await?;
+        let seeds = dns_discovery.discover_seeds().await;
+
+        Ok(seeds)
+    }
+
     /// Query bootstrap nodes for initial peer list
     pub async fn query_bootstrap_nodes(
         &self,
         transport: &crate::transport::HybridTransport,
     ) -> Result<()> {
-        for addr in &self.config.bootstrap_nodes {
+        // First, try to discover bootstrap nodes from DNS
+        let mut all_bootstrap_nodes = match self.discover_dns_seeds().await {
+            Ok(dns_seeds) => {
+                if !dns_seeds.is_empty() {
+                    info!("Using {} bootstrap nodes from DNS seeds", dns_seeds.len());
+                }
+                dns_seeds
+            }
+            Err(e) => {
+                warn!("DNS seed discovery failed: {}", e);
+                vec![]
+            }
+        };
+
+        // Add configured bootstrap nodes (these take priority and are added after DNS seeds)
+        all_bootstrap_nodes.extend(self.config.bootstrap_nodes.clone());
+
+        if all_bootstrap_nodes.is_empty() {
+            warn!("No bootstrap nodes available (neither from DNS nor configuration)");
+            return Ok(());
+        }
+
+        info!(
+            "Attempting to connect to {} total bootstrap nodes",
+            all_bootstrap_nodes.len()
+        );
+
+        for addr in &all_bootstrap_nodes {
             debug!("Querying bootstrap node: {}", addr);
 
             // Parse the multiaddr to get the socket address
@@ -158,7 +206,29 @@ impl DiscoveryProtocol {
         &self,
         transport: Arc<RwLock<crate::transport::HybridTransport>>,
     ) -> Result<()> {
-        for addr in &self.config.bootstrap_nodes {
+        // First, try to discover bootstrap nodes from DNS
+        let mut all_bootstrap_nodes = match self.discover_dns_seeds().await {
+            Ok(dns_seeds) => {
+                if !dns_seeds.is_empty() {
+                    info!("Using {} bootstrap nodes from DNS seeds", dns_seeds.len());
+                }
+                dns_seeds
+            }
+            Err(e) => {
+                warn!("DNS seed discovery failed: {}", e);
+                vec![]
+            }
+        };
+
+        // Add configured bootstrap nodes
+        all_bootstrap_nodes.extend(self.config.bootstrap_nodes.clone());
+
+        if all_bootstrap_nodes.is_empty() {
+            warn!("No bootstrap nodes available (neither from DNS nor configuration)");
+            return Ok(());
+        }
+
+        for addr in &all_bootstrap_nodes {
             debug!("Querying bootstrap node: {}", addr);
 
             // Parse the multiaddr to get the socket address
@@ -185,22 +255,35 @@ impl DiscoveryProtocol {
     /// Parse a multiaddr to extract socket address for QUIC connection
     fn parse_multiaddr_to_socket(&self, addr: &Multiaddr) -> Option<std::net::SocketAddr> {
         use libp2p::multiaddr::Protocol;
+        use std::net::ToSocketAddrs;
 
-        let mut ip = None;
+        let mut host = None;
         let mut port = None;
 
         for protocol in addr.iter() {
             match protocol {
-                Protocol::Ip4(ipv4) => ip = Some(std::net::IpAddr::V4(ipv4)),
-                Protocol::Ip6(ipv6) => ip = Some(std::net::IpAddr::V6(ipv6)),
+                Protocol::Ip4(ipv4) => host = Some(format!("{}", ipv4)),
+                Protocol::Ip6(ipv6) => host = Some(format!("{}", ipv6)),
+                Protocol::Dns(hostname) | Protocol::Dns4(hostname) | Protocol::Dns6(hostname) => {
+                    host = Some(hostname.to_string())
+                }
                 Protocol::Tcp(p) | Protocol::Udp(p) => port = Some(p),
-                Protocol::Quic => {} // QUIC indicator, we support this
-                _ => {}              // Ignore other protocols
+                Protocol::Quic | Protocol::QuicV1 => {} // QUIC indicators, we support these
+                Protocol::P2p(_) => {}                  // Peer ID, used for verification
+                _ => {}                                 // Ignore other protocols
             }
         }
 
-        if let (Some(ip), Some(port)) = (ip, port) {
-            Some(std::net::SocketAddr::new(ip, port))
+        if let (Some(host), Some(port)) = (host, port) {
+            // Try to resolve the hostname if it's a DNS entry
+            let addr_string = format!("{}:{}", host, port);
+            match addr_string.to_socket_addrs() {
+                Ok(mut addrs) => addrs.next(),
+                Err(e) => {
+                    warn!("Failed to resolve {}: {}", addr_string, e);
+                    None
+                }
+            }
         } else {
             None
         }

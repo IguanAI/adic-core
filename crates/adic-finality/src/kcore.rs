@@ -1,5 +1,8 @@
+use adic_storage::StorageEngine;
 use adic_types::{MessageId, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
+
+use adic_consensus::ReputationTracker;
 
 /// Result of k-core analysis
 #[derive(Debug, Clone)]
@@ -45,24 +48,29 @@ impl KCoreAnalyzer {
     }
 
     /// Analyze the k-core starting from a message
-    pub fn analyze(&self, root: MessageId, graph: &MessageGraph) -> Result<KCoreResult> {
+    pub async fn analyze(
+        &self,
+        root: MessageId,
+        storage: &StorageEngine,
+        reputation: &ReputationTracker,
+    ) -> Result<KCoreResult> {
         // Build forward cone from root
-        let forward_cone = self.build_forward_cone(root, graph)?;
+        let forward_cone = self.build_forward_cone(root, storage).await?;
 
         if forward_cone.is_empty() {
             return Ok(KCoreResult::not_final());
         }
 
         // Compute k-core of the forward cone
-        let kcore = self.compute_kcore(&forward_cone, graph)?;
+        let kcore = self.compute_kcore(&forward_cone, storage).await?;
 
         if kcore.is_empty() {
             return Ok(KCoreResult::not_final());
         }
 
         // Check finality conditions
-        let depth = self.compute_depth(&kcore, root, graph);
-        let (total_rep, distinct_balls) = self.compute_metrics(&kcore, graph)?;
+        let depth = self.compute_depth(&kcore, root, storage).await;
+        let (total_rep, distinct_balls) = self.compute_metrics(&kcore, storage, reputation).await?;
 
         let is_final = kcore.len() >= self.k
             && depth >= self.min_depth
@@ -82,10 +90,10 @@ impl KCoreAnalyzer {
     }
 
     /// Build the forward cone of descendants
-    fn build_forward_cone(
+    async fn build_forward_cone(
         &self,
         root: MessageId,
-        graph: &MessageGraph,
+        storage: &StorageEngine,
     ) -> Result<HashSet<MessageId>> {
         let mut cone = HashSet::new();
         let mut queue = VecDeque::new();
@@ -93,10 +101,10 @@ impl KCoreAnalyzer {
         cone.insert(root);
 
         while let Some(current) = queue.pop_front() {
-            if let Some(children) = graph.get_children(&current) {
+            if let Ok(children) = storage.get_children(&current).await {
                 for child in children {
-                    if cone.insert(*child) {
-                        queue.push_back(*child);
+                    if cone.insert(child) {
+                        queue.push_back(child);
                     }
                 }
             }
@@ -106,10 +114,10 @@ impl KCoreAnalyzer {
     }
 
     /// Compute k-core using iterative degree reduction
-    fn compute_kcore(
+    async fn compute_kcore(
         &self,
         nodes: &HashSet<MessageId>,
-        graph: &MessageGraph,
+        storage: &StorageEngine,
     ) -> Result<HashSet<MessageId>> {
         let mut core = nodes.clone();
         let mut degrees: HashMap<MessageId, usize> = HashMap::new();
@@ -117,10 +125,10 @@ impl KCoreAnalyzer {
         // Initialize degrees
         for &node in nodes {
             let mut degree = 0;
-            if let Some(parents) = graph.get_parents(&node) {
+            if let Ok(parents) = storage.get_parents(&node).await {
                 degree += parents.iter().filter(|p| nodes.contains(p)).count();
             }
-            if let Some(children) = graph.get_children(&node) {
+            if let Ok(children) = storage.get_children(&node).await {
                 degree += children.iter().filter(|c| nodes.contains(c)).count();
             }
             degrees.insert(node, degree);
@@ -141,16 +149,16 @@ impl KCoreAnalyzer {
                 changed = true;
 
                 // Update degrees of neighbors
-                if let Some(parents) = graph.get_parents(&node) {
+                if let Ok(parents) = storage.get_parents(&node).await {
                     for parent in parents {
-                        if let Some(deg) = degrees.get_mut(parent) {
+                        if let Some(deg) = degrees.get_mut(&parent) {
                             *deg = deg.saturating_sub(1);
                         }
                     }
                 }
-                if let Some(children) = graph.get_children(&node) {
+                if let Ok(children) = storage.get_children(&node).await {
                     for child in children {
-                        if let Some(deg) = degrees.get_mut(child) {
+                        if let Some(deg) = degrees.get_mut(&child) {
                             *deg = deg.saturating_sub(1);
                         }
                     }
@@ -162,11 +170,11 @@ impl KCoreAnalyzer {
     }
 
     /// Compute depth of the k-core from root
-    fn compute_depth(
+    async fn compute_depth(
         &self,
         kcore: &HashSet<MessageId>,
         root: MessageId,
-        graph: &MessageGraph,
+        storage: &StorageEngine,
     ) -> u32 {
         let mut max_depth = 0;
         let mut visited = HashSet::new();
@@ -178,10 +186,10 @@ impl KCoreAnalyzer {
         while let Some((current, depth)) = queue.pop_front() {
             max_depth = max_depth.max(depth);
 
-            if let Some(children) = graph.get_children(&current) {
+            if let Ok(children) = storage.get_children(&current).await {
                 for child in children {
-                    if kcore.contains(child) && visited.insert(*child) {
-                        queue.push_back((*child, depth + 1));
+                    if kcore.contains(&child) && visited.insert(child) {
+                        queue.push_back((child, depth + 1));
                     }
                 }
             }
@@ -191,23 +199,25 @@ impl KCoreAnalyzer {
     }
 
     /// Compute reputation and diversity metrics
-    fn compute_metrics(
+    async fn compute_metrics(
         &self,
         kcore: &HashSet<MessageId>,
-        graph: &MessageGraph,
+        storage: &StorageEngine,
+        reputation: &ReputationTracker,
     ) -> Result<(f64, HashMap<u32, usize>)> {
         let mut total_reputation = 0.0;
         let mut balls_per_axis: HashMap<u32, HashSet<Vec<u8>>> = HashMap::new();
 
         for &node in kcore {
-            if let Some(info) = graph.get_message_info(&node) {
-                total_reputation += info.reputation;
+            if let Ok(Some(msg)) = storage.get_message(&node).await {
+                total_reputation += reputation.get_reputation(&msg.proposer_pk).await;
 
-                for (axis_id, ball_id) in &info.ball_ids {
+                for axis_phi in &msg.features.phi {
+                    let ball_id = axis_phi.qp_digits.ball_id(3); // TODO: Use radius from params
                     balls_per_axis
-                        .entry(*axis_id)
+                        .entry(axis_phi.axis.0)
                         .or_default()
-                        .insert(ball_id.clone());
+                        .insert(ball_id);
                 }
             }
         }
@@ -218,143 +228,5 @@ impl KCoreAnalyzer {
             .collect();
 
         Ok((total_reputation, distinct_balls))
-    }
-}
-
-/// Simplified message graph interface
-pub struct MessageGraph {
-    parents: HashMap<MessageId, Vec<MessageId>>,
-    children: HashMap<MessageId, Vec<MessageId>>,
-    info: HashMap<MessageId, MessageInfo>,
-}
-
-#[derive(Debug, Clone)]
-pub struct MessageInfo {
-    pub reputation: f64,
-    pub ball_ids: HashMap<u32, Vec<u8>>,
-}
-
-impl Default for MessageGraph {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MessageGraph {
-    pub fn new() -> Self {
-        Self {
-            parents: HashMap::new(),
-            children: HashMap::new(),
-            info: HashMap::new(),
-        }
-    }
-
-    pub fn add_message(&mut self, id: MessageId, parents: Vec<MessageId>, info: MessageInfo) {
-        self.parents.insert(id, parents.clone());
-
-        for parent in parents {
-            self.children.entry(parent).or_default().push(id);
-        }
-
-        self.info.insert(id, info);
-    }
-
-    pub fn get_parents(&self, id: &MessageId) -> Option<&Vec<MessageId>> {
-        self.parents.get(id)
-    }
-
-    pub fn get_children(&self, id: &MessageId) -> Option<&Vec<MessageId>> {
-        self.children.get(id)
-    }
-
-    pub fn get_message_info(&self, id: &MessageId) -> Option<&MessageInfo> {
-        self.info.get(id)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn create_test_graph() -> MessageGraph {
-        let mut graph = MessageGraph::new();
-
-        // Create a simple DAG structure
-        let root = MessageId::new(b"root");
-        let msg1 = MessageId::new(b"msg1");
-        let msg2 = MessageId::new(b"msg2");
-        let msg3 = MessageId::new(b"msg3");
-        let msg4 = MessageId::new(b"msg4");
-
-        graph.add_message(
-            root,
-            vec![],
-            MessageInfo {
-                reputation: 1.0,
-                ball_ids: [(0, vec![0, 0]), (1, vec![1, 0])].into_iter().collect(),
-            },
-        );
-
-        graph.add_message(
-            msg1,
-            vec![root],
-            MessageInfo {
-                reputation: 1.5,
-                ball_ids: [(0, vec![0, 1]), (1, vec![1, 0])].into_iter().collect(),
-            },
-        );
-
-        graph.add_message(
-            msg2,
-            vec![root],
-            MessageInfo {
-                reputation: 1.2,
-                ball_ids: [(0, vec![0, 0]), (1, vec![1, 1])].into_iter().collect(),
-            },
-        );
-
-        graph.add_message(
-            msg3,
-            vec![msg1, msg2],
-            MessageInfo {
-                reputation: 2.0,
-                ball_ids: [(0, vec![0, 1]), (1, vec![1, 1])].into_iter().collect(),
-            },
-        );
-
-        graph.add_message(
-            msg4,
-            vec![msg3],
-            MessageInfo {
-                reputation: 1.8,
-                ball_ids: [(0, vec![0, 2]), (1, vec![1, 2])].into_iter().collect(),
-            },
-        );
-
-        graph
-    }
-
-    #[test]
-    fn test_kcore_analysis() {
-        let graph = create_test_graph();
-        let analyzer = KCoreAnalyzer::new(2, 2, 2, 3.0);
-
-        let root = MessageId::new(b"root");
-        let result = analyzer.analyze(root, &graph).unwrap();
-
-        assert!(result.core_size > 0);
-        // depth is u32, so it's always >= 0
-    }
-
-    #[test]
-    fn test_forward_cone() {
-        let graph = create_test_graph();
-        let analyzer = KCoreAnalyzer::new(2, 2, 2, 3.0);
-
-        let root = MessageId::new(b"root");
-        let cone = analyzer.build_forward_cone(root, &graph).unwrap();
-
-        assert!(cone.contains(&root));
-        assert_eq!(cone.len(), 5); // root + 4 descendants
     }
 }

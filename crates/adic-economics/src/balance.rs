@@ -1,6 +1,9 @@
-use crate::storage::EconomicsStorage;
+use crate::storage::{EconomicsStorage, TransactionRecord};
 use crate::types::{AccountAddress, AdicAmount};
 use anyhow::{bail, Result};
+use blake3;
+use chrono::Utc;
+use hex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -92,9 +95,12 @@ impl BalanceManager {
             );
         }
 
-        debug!(
-            "Credited {} to {}. New balance: {}",
-            amount, address, new_balance
+        info!(
+            address = %address,
+            amount = amount.to_adic(),
+            balance_before = current.to_adic(),
+            balance_after = new_balance.to_adic(),
+            "💰 Balance credited"
         );
         Ok(())
     }
@@ -124,9 +130,12 @@ impl BalanceManager {
             info.last_activity = chrono::Utc::now().timestamp();
         }
 
-        debug!(
-            "Debited {} from {}. New balance: {}",
-            amount, address, new_balance
+        info!(
+            address = %address,
+            amount = amount.to_adic(),
+            balance_before = current.to_adic(),
+            balance_after = new_balance.to_adic(),
+            "💸 Balance debited"
         );
         Ok(())
     }
@@ -146,15 +155,51 @@ impl BalanceManager {
         }
 
         // Atomic transfer using storage transaction
+        info!(
+            from = %from,
+            to = %to,
+            amount = amount.to_adic(),
+            "📝 Beginning transfer transaction"
+        );
         self.storage.begin_transaction().await?;
 
         match self.transfer_internal(from, to, amount).await {
-            Ok(()) => {
+            Ok(tx_hash) => {
                 self.storage.commit_transaction().await?;
-                info!("Transfer successful: {} from {} to {}", amount, from, to);
+
+                // Record the successful transaction
+                let tx_record = TransactionRecord {
+                    from,
+                    to,
+                    amount,
+                    timestamp: Utc::now(),
+                    tx_hash: tx_hash.clone(),
+                    status: "confirmed".to_string(),
+                };
+
+                // Record transaction (ignore errors to not fail the transfer)
+                if let Err(e) = self.storage.record_transaction(tx_record).await {
+                    debug!("Failed to record transaction {}: {}", tx_hash, e);
+                }
+
+                info!(
+                    from = %from,
+                    to = %to,
+                    amount = amount.to_adic(),
+                    tx_hash = %tx_hash,
+                    status = "confirmed",
+                    "✅ Transfer committed"
+                );
                 Ok(())
             }
             Err(e) => {
+                info!(
+                    from = %from,
+                    to = %to,
+                    amount = amount.to_adic(),
+                    error = %e,
+                    "❌ Transfer rolled back"
+                );
                 self.storage.rollback_transaction().await?;
                 Err(e)
             }
@@ -166,7 +211,7 @@ impl BalanceManager {
         from: AccountAddress,
         to: AccountAddress,
         amount: AdicAmount,
-    ) -> Result<()> {
+    ) -> Result<String> {
         // Lock cache for the entire transfer to ensure atomicity
         let mut cache = self.cache.write().await;
 
@@ -188,6 +233,17 @@ impl BalanceManager {
         let new_to_balance = to_balance
             .checked_add(amount)
             .ok_or_else(|| anyhow::anyhow!("Balance overflow for recipient"))?;
+
+        info!(
+            from = %from,
+            to = %to,
+            amount = amount.to_adic(),
+            from_balance_before = from_balance.to_adic(),
+            from_balance_after = new_from_balance.to_adic(),
+            to_balance_before = to_balance.to_adic(),
+            to_balance_after = new_to_balance.to_adic(),
+            "💸 Executing transfer"
+        );
 
         // Update storage atomically
         self.storage.set_balance(from, new_from_balance).await?;
@@ -224,7 +280,15 @@ impl BalanceManager {
                 last_activity: now,
             });
 
-        Ok(())
+        // Generate transaction hash using Blake3 (cryptographically secure)
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(from.as_bytes());
+        hasher.update(to.as_bytes());
+        hasher.update(&amount.to_base_units().to_le_bytes());
+        hasher.update(&now.to_le_bytes());
+        let tx_hash = hex::encode(hasher.finalize().as_bytes());
+
+        Ok(tx_hash)
     }
 
     pub async fn lock(&self, address: AccountAddress, amount: AdicAmount) -> Result<()> {
@@ -237,6 +301,8 @@ impl BalanceManager {
             locked_balance: AdicAmount::ZERO,
             last_activity: chrono::Utc::now().timestamp(),
         });
+
+        let old_locked = info.locked_balance;
 
         // Ensure sufficient unlocked balance
         let unlocked = info.balance.saturating_sub(info.locked_balance);
@@ -255,9 +321,13 @@ impl BalanceManager {
             .set_locked_balance(address, info.locked_balance)
             .await?;
 
-        debug!(
-            "Locked {} for {}. Total locked: {}",
-            amount, address, info.locked_balance
+        info!(
+            address = %address,
+            amount = amount.to_adic(),
+            locked_before = old_locked.to_adic(),
+            locked_after = info.locked_balance.to_adic(),
+            total_balance = info.balance.to_adic(),
+            "🔒 Balance locked"
         );
         Ok(())
     }
@@ -268,6 +338,8 @@ impl BalanceManager {
         let info = cache
             .get_mut(&address)
             .ok_or_else(|| anyhow::anyhow!("Account not found: {}", address))?;
+
+        let old_locked = info.locked_balance;
 
         if info.locked_balance < amount {
             bail!(
@@ -284,9 +356,13 @@ impl BalanceManager {
             .set_locked_balance(address, info.locked_balance)
             .await?;
 
-        debug!(
-            "Unlocked {} for {}. Remaining locked: {}",
-            amount, address, info.locked_balance
+        info!(
+            address = %address,
+            amount = amount.to_adic(),
+            locked_before = old_locked.to_adic(),
+            locked_after = info.locked_balance.to_adic(),
+            total_balance = info.balance.to_adic(),
+            "🔓 Balance unlocked"
         );
         Ok(())
     }
@@ -328,8 +404,16 @@ impl BalanceManager {
 
     pub async fn clear_cache(&self) {
         let mut cache = self.cache.write().await;
+        let cache_size = cache.len();
         cache.clear();
-        debug!("Balance cache cleared");
+        info!(entries_cleared = cache_size, "🧹 Balance cache cleared");
+    }
+
+    pub async fn get_transaction_history(
+        &self,
+        address: AccountAddress,
+    ) -> Result<Vec<TransactionRecord>> {
+        self.storage.get_transaction_history(address).await
     }
 }
 

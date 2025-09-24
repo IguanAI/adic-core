@@ -185,7 +185,7 @@ async fn test_byzantine_signature_attack() {
         .unwrap();
 
     // The consensus engine should detect and handle invalid signatures
-    let consensus = ConsensusEngine::new(AdicParams::default());
+    let consensus = ConsensusEngine::new(AdicParams::default(), node.storage.clone());
 
     // First escrow a deposit for the message (required before validation)
     consensus
@@ -280,7 +280,7 @@ async fn test_byzantine_reputation_manipulation() {
     // Try to manipulate reputation by creating self-referencing reputation cycles
     // This simulates an attacker trying to boost their own reputation
 
-    let consensus = ConsensusEngine::new(AdicParams::default());
+    let consensus = ConsensusEngine::new(AdicParams::default(), node.storage.clone());
     let attacker_pk = *malicious_keypair.public_key();
 
     // Attempt to artificially boost reputation

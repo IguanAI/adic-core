@@ -109,9 +109,10 @@ impl TreasuryManager {
         });
 
         info!(
-            "Treasury multisig initialized with {} signers, threshold {}",
-            signers.len(),
-            threshold
+            signers_count = signers.len(),
+            threshold = threshold,
+            signers = ?signers,
+            "🏛️ Treasury multisig initialized"
         );
 
         Ok(())
@@ -148,10 +149,20 @@ impl TreasuryManager {
         }
 
         let mut multisig = self.multisig.write().await;
+        let old_config = multisig.clone();
         *multisig = Some(MultisigConfig {
-            signers: new_signers,
+            signers: new_signers.clone(),
             threshold: new_threshold,
         });
+
+        info!(
+            old_signers_count = old_config.as_ref().map(|c| c.signers.len()).unwrap_or(0),
+            new_signers_count = new_signers.len(),
+            old_threshold = old_config.as_ref().map(|c| c.threshold).unwrap_or(0),
+            new_threshold = new_threshold,
+            approver = %approver,
+            "🔄 Treasury multisig updated"
+        );
 
         Ok(())
     }
@@ -188,11 +199,19 @@ impl TreasuryManager {
         let proposal_id = proposal.id;
 
         let mut proposals = self.proposals.write().await;
+        let proposal_count_before = proposals.len();
         proposals.insert(proposal_id, proposal);
 
         info!(
-            "Treasury transfer proposed: {} to {} for '{}'",
-            amount, recipient, reason
+            proposal_id = hex::encode(proposal_id),
+            recipient = %recipient,
+            amount = amount.to_adic(),
+            reason = %reason,
+            proposer = %proposer,
+            proposals_count_before = proposal_count_before,
+            proposals_count_after = proposals.len(),
+            treasury_balance = balance.to_adic(),
+            "📝 Treasury transfer proposed"
         );
 
         Ok(proposal_id)
@@ -229,17 +248,20 @@ impl TreasuryManager {
         }
 
         // Remove from rejections if previously rejected
-        proposal.rejections.remove(&approver);
-        proposal.approvals.insert(approver);
+        let was_rejected = proposal.rejections.remove(&approver);
+        let already_approved = !proposal.approvals.insert(approver);
 
         let approval_count = proposal.approvals.len() as u32;
 
         info!(
-            "Proposal {} approved by {} ({}/{})",
-            hex::encode(&proposal_id[..8]),
-            approver,
-            approval_count,
-            threshold
+            proposal_id = hex::encode(&proposal_id[..8]),
+            approver = %approver,
+            approvals_before = approval_count - if already_approved { 0 } else { 1 },
+            approvals_after = approval_count,
+            threshold = threshold,
+            was_rejected = was_rejected,
+            already_approved = already_approved,
+            "✅ Proposal approved"
         );
 
         // Execute if threshold reached
@@ -277,13 +299,17 @@ impl TreasuryManager {
         }
 
         // Remove from approvals if previously approved
-        proposal.approvals.remove(&rejector);
-        proposal.rejections.insert(rejector);
+        let was_approved = proposal.approvals.remove(&rejector);
+        let already_rejected = !proposal.rejections.insert(rejector);
 
         info!(
-            "Proposal {} rejected by {}",
-            hex::encode(&proposal_id[..8]),
-            rejector
+            proposal_id = hex::encode(&proposal_id[..8]),
+            rejector = %rejector,
+            rejections_before = proposal.rejections.len() - if already_rejected { 0 } else { 1 },
+            rejections_after = proposal.rejections.len(),
+            was_approved = was_approved,
+            already_rejected = already_rejected,
+            "❌ Proposal rejected"
         );
 
         Ok(())
@@ -292,26 +318,44 @@ impl TreasuryManager {
     async fn execute_proposal_internal(&self, proposal: &mut TreasuryProposal) -> Result<()> {
         let treasury_addr = AccountAddress::treasury();
 
+        // Get treasury balance before transfer
+        let balance_before = self.balances.get_balance(treasury_addr).await?;
+
         // Execute the transfer
         self.balances
             .transfer(treasury_addr, proposal.recipient, proposal.amount)
             .await?;
+
+        // Get treasury balance after transfer
+        let balance_after = self.balances.get_balance(treasury_addr).await?;
 
         // Mark as executed
         proposal.executed = true;
 
         // Record the execution
         let mut executed = self.executed_proposals.write().await;
+        let _executed_count_before = executed.len();
         executed.push(proposal.id);
 
         // Keep only last 1000 executed proposals
-        if executed.len() > 1000 {
+        let pruned = if executed.len() > 1000 {
             executed.drain(0..100);
-        }
+            100
+        } else {
+            0
+        };
 
         info!(
-            "Treasury proposal executed: {} to {} for '{}'",
-            proposal.amount, proposal.recipient, proposal.reason
+            proposal_id = hex::encode(proposal.id),
+            recipient = %proposal.recipient,
+            amount = proposal.amount.to_adic(),
+            reason = %proposal.reason,
+            treasury_balance_before = balance_before.to_adic(),
+            treasury_balance_after = balance_after.to_adic(),
+            approvals_count = proposal.approvals.len(),
+            executed_history_size = executed.len(),
+            pruned_count = pruned,
+            "💸 Treasury proposal executed"
         );
 
         Ok(())
@@ -340,6 +384,7 @@ impl TreasuryManager {
     pub async fn cleanup_expired_proposals(&self) {
         let mut proposals = self.proposals.write().await;
         let now = chrono::Utc::now().timestamp();
+        let initial_count = proposals.len();
 
         let expired: Vec<_> = proposals
             .iter()
@@ -347,9 +392,18 @@ impl TreasuryManager {
             .map(|(id, _)| *id)
             .collect();
 
+        let expired_count = expired.len();
         for id in expired {
             proposals.remove(&id);
-            info!("Removed expired proposal: {}", hex::encode(&id[..8]));
+        }
+
+        if expired_count > 0 {
+            info!(
+                expired_count = expired_count,
+                proposals_before = initial_count,
+                proposals_after = proposals.len(),
+                "🧹 Expired proposals cleaned up"
+            );
         }
     }
 
@@ -365,7 +419,12 @@ impl TreasuryManager {
 
         // In production, this would pause all treasury operations
         // For now, we'll just log it
-        warn!("EMERGENCY: Treasury paused by {}", pauser);
+        warn!(
+            pauser = %pauser,
+            signers = ?config.signers,
+            threshold = config.threshold,
+            "🚨 EMERGENCY: Treasury operations paused"
+        );
 
         Ok(())
     }

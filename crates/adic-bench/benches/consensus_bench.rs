@@ -1,7 +1,9 @@
 use adic_consensus::ConsensusEngine;
 use adic_crypto::Keypair;
 use adic_math::{ball_id, padic_distance, vp_diff};
-use adic_storage::{MemoryBackend, StorageBackend};
+use adic_storage::{
+    store::BackendType, MemoryBackend, StorageBackend, StorageConfig, StorageEngine,
+};
 use adic_types::{
     AdicFeatures, AdicMessage, AdicMeta, AdicParams, AxisPhi, MessageId, QpDigits, DEFAULT_P,
     DEFAULT_PRECISION,
@@ -47,22 +49,29 @@ fn create_test_message(i: u32, parents: Vec<MessageId>, keypair: &Keypair) -> Ad
 
 struct TestContext {
     engine: ConsensusEngine,
-    storage: Arc<MemoryBackend>,
+    storage: Arc<StorageEngine>,
     messages: HashMap<MessageId, AdicMessage>,
 }
 
 impl TestContext {
     fn new(params: AdicParams) -> Self {
+        let storage = Arc::new(
+            StorageEngine::new(StorageConfig {
+                backend_type: BackendType::Memory,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
         Self {
-            engine: ConsensusEngine::new(params),
-            storage: Arc::new(MemoryBackend::new()),
+            engine: ConsensusEngine::new(params, storage.clone()),
+            storage,
             messages: HashMap::new(),
         }
     }
 
     async fn add_message(&mut self, msg: AdicMessage) -> Result<(), Box<dyn std::error::Error>> {
-        // Store message in memory backend
-        self.storage.put_message(&msg).await?;
+        // Store message in storage engine
+        self.storage.store_message(&msg).await?;
         self.messages.insert(msg.id, msg);
         Ok(())
     }
@@ -136,7 +145,7 @@ fn bench_message_processing(c: &mut Criterion) {
                 runtime.block_on(async {
                     let validation = context.engine.validator().validate_message(&msg);
                     if validation.is_valid {
-                        context.storage.put_message(&msg).await.unwrap();
+                        context.storage.store_message(&msg).await.unwrap();
                     }
                     black_box(validation)
                 })
@@ -263,7 +272,14 @@ fn bench_reputation(c: &mut Criterion) {
     let mut group = c.benchmark_group("reputation");
 
     let params = AdicParams::default();
-    let engine = ConsensusEngine::new(params);
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    let engine = ConsensusEngine::new(params, storage);
     let keypair = Keypair::generate();
     let pubkey = *keypair.public_key();
 

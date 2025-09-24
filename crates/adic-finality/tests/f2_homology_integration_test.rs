@@ -6,10 +6,25 @@
 use adic_consensus::ConsensusEngine;
 use adic_crypto::Keypair;
 use adic_finality::{homology::HomologyConfig, FinalityConfig, FinalityEngine, HomologyAnalyzer};
+use adic_storage::{store::BackendType, StorageConfig, StorageEngine};
 use adic_types::{AdicFeatures, AdicMessage, AdicMeta, AdicParams, AxisPhi, MessageId, QpDigits};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tempfile::tempdir;
+
+fn create_test_storage() -> Arc<StorageEngine> {
+    let temp_dir = tempdir().unwrap();
+    let storage_config = StorageConfig {
+        backend_type: BackendType::RocksDB {
+            path: temp_dir.path().to_str().unwrap().to_string(),
+        },
+        cache_size: 10,
+        flush_interval_ms: 1000,
+        max_batch_size: 100,
+    };
+    Arc::new(StorageEngine::new(storage_config).unwrap())
+}
 use std::time::Instant;
 
 /// Helper to create test messages with specific features
@@ -224,9 +239,10 @@ async fn test_f1_f2_dual_finality_coordination() {
         ..Default::default()
     };
 
-    let consensus = Arc::new(ConsensusEngine::new(params.clone()));
+    let storage = create_test_storage();
+    let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality_engine = FinalityEngine::new(finality_config, consensus);
+    let finality_engine = FinalityEngine::new(finality_config, consensus, storage);
 
     let keypair = Keypair::generate();
 

@@ -114,8 +114,13 @@ impl MrwEngine {
             tips.len()
         );
 
-        // If no candidates were built, return an error
+        // If no candidates were built, check if this is a genesis scenario
         if candidates.is_empty() {
+            // Allow genesis message (no parents) only when there are no tips
+            if tips.is_empty() {
+                tracing::info!("No tips available - allowing genesis message with no parents");
+                return Ok(vec![]); // Return empty parent list for genesis
+            }
             return Err(anyhow::anyhow!(
                 "No valid parent candidates found from {} tips",
                 tips.len()
