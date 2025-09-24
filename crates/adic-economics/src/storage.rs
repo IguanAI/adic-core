@@ -329,13 +329,7 @@ impl EconomicsStorage for MemoryStorage {
 
         // Create next cursor if there are more results
         let next_cursor = if filtered.len() == limit {
-            last_tx.map(|last| {
-                format!(
-                    "{}:{}",
-                    last.timestamp.timestamp_millis(),
-                    last.tx_hash
-                )
-            })
+            last_tx.map(|last| format!("{}:{}", last.timestamp.timestamp_millis(), last.tx_hash))
         } else {
             None
         };

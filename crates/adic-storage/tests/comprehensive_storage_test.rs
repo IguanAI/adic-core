@@ -2,8 +2,7 @@ use adic_crypto::Keypair;
 use adic_storage::store::BackendType;
 use adic_storage::{StorageConfig, StorageEngine};
 use adic_types::{
-    AdicFeatures, AdicMessage, AdicMeta, AxisPhi, MessageId, QpDigits,
-    DEFAULT_P, DEFAULT_PRECISION,
+    AdicFeatures, AdicMessage, AdicMeta, AxisPhi, MessageId, QpDigits, DEFAULT_P, DEFAULT_PRECISION,
 };
 use chrono::Utc;
 use std::collections::HashSet;

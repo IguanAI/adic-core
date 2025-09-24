@@ -727,8 +727,7 @@ impl AdicNode {
 
                         // Check if all parents share the same ball (same first 'radius' digits)
                         let mut all_in_same_ball = true;
-                        let check_len = radius
-                            .min(new_digits.len());
+                        let check_len = radius.min(new_digits.len());
                         for parent_feature in &parent_axis_features {
                             let cmp_len = check_len.min(parent_feature.digits.len());
                             if parent_feature.digits[..cmp_len] != new_digits[..cmp_len] {

@@ -1,9 +1,7 @@
 use adic_consensus::ConsensusEngine;
 use adic_crypto::Keypair;
 use adic_math::{ball_id, padic_distance, vp_diff};
-use adic_storage::{
-    store::BackendType, StorageConfig, StorageEngine,
-};
+use adic_storage::{store::BackendType, StorageConfig, StorageEngine};
 use adic_types::{
     AdicFeatures, AdicMessage, AdicMeta, AdicParams, AxisPhi, MessageId, QpDigits, DEFAULT_P,
     DEFAULT_PRECISION,

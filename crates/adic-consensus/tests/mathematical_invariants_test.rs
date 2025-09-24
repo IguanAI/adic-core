@@ -1,6 +1,4 @@
-use adic_consensus::{
-    AdmissibilityChecker, ConsensusEngine,
-};
+use adic_consensus::{AdmissibilityChecker, ConsensusEngine};
 use adic_finality::{FinalityEngine, KCoreAnalyzer};
 use adic_mrw::MrwEngine;
 use adic_storage::{store::BackendType, StorageConfig, StorageEngine};
