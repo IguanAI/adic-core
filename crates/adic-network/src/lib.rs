@@ -385,7 +385,7 @@ impl NetworkEngine {
                                                         );
                                                     }
                                                     // Send the actual sync request
-                                                    if let Err(e) = net.send_sync_request(remote_peer_id, 
+                                                    if let Err(e) = net.send_sync_request(remote_peer_id,
                                                         crate::protocol::sync::SyncRequest::GetFrontier).await {
                                                         warn!("Failed to send sync request to peer {}: {}", remote_peer_id, e);
                                                     }
