@@ -255,6 +255,9 @@ impl AdicNode {
                         .parse()
                         .unwrap(),
                     use_production_tls: config.network.use_production_tls,
+                    ca_cert_path: config.network.ca_cert_path.clone(),
+                    node_cert_path: config.network.node_cert_path.clone(),
+                    node_key_path: config.network.node_key_path.clone(),
                     ..Default::default()
                 },
                 ..Default::default()

@@ -88,6 +88,9 @@ pub struct NetworkConfig {
     pub dns_seeds: Vec<String>,
     pub max_peers: usize,
     pub use_production_tls: bool,
+    pub ca_cert_path: Option<String>,
+    pub node_cert_path: Option<String>,
+    pub node_key_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +171,9 @@ impl Default for NodeConfig {
                 dns_seeds: vec!["_seeds.adicl1.com".to_string()],
                 max_peers: 50,
                 use_production_tls: false,
+                ca_cert_path: None,
+                node_cert_path: None,
+                node_key_path: None,
             },
             logging: LoggingConfig::default(),
         }
