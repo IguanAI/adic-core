@@ -133,6 +133,12 @@ pub struct StandardSigner {
     verifying_key: VerifyingKey,
 }
 
+impl Default for StandardSigner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StandardSigner {
     /// Create new signer from seed
     pub fn from_seed(seed: &[u8; 32]) -> Self {
