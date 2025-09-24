@@ -406,7 +406,7 @@ async fn get_finality_artifact(
         "f1_finalized": f1_artifact.is_some(),
         "f1_k_core": f1_k_core,
         "f1_depth": f1_depth,
-        "f2_stabilized": f2_result.as_ref().map_or(false, |r| !r.finalized_messages.is_empty()),
+        "f2_stabilized": f2_result.as_ref().is_some_and(|r| !r.finalized_messages.is_empty()),
         "f2_homology_rank": f2_homology_rank,
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
@@ -513,9 +513,7 @@ async fn get_all_conflicts(State(state): State<Arc<AppState>>) -> Response {
     for (conflict_id, energy) in conflicts {
         // Get conflicting messages for this conflict
         let messages = energy
-            .support
-            .iter()
-            .map(|(msg_id, _)| hex::encode(msg_id.as_bytes()))
+            .support.keys().map(|msg_id| hex::encode(msg_id.as_bytes()))
             .collect::<Vec<_>>();
 
         let status = if energy.get_winner().is_some() {
@@ -577,15 +575,11 @@ async fn get_conflict_details(
     let response = if let Some(details) = conflict_details {
         // Extract conflicting messages and their energy scores
         let conflicting_messages: Vec<String> = details
-            .support
-            .iter()
-            .map(|(msg_id, _)| hex::encode(msg_id.as_bytes()))
+            .support.keys().map(|msg_id| hex::encode(msg_id.as_bytes()))
             .collect();
 
         let energy_scores: Vec<f64> = details
-            .support
-            .iter()
-            .map(|(_, support)| *support)
+            .support.values().copied()
             .collect();
 
         let resolution = if is_resolved {
@@ -1384,11 +1378,8 @@ async fn get_kcore_metrics(State(state): State<Arc<AppState>>) -> Response {
     let finality_stats = state.node.finality.get_stats().await;
 
     // Get recent finalized messages to analyze k-core properties
-    let recent_finalized: Vec<MessageId> = match state.node.storage.get_recently_finalized(20).await
-    {
-        Ok(msgs) => msgs,
-        Err(_) => Vec::new(),
-    };
+    let recent_finalized: Vec<MessageId> = state.node.storage.get_recently_finalized(20).await
+        .unwrap_or_default();
 
     // Analyze k-core properties of recent finalizations
     let mut kcore_analyses = Vec::new();

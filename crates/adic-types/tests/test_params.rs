@@ -129,8 +129,10 @@ fn test_adic_params_gamma_validation() {
     let gamma_values = vec![0.0, 0.1, 0.5, 0.9, 0.99, 0.999];
 
     for gamma in gamma_values {
-        let mut test_params = AdicParams::default();
-        test_params.gamma = gamma;
+        let test_params = AdicParams {
+            gamma,
+            ..Default::default()
+        };
         assert_eq!(test_params.gamma, gamma);
 
         // Serialize and check
@@ -168,8 +170,10 @@ fn test_adic_params_rho_vector() {
 fn test_adic_params_equality() {
     let params1 = AdicParams::default();
     let params2 = AdicParams::default();
-    let mut params3 = AdicParams::default();
-    params3.p = 5; // Different prime
+    let params3 = AdicParams {
+        p: 5, // Different prime
+        ..Default::default()
+    };
 
     // Same parameters should be equal
     assert_eq!(params1, params2);

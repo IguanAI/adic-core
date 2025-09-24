@@ -13,7 +13,6 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::time::{sleep, Duration};
 
 // Helper for tests that don't care about signature validity
 fn create_transaction_message(
@@ -84,7 +83,7 @@ async fn test_complete_message_lifecycle() {
 
     let params = AdicParams::default();
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
-    let mrw = Arc::new(MrwEngine::new(params.clone()));
+    let _mrw = Arc::new(MrwEngine::new(params.clone()));
     let finality_config = FinalityConfig {
         k: params.k as usize,
         min_depth: params.depth_star,
@@ -149,7 +148,7 @@ async fn test_complete_message_lifecycle() {
 
     // Phase 5: Finalization Check
     // In real scenario, would wait for k-core conditions
-    let finality_status = finality.check_finality().await.unwrap();
+    let _finality_status = finality.check_finality().await.unwrap();
 
     // Phase 6: Query Final State
     let all_messages = storage.list_all_messages().await.unwrap();
@@ -193,7 +192,7 @@ async fn test_node_synchronization() {
 
     // Use proper keypairs for signing
     let alice_kp = Keypair::generate();
-    let alice = *alice_kp.public_key();
+    let _alice = *alice_kp.public_key();
     let bob = *Keypair::generate().public_key();
 
     // Node 1 creates messages
@@ -407,7 +406,7 @@ async fn test_economic_transaction_flow() {
     );
 
     let params = AdicParams::default();
-    let tokenomics = TokenomicsEngine::new_with_params(params.clone());
+    let _tokenomics = TokenomicsEngine::new_with_params(params.clone());
 
     // Create test accounts with balances
     let alice_kp = Keypair::generate();
@@ -481,8 +480,8 @@ async fn test_multi_node_stress() {
     let mut nodes = Vec::new();
     let mut storages = Vec::new();
 
-    for i in 0..num_nodes {
-        let temp_dir = tempdir().unwrap();
+    for _i in 0..num_nodes {
+        let _temp_dir = tempdir().unwrap();
         let storage = Arc::new(
             StorageEngine::new(StorageConfig {
                 backend_type: BackendType::Memory, // Use memory for speed

@@ -445,7 +445,7 @@ impl AdicNode {
                         if modify_pos < new_digits.len() {
                             new_digits[modify_pos] = (new_digits[modify_pos] + 1) % 3;
                         }
-                    } else if new_digits.len() > 0 {
+                    } else if !new_digits.is_empty() {
                         // If we don't have enough digits, add variation at the end
                         // This maintains p-adic closeness
                         let last_pos = new_digits.len() - 1;
@@ -671,7 +671,7 @@ impl AdicNode {
             // Convert simplified {axis, value} format to proper p-adic QpDigits
             let mut axis_features = Vec::new();
             for axis_value in submit_features.axes {
-                let qp_digits = QpDigits::from_u64(axis_value.value as u64, 3, 10);
+                let qp_digits = QpDigits::from_u64(axis_value.value, 3, 10);
                 axis_features.push(AxisPhi::new(axis_value.axis, qp_digits));
             }
             AdicFeatures::new(axis_features)
@@ -727,17 +727,12 @@ impl AdicNode {
 
                         // Check if all parents share the same ball (same first 'radius' digits)
                         let mut all_in_same_ball = true;
+                        let check_len = radius
+                            .min(new_digits.len());
                         for parent_feature in &parent_axis_features {
-                            for pos in 0..radius
-                                .min(parent_feature.digits.len())
-                                .min(new_digits.len())
-                            {
-                                if parent_feature.digits[pos] != new_digits[pos] {
-                                    all_in_same_ball = false;
-                                    break;
-                                }
-                            }
-                            if !all_in_same_ball {
+                            let cmp_len = check_len.min(parent_feature.digits.len());
+                            if parent_feature.digits[..cmp_len] != new_digits[..cmp_len] {
+                                all_in_same_ball = false;
                                 break;
                             }
                         }

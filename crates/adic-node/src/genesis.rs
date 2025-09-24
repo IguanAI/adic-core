@@ -6,11 +6,7 @@ use std::collections::HashMap;
 
 /// Helper to create AccountAddress from hex string
 pub fn account_address_from_hex(hex_str: &str) -> Result<AccountAddress, String> {
-    let hex_str = if hex_str.starts_with("0x") {
-        &hex_str[2..]
-    } else {
-        hex_str
-    };
+    let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
 
     let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid hex: {}", e))?;
 
@@ -216,6 +212,12 @@ pub struct GenesisIdentity {
     pub public_key: String,     // Public key hex
     pub rep_score: f64,         // Initial ADIC-Rep
     pub axis_anchors: Vec<u64>, // P-adic anchors per axis
+}
+
+impl Default for GenesisHyperedge {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GenesisHyperedge {

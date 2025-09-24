@@ -6,8 +6,6 @@ use adic_types::{
 };
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 fn create_message_with_features(
     id: u8,
@@ -270,7 +268,7 @@ async fn test_mrw_q_ball_coverage() {
         AxisPhi::new(2, QpDigits::from_u64(45, 3, 10)),
     ]);
 
-    let (selected, trace) = selector
+    let (selected, _trace) = selector
         .select_parents(&new_features, candidates, &weight_calc)
         .await
         .unwrap();

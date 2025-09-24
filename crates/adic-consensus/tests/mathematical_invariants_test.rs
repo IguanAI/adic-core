@@ -1,5 +1,5 @@
 use adic_consensus::{
-    AdmissibilityChecker, ConflictResolver, ConsensusEngine, DepositManager, ReputationTracker,
+    AdmissibilityChecker, ConsensusEngine,
 };
 use adic_finality::{FinalityEngine, KCoreAnalyzer};
 use adic_mrw::MrwEngine;
@@ -72,6 +72,7 @@ async fn test_full_lifecycle_invariants() {
 }
 
 /// Verify C1, C2, C3 admissibility constraints
+#[allow(dead_code)]
 async fn verify_admissibility_invariants(messages: &[AdicMessage], params: &AdicParams) {
     let checker = AdmissibilityChecker::new(params.clone());
 
@@ -135,7 +136,7 @@ async fn verify_energy_descent_invariant(consensus: &ConsensusEngine, messages: 
         .await;
 
     // Add support for competing messages
-    for (i, msg) in messages.iter().enumerate() {
+    for msg in messages.iter() {
         // Note: We need to use the actual storage and reputation from consensus
         // The reputation parameter is removed - it's now calculated internally
         consensus
@@ -314,8 +315,8 @@ async fn test_mrw_mathematical_properties() {
             &proposer_features,
             &tip_ids,
             &storage,
-            &conflict_resolver,
-            &reputation_tracker,
+            conflict_resolver,
+            reputation_tracker,
         )
         .await
         .unwrap();
@@ -379,7 +380,7 @@ async fn test_kcore_finality_properties() {
         window_size: 100,
     };
     let finality = FinalityEngine::new(finality_config, consensus.clone(), storage.clone());
-    let kcore = KCoreAnalyzer::new(params.k as usize, 2, 2, 0.5);
+    let _kcore = KCoreAnalyzer::new(params.k as usize, 2, 2, 0.5);
 
     // Create a DAG structure
     let genesis = create_message(0, vec![], params.clone());

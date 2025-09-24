@@ -181,6 +181,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TLS development mode bypass still present
 - Storage range queries not optimized
 - Some consensus mechanisms simplified from paper specification
+- **Known vulnerabilities in dependencies:**
+  - protobuf 2.28.0 (via prometheus): Uncontrolled recursion vulnerability (RUSTSEC-2024-0437)
+  - ring 0.16.20 (via libp2p): AES panic vulnerability (RUSTSEC-2025-0009)
+  - These will be addressed in a future release when upstream dependencies update
 
 ## [0.1.4] - 2025-08-29
 

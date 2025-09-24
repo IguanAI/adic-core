@@ -92,7 +92,7 @@ impl NodeWallet {
         // Derive keypair from seed
         let keypair = derive_keypair_from_seed(&seed);
         let public_key = keypair.public_key();
-        let address = AccountAddress::from_public_key(&public_key);
+        let address = AccountAddress::from_public_key(public_key);
 
         // Generate salt for key derivation
         let mut salt = vec![0u8; SALT_LEN];
@@ -199,14 +199,14 @@ impl NodeWallet {
         // Reconstruct address - try bech32 first, fall back to hex
         let address = if wallet_data.address.starts_with("adic") {
             AccountAddress::from_string(&wallet_data.address)
-                .unwrap_or_else(|_| AccountAddress::from_public_key(&public_key))
+                .unwrap_or_else(|_| AccountAddress::from_public_key(public_key))
         } else if let Some(hex_addr) = &wallet_data.hex_address {
             AccountAddress::from_string(hex_addr)
-                .unwrap_or_else(|_| AccountAddress::from_public_key(&public_key))
+                .unwrap_or_else(|_| AccountAddress::from_public_key(public_key))
         } else {
             // Legacy format - address field contains hex
             AccountAddress::from_string(&wallet_data.address)
-                .unwrap_or_else(|_| AccountAddress::from_public_key(&public_key))
+                .unwrap_or_else(|_| AccountAddress::from_public_key(public_key))
         };
 
         info!(
@@ -362,7 +362,7 @@ impl NodeWallet {
         }
 
         // Reconstruct address
-        let address = AccountAddress::from_public_key(&public_key);
+        let address = AccountAddress::from_public_key(public_key);
 
         info!(
             "Successfully imported wallet with address {}",

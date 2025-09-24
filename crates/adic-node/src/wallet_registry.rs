@@ -357,7 +357,7 @@ mod tests {
         // Generate a test keypair
         let keypair = Keypair::generate();
         let public_key = keypair.public_key();
-        let address = AccountAddress::from_public_key(&public_key);
+        let address = AccountAddress::from_public_key(public_key);
 
         // Create registration message
         let registration_message = format!(
@@ -406,7 +406,7 @@ mod tests {
         let keypair2 = Keypair::generate();
 
         let public_key1 = keypair1.public_key();
-        let address1 = AccountAddress::from_public_key(&public_key1);
+        let address1 = AccountAddress::from_public_key(public_key1);
         let public_key2 = keypair2.public_key();
 
         // Try to register with mismatched public key and address

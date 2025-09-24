@@ -52,7 +52,7 @@ fn test_public_key_equality() {
     assert_ne!(key1, key3);
 
     // Clone should be equal
-    let key1_clone = key1.clone();
+    let key1_clone = key1;
     assert_eq!(key1, key1_clone);
 }
 
@@ -96,8 +96,8 @@ fn test_signature_various_sizes() {
 #[test]
 fn test_signature_serialization() {
     let mut sig_bytes = vec![0u8; 64];
-    for i in 0..64 {
-        sig_bytes[i] = i as u8;
+    for (i, byte) in sig_bytes.iter_mut().enumerate().take(64) {
+        *byte = i as u8;
     }
     let signature = Signature::new(sig_bytes.clone());
 
@@ -151,7 +151,7 @@ fn test_key_signature_interaction() {
     }
 
     let pair = KeySigPair {
-        public_key: key.clone(),
+        public_key: key,
         signature: sig.clone(),
     };
 
@@ -202,8 +202,8 @@ fn test_key_hex_errors() {
 #[test]
 fn test_signature_hex_representation() {
     let mut sig_bytes = vec![0u8; 64];
-    for i in 0..64 {
-        sig_bytes[i] = ((i * 3) % 256) as u8;
+    for (i, byte) in sig_bytes.iter_mut().enumerate().take(64) {
+        *byte = ((i * 3) % 256) as u8;
     }
 
     let sig = Signature::new(sig_bytes.clone());
@@ -237,4 +237,3 @@ fn test_signature_hex_various_sizes() {
 }
 
 // Add bincode dependency for binary serialization tests
-use bincode;

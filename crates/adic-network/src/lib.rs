@@ -1,3 +1,5 @@
+#![allow(clippy::excessive_nesting)]
+
 pub mod codecs;
 pub mod deposit_verifier;
 pub mod metrics;

@@ -88,10 +88,10 @@ async fn test_reputation_impacts_parent_selection() {
     ]);
 
     // Run multiple selections to test statistical behavior
-    let num_trials = 100; // Increased trials for more statistical significance
-    let mut total_high = 0;
-    let mut total_medium = 0;
-    let mut total_low = 0;
+    let num_trials = 100i32; // Increased trials for more statistical significance
+    let mut total_high = 0i32;
+    let mut total_medium = 0i32;
+    let mut total_low = 0i32;
 
     for _trial in 0..num_trials {
         // Select parents using MRW with reputation
@@ -160,7 +160,7 @@ async fn test_reputation_impacts_parent_selection() {
     // OR if the selection is roughly uniform (showing diversity is prioritized)
     if total_high > total_low {
         println!("✓ High reputation nodes selected more often (reputation has influence)");
-    } else if (total_high as i32 - total_low as i32).abs() <= num_trials as i32 / 10 {
+    } else if (total_high - total_low).abs() <= num_trials / 10 {
         println!("✓ Selection is roughly uniform (diversity prioritized over reputation)");
     } else {
         // Only fail if low reputation is selected SIGNIFICANTLY more than high

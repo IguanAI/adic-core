@@ -321,7 +321,7 @@ async fn test_wallet_registration_flow() {
     // Generate test keypair
     let keypair = Keypair::generate();
     let public_key = keypair.public_key();
-    let address = AccountAddress::from_public_key(&public_key);
+    let address = AccountAddress::from_public_key(public_key);
 
     // Create registration message
     let registration_message = format!(
@@ -412,7 +412,7 @@ async fn test_wallet_registry_stats() {
     let registry = WalletRegistry::new(storage);
 
     // Register multiple wallets of different types
-    let wallet_configs = vec![
+    let wallet_configs = [
         ("hardware", true),
         ("hardware", false),
         ("software", true),
@@ -423,7 +423,7 @@ async fn test_wallet_registry_stats() {
     for (i, (wallet_type, trusted)) in wallet_configs.iter().enumerate() {
         let keypair = Keypair::generate();
         let public_key = keypair.public_key();
-        let address = AccountAddress::from_public_key(&public_key);
+        let address = AccountAddress::from_public_key(public_key);
 
         let registration_message = format!(
             "ADIC Wallet Registration\nAddress: {}\nPublic Key: {}\nTimestamp: {}",
@@ -484,10 +484,10 @@ async fn test_wallet_list_operations() {
     let mut addresses = Vec::new();
 
     // Register 3 wallets
-    for i in 0..3 {
+    for _i in 0..3 {
         let keypair = Keypair::generate();
         let public_key = keypair.public_key();
-        let address = AccountAddress::from_public_key(&public_key);
+        let address = AccountAddress::from_public_key(public_key);
         addresses.push(address);
 
         let registration_message = format!(

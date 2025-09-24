@@ -328,13 +328,14 @@ impl EconomicsStorage for MemoryStorage {
         }
 
         // Create next cursor if there are more results
-        let next_cursor = if last_tx.is_some() && filtered.len() == limit {
-            let last = last_tx.unwrap();
-            Some(format!(
-                "{}:{}",
-                last.timestamp.timestamp_millis(),
-                last.tx_hash
-            ))
+        let next_cursor = if filtered.len() == limit {
+            last_tx.map(|last| {
+                format!(
+                    "{}:{}",
+                    last.timestamp.timestamp_millis(),
+                    last.tx_hash
+                )
+            })
         } else {
             None
         };
@@ -732,16 +733,11 @@ impl EconomicsStorage for RocksDbStorage {
         }
 
         // Create next cursor if there are potentially more results
-        let next_cursor = if transactions.len() == limit && last_cursor_key.is_some() {
-            // Extract timestamp and tx_hash from the key
-            let key = last_cursor_key.unwrap();
-            let key_str = String::from_utf8_lossy(&key);
-            if let Some(parts) = key_str.strip_prefix(&prefix) {
-                // Format: timestamp:tx_hash
-                Some(parts.to_string())
-            } else {
-                None
-            }
+        let next_cursor = if transactions.len() == limit {
+            last_cursor_key.and_then(|key| {
+                let key_str = String::from_utf8_lossy(&key);
+                key_str.strip_prefix(&prefix).map(|parts| parts.to_string())
+            })
         } else {
             None
         };
@@ -753,7 +749,8 @@ impl EconomicsStorage for RocksDbStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+
+    #[cfg(feature = "rocksdb")]
     use tempfile::TempDir;
 
     #[cfg(feature = "rocksdb")]

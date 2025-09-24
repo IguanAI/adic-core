@@ -1,7 +1,5 @@
-use adic_types::{AdicFeatures, AdicMessage, AdicMeta, MessageId, PublicKey, Signature};
-use bincode;
+use adic_types::{AdicFeatures, AdicMessage, AdicMeta, MessageId, PublicKey};
 use chrono::{TimeZone, Utc};
-use hex;
 
 #[test]
 fn test_message_id_creation() {
@@ -39,7 +37,7 @@ fn test_message_id_compute() {
         parents.clone(),
         features.clone(),
         meta.clone(),
-        proposer_pk.clone(),
+        proposer_pk,
         payload.to_vec(),
     );
     let id1 = msg1.id;
@@ -49,7 +47,7 @@ fn test_message_id_compute() {
         parents.clone(),
         features.clone(),
         meta.clone(),
-        proposer_pk.clone(),
+        proposer_pk,
         payload.to_vec(),
     );
     let id2 = msg2.id;
@@ -60,7 +58,7 @@ fn test_message_id_compute() {
         parents.clone(),
         features.clone(),
         meta.clone(),
-        proposer_pk.clone(),
+        proposer_pk,
         b"different content".to_vec(),
     );
     let id3 = msg3.id;
@@ -72,7 +70,7 @@ fn test_message_id_compute() {
         parents2,
         features.clone(),
         meta.clone(),
-        proposer_pk.clone(),
+        proposer_pk,
         payload.to_vec(),
     );
     let id4 = msg4.id;
@@ -84,7 +82,7 @@ fn test_message_id_compute() {
         parents.clone(),
         features.clone(),
         meta2,
-        proposer_pk.clone(),
+        proposer_pk,
         payload.to_vec(),
     );
     let id5 = msg5.id;
@@ -133,8 +131,8 @@ fn test_message_id_from_bytes() {
 
     // Pattern bytes
     let mut pattern_bytes = [0u8; 32];
-    for i in 0..32 {
-        pattern_bytes[i] = i as u8;
+    for (i, byte) in pattern_bytes.iter_mut().enumerate() {
+        *byte = i as u8;
     }
     let pattern_id = MessageId::from_bytes(pattern_bytes);
     assert_eq!(pattern_id.as_bytes(), &pattern_bytes);
@@ -153,7 +151,7 @@ fn test_message_id_equality() {
     assert_ne!(id1, id3);
 
     // Clone should be equal
-    let id1_clone = id1.clone();
+    let id1_clone = id1;
     assert_eq!(id1, id1_clone);
 
     // From same bytes should be equal
@@ -196,9 +194,9 @@ fn test_message_id_hash() {
     let id2 = MessageId::new(b"second");
     let id3 = MessageId::new(b"first"); // Duplicate of id1
 
-    set.insert(id1.clone());
-    set.insert(id2.clone());
-    set.insert(id3.clone()); // Should not increase size
+    set.insert(id1);
+    set.insert(id2);
+    set.insert(id3); // Should not increase size
 
     assert_eq!(set.len(), 2);
     assert!(set.contains(&id1));
@@ -241,7 +239,7 @@ fn test_message_id_determinism() {
                 parents.clone(),
                 features.clone(),
                 meta.clone(),
-                proposer_pk.clone(),
+                proposer_pk,
                 payload.to_vec(),
             );
             msg.id

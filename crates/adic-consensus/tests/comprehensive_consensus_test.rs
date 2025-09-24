@@ -1,6 +1,6 @@
 use adic_consensus::{
     AdmissibilityChecker, ConflictResolver, ConsensusEngine, EnergyDescentTracker,
-    MessageValidator, ReputationTracker, ValidationResult,
+    MessageValidator, ReputationTracker,
 };
 use adic_crypto::Keypair;
 use adic_storage::{store::BackendType, StorageConfig, StorageEngine};
@@ -9,9 +9,8 @@ use adic_types::{
     QpDigits,
 };
 use chrono::Utc;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
 
 fn create_message_with_parents_and_features(
     id: u8,
@@ -86,7 +85,7 @@ async fn test_complex_dag_acyclicity_validation() {
     cyclic_msg.id = msg1.id; // Reuse ID to simulate cycle attempt
 
     let result = validator.validate_message(&cyclic_msg);
-    assert!(!result.is_valid || result.warnings.len() > 0);
+    assert!(!result.is_valid || !result.warnings.is_empty());
 }
 
 #[tokio::test]
@@ -102,7 +101,7 @@ async fn test_deep_dag_traversal() {
     let proposer = *keypair.public_key();
 
     // Create a deep chain
-    let mut prev_id = MessageId::new(&[0; 32]);
+    let mut prev_id;
     let genesis = create_message_with_parents_and_features(0, vec![], proposer, vec![(0, 0)]);
     storage.store_message(&genesis).await.unwrap();
     prev_id = genesis.id;
@@ -312,7 +311,7 @@ async fn test_energy_descent_drift_calculation() {
         .await
         .unwrap();
 
-    let initial_drift = resolver.calculate_expected_drift(&conflict).await;
+    let _initial_drift = resolver.calculate_expected_drift(&conflict).await;
 
     // Add descendants to msg_a to shift support dramatically
     for i in 0..5 {
@@ -664,7 +663,7 @@ async fn test_full_consensus_flow_with_storage() {
         .unwrap(),
     );
 
-    let consensus = ConsensusEngine::new(params, storage.clone());
+    let _consensus = ConsensusEngine::new(params, storage.clone());
     let reputation = ReputationTracker::new(0.9);
 
     // Create initial proposers
@@ -790,27 +789,27 @@ async fn test_multi_node_conflict_resolution() {
     // Simulate nodes voting with converging support
     for i in 0..10 {
         // Start with disputed support, gradually converge
-        let support1 = 0.6 + (i as f64 * 0.03); // Increases to 0.9
-        let support2 = 0.4 - (i as f64 * 0.03); // Decreases to 0.1
+        let _support1 = 0.6 + (i as f64 * 0.03); // Increases to 0.9
+        let _support2 = 0.4 - (i as f64 * 0.03); // Decreases to 0.1
 
         energy_resolver
-            .update_support(&conflict_id, msg1.id, &*storage, &*reputation)
+            .update_support(&conflict_id, msg1.id, &storage, &reputation)
             .await
             .unwrap();
         energy_resolver
-            .update_support(&conflict_id, msg2.id, &*storage, &*reputation)
+            .update_support(&conflict_id, msg2.id, &storage, &reputation)
             .await
             .unwrap();
     }
 
     // Force energy descent by reducing total support
-    for depth in 2..5 {
+    for _depth in 2..5 {
         energy_resolver
-            .update_support(&conflict_id, msg1.id, &*storage, &*reputation)
+            .update_support(&conflict_id, msg1.id, &storage, &reputation)
             .await
             .unwrap();
         energy_resolver
-            .update_support(&conflict_id, msg2.id, &*storage, &*reputation)
+            .update_support(&conflict_id, msg2.id, &storage, &reputation)
             .await
             .unwrap();
     }

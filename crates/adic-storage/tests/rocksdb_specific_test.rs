@@ -236,7 +236,7 @@ mod rocksdb_tests {
         let msg2 = create_test_message(2, vec![invalid_parent]);
 
         // This might fail depending on implementation
-        let result = storage.store_message(&msg2).await;
+        let _result = storage.store_message(&msg2).await;
 
         // Verify database consistency
         let tips = storage.get_tips().await.unwrap();

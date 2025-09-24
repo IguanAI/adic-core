@@ -1,14 +1,13 @@
 use adic_crypto::Keypair;
 use adic_storage::store::BackendType;
-use adic_storage::{StorageConfig, StorageEngine, StorageError};
+use adic_storage::{StorageConfig, StorageEngine};
 use adic_types::{
-    AdicFeatures, AdicMessage, AdicMeta, AxisPhi, ConflictId, MessageId, PublicKey, QpDigits,
+    AdicFeatures, AdicMessage, AdicMeta, AxisPhi, MessageId, QpDigits,
     DEFAULT_P, DEFAULT_PRECISION,
 };
 use chrono::Utc;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tempfile::tempdir;
 use tokio::sync::Barrier;
 
 fn create_test_message_with_features(
@@ -289,7 +288,7 @@ async fn test_get_messages_since_checkpoint() {
         .unwrap();
 
     // Should get messages after the checkpoint
-    assert!(messages.len() > 0);
+    assert!(!messages.is_empty());
 }
 
 // ============= Finalization Tests =============
@@ -731,7 +730,7 @@ async fn test_get_messages_in_time_range() {
     let mut messages = vec![];
 
     for i in 0..10 {
-        let mut msg = create_test_message_with_features(i, vec![], vec![(0, i as u64)]);
+        let mut msg = create_test_message_with_features(i, vec![], vec![(0, i)]);
         // Manually set timestamp for predictable testing
         msg.meta.timestamp =
             chrono::DateTime::from_timestamp_millis(base_time + (i as i64 * 1000)).unwrap();
@@ -773,7 +772,7 @@ async fn test_get_messages_after_timestamp() {
 
     // Create 20 messages
     for i in 0..20 {
-        let mut msg = create_test_message_with_features(i, vec![], vec![(0, i as u64)]);
+        let mut msg = create_test_message_with_features(i, vec![], vec![(0, i)]);
         msg.meta.timestamp =
             chrono::DateTime::from_timestamp_millis(base_time + (i as i64 * 1000)).unwrap();
         storage.store_message(&msg).await.unwrap();
@@ -809,7 +808,7 @@ async fn test_timestamp_index_ordering() {
 
     // Create messages with random timestamps to test ordering
     let base_time = Utc::now().timestamp_millis();
-    let timestamps = vec![
+    let timestamps = [
         base_time + 5000,
         base_time + 1000,
         base_time + 9000,
@@ -854,7 +853,7 @@ async fn test_empty_range_queries() {
 
     // Store a few messages
     for i in 0..3 {
-        let mut msg = create_test_message_with_features(i, vec![], vec![(0, i as u64)]);
+        let mut msg = create_test_message_with_features(i, vec![], vec![(0, i)]);
         msg.meta.timestamp =
             chrono::DateTime::from_timestamp_millis(base_time + (i as i64 * 1000)).unwrap();
         storage.store_message(&msg).await.unwrap();
@@ -893,7 +892,7 @@ async fn test_large_range_query_performance() {
 
     // Store 1000 messages
     for i in 0..1000 {
-        let mut msg = create_test_message_with_features(i, vec![], vec![(0, i as u64)]);
+        let mut msg = create_test_message_with_features(i, vec![], vec![(0, i)]);
         msg.meta.timestamp =
             chrono::DateTime::from_timestamp_millis(base_time + (i as i64 * 100)).unwrap();
         storage.store_message(&msg).await.unwrap();
@@ -943,7 +942,7 @@ async fn test_pagination_with_cursor() {
 
     // Store 15 messages
     for i in 0..15 {
-        let mut msg = create_test_message_with_features(i, vec![], vec![(0, i as u64)]);
+        let mut msg = create_test_message_with_features(i, vec![], vec![(0, i)]);
         msg.meta.timestamp =
             chrono::DateTime::from_timestamp_millis(base_time + (i as i64 * 1000)).unwrap();
         storage.store_message(&msg).await.unwrap();

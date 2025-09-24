@@ -38,7 +38,7 @@ fn test_message_id_computation() {
         parents.clone(),
         features.clone(),
         meta.clone(),
-        proposer_pk.clone(),
+        proposer_pk,
         b"different".to_vec(),
     );
     let id3 = msg3.id;
@@ -62,7 +62,7 @@ fn test_message_id_edge_cases() {
         vec![],
         features.clone(),
         meta.clone(),
-        proposer_pk.clone(),
+        proposer_pk,
         b"".to_vec(),
     );
     let id1 = msg1.id;
@@ -74,7 +74,7 @@ fn test_message_id_edge_cases() {
         vec![],
         features.clone(),
         meta.clone(),
-        proposer_pk.clone(),
+        proposer_pk,
         large_payload,
     );
     let id2 = msg2.id;
@@ -232,7 +232,7 @@ fn test_message_parent_limits() {
         vec![],
         features.clone(),
         meta.clone(),
-        proposer_pk.clone(),
+        proposer_pk,
         b"genesis".to_vec(),
     );
     let id_no_parents = msg_no_parents.id;
@@ -246,7 +246,7 @@ fn test_message_parent_limits() {
         many_parents,
         features.clone(),
         meta.clone(),
-        proposer_pk.clone(),
+        proposer_pk,
         b"child".to_vec(),
     );
     let id_many_parents = msg_many_parents.id;
@@ -259,7 +259,7 @@ fn test_message_parent_limits() {
         parents_ordered,
         features.clone(),
         meta.clone(),
-        proposer_pk.clone(),
+        proposer_pk,
         b"test".to_vec(),
     );
     let id_ordered = msg_ordered.id;
@@ -283,7 +283,7 @@ fn test_message_clone_and_equality() {
         vec![MessageId::new(b"parent")],
         AdicFeatures::new(vec![]),
         meta,
-        proposer_pk.clone(),
+        proposer_pk,
         b"content".to_vec(),
     );
     msg1.signature = signature;

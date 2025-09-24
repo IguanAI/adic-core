@@ -35,18 +35,18 @@ fn test_time_epoch_encoder() {
 
     // Test various timestamps
     let now = chrono::Utc::now().timestamp();
-    let qp1 = encoder.encode(&now.to_string().as_bytes(), 3, 10);
+    let qp1 = encoder.encode(now.to_string().as_bytes(), 3, 10);
     assert_eq!(qp1.p, 3);
     assert!(!qp1.digits.is_empty());
 
     // Same epoch should produce same features
     let close_time = (now + 1800).to_string(); // 30 minutes later
-    let qp2 = encoder.encode(close_time.as_bytes(), 3, 10);
+    let _qp2 = encoder.encode(close_time.as_bytes(), 3, 10);
     // These might be in same epoch depending on alignment
 
     // Different epoch should produce different features
     let later_time = (now + 7200).to_string(); // 2 hours later
-    let qp3 = encoder.encode(later_time.as_bytes(), 3, 10);
+    let _qp3 = encoder.encode(later_time.as_bytes(), 3, 10);
     // This should definitely be a different epoch
 
     // Test edge cases

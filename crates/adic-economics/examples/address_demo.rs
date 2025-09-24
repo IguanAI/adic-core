@@ -11,7 +11,7 @@ fn main() {
     let address = AccountAddress::from_public_key(&pubkey);
 
     println!("Example 1: From Public Key");
-    println!("  Public key (hex): {}", hex::encode(&pubkey_bytes));
+    println!("  Public key (hex): {}", hex::encode(pubkey_bytes));
     println!("  Address (bech32): {}", address.to_bech32().unwrap());
     println!("  Address (hex):    0x{}", hex::encode(address.as_bytes()));
     println!();

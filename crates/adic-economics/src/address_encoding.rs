@@ -128,8 +128,8 @@ mod tests {
         // Test various byte patterns
         let test_cases = vec![[0x00; 32], [0xFF; 32], [0xAA; 32], {
             let mut bytes = [0u8; 32];
-            for i in 0..32 {
-                bytes[i] = i as u8;
+            for (i, byte) in bytes.iter_mut().enumerate() {
+                *byte = i as u8;
             }
             bytes
         }];
