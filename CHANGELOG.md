@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2024-12-24
+
+### Fixed
+- **Critical P2P Handshake Bug**: Fixed discovery protocol not performing handshakes after QUIC connection
+  - Nodes were connecting but immediately dropping due to missing handshake
+  - Added `perform_bootstrap_handshake` method to complete the handshake flow
+  - Connections now properly maintained in connection pool
+
+### Added
+- **Enhanced P2P Logging**: Structured logging with detailed connection metrics
+  - Connection state tracking with before/after values
+  - Timing measurements for connections and handshakes (duration_ms)
+  - Visual indicators (emojis) for quick log scanning
+  - Error context with error types for better debugging
+  - Structured fields following best practices (remote_addr, peer_id, etc.)
+
+### Changed
+- **Improved Connection Flow**: Discovery protocol now properly initiates handshakes
+  - QUIC connection establishment followed by immediate handshake
+  - Peer ID exchange and validation
+  - Proper connection pool management
+
 ## [0.1.5] - 2024-12-23
 
 ### Added

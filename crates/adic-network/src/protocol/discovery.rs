@@ -71,15 +71,17 @@ pub struct PeerInfo {
 /// Peer discovery protocol implementation
 pub struct DiscoveryProtocol {
     config: DiscoveryConfig,
+    local_peer_id: PeerId,
     known_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     active_discoveries: Arc<RwLock<HashSet<PeerId>>>,
     last_discovery: Arc<RwLock<Instant>>,
 }
 
 impl DiscoveryProtocol {
-    pub fn new(config: DiscoveryConfig) -> Self {
+    pub fn new(config: DiscoveryConfig, local_peer_id: PeerId) -> Self {
         Self {
             config,
+            local_peer_id,
             known_peers: Arc::new(RwLock::new(HashMap::new())),
             active_discoveries: Arc::new(RwLock::new(HashSet::new())),
             last_discovery: Arc::new(RwLock::new(Instant::now())),
@@ -181,18 +183,86 @@ impl DiscoveryProtocol {
         );
 
         for addr in &all_bootstrap_nodes {
-            debug!("Querying bootstrap node: {}", addr);
+            // Skip if this is our own address
+            if self.is_self_address(addr) {
+                debug!(
+                    local_peer = %self.local_peer_id,
+                    bootstrap_addr = %addr,
+                    "🔄 Skipping self-connection"
+                );
+                continue;
+            }
+
+            debug!(
+                bootstrap_addr = %addr,
+                "🔍 Attempting bootstrap connection"
+            );
 
             // Parse the multiaddr to get the socket address
             if let Some(socket_addr) = self.parse_multiaddr_to_socket(addr) {
+                let connect_start = std::time::Instant::now();
+
                 match transport.connect_quic(socket_addr).await {
-                    Ok(_connection) => {
-                        info!("Connected to bootstrap node: {}", addr);
-                        // Connection established, peer discovery will happen through normal handshake
-                        // The bootstrap node should be added to our peer list automatically
+                    Ok(connection) => {
+                        let connect_duration = connect_start.elapsed();
+
+                        info!(
+                            bootstrap_addr = %addr,
+                            socket_addr = %socket_addr,
+                            connect_duration_ms = connect_duration.as_millis(),
+                            "🤝 Connected to bootstrap node"
+                        );
+
+                        // Perform a simple handshake by opening a stream
+                        // This mimics what the network engine's perform_handshake does
+                        match self.perform_bootstrap_handshake(&connection, addr).await {
+                            Ok(remote_peer_id) => {
+                                info!(
+                                    bootstrap_addr = %addr,
+                                    remote_peer_id = %remote_peer_id,
+                                    "✅ Bootstrap handshake successful"
+                                );
+
+                                // Add to connection pool
+                                if let Err(e) = transport
+                                    .connection_pool()
+                                    .add_connection(remote_peer_id, connection)
+                                    .await
+                                {
+                                    warn!(
+                                        bootstrap_addr = %addr,
+                                        peer_id = %remote_peer_id,
+                                        error = %e,
+                                        "Failed to add bootstrap connection to pool"
+                                    );
+                                } else {
+                                    info!(
+                                        bootstrap_addr = %addr,
+                                        peer_id = %remote_peer_id,
+                                        "Bootstrap connection added to pool"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    bootstrap_addr = %addr,
+                                    error = %e,
+                                    "❌ Bootstrap handshake failed"
+                                );
+                                connection.close(0u32.into(), b"handshake_failed");
+                            }
+                        }
                     }
                     Err(e) => {
-                        warn!("Failed to connect to bootstrap node {}: {}", addr, e);
+                        let connect_duration = connect_start.elapsed();
+
+                        warn!(
+                            bootstrap_addr = %addr,
+                            socket_addr = %socket_addr,
+                            error = %e,
+                            connect_duration_ms = connect_duration.as_millis(),
+                            "⚠️ Failed to connect to bootstrap"
+                        );
                     }
                 }
             }
@@ -229,19 +299,48 @@ impl DiscoveryProtocol {
         }
 
         for addr in &all_bootstrap_nodes {
-            debug!("Querying bootstrap node: {}", addr);
+            // Skip if this is our own address
+            if self.is_self_address(addr) {
+                debug!(
+                    local_peer = %self.local_peer_id,
+                    bootstrap_addr = %addr,
+                    "🔄 Skipping self-connection"
+                );
+                continue;
+            }
+
+            debug!(
+                bootstrap_addr = %addr,
+                "🔍 Attempting bootstrap connection"
+            );
 
             // Parse the multiaddr to get the socket address
             if let Some(socket_addr) = self.parse_multiaddr_to_socket(addr) {
+                let connect_start = std::time::Instant::now();
                 let transport_guard = transport.read().await;
                 match transport_guard.connect_quic(socket_addr).await {
                     Ok(_connection) => {
-                        info!("Connected to bootstrap node: {}", addr);
+                        let connect_duration = connect_start.elapsed();
+
+                        info!(
+                            bootstrap_addr = %addr,
+                            socket_addr = %socket_addr,
+                            connect_duration_ms = connect_duration.as_millis(),
+                            "🤝 Connected to bootstrap node"
+                        );
                         // Connection established, peer discovery will happen through normal handshake
                         // The bootstrap node should be added to our peer list automatically
                     }
                     Err(e) => {
-                        warn!("Failed to connect to bootstrap node {}: {}", addr, e);
+                        let connect_duration = connect_start.elapsed();
+
+                        warn!(
+                            bootstrap_addr = %addr,
+                            socket_addr = %socket_addr,
+                            error = %e,
+                            connect_duration_ms = connect_duration.as_millis(),
+                            "⚠️ Failed to connect to bootstrap"
+                        );
                     }
                 }
             } else {
@@ -472,6 +571,116 @@ impl DiscoveryProtocol {
         known_peers.len() < self.config.min_peers
             || last_discovery.elapsed() > self.config.discovery_interval
     }
+
+    /// Check if a multiaddr belongs to our local peer
+    fn is_self_address(&self, addr: &Multiaddr) -> bool {
+        use libp2p::multiaddr::Protocol;
+
+        for protocol in addr.iter() {
+            if let Protocol::P2p(peer_id) = protocol {
+                return peer_id == self.local_peer_id;
+            }
+        }
+        false
+    }
+
+    /// Extract PeerId from a multiaddr
+    fn extract_peer_id_from_multiaddr(&self, addr: &Multiaddr) -> Option<PeerId> {
+        use libp2p::multiaddr::Protocol;
+
+        for protocol in addr.iter() {
+            if let Protocol::P2p(peer_id) = protocol {
+                return Some(peer_id);
+            }
+        }
+        None
+    }
+
+    /// Perform handshake with bootstrap node
+    async fn perform_bootstrap_handshake(
+        &self,
+        connection: &quinn::Connection,
+        addr: &Multiaddr,
+    ) -> Result<PeerId> {
+        use crate::transport::NetworkMessage;
+
+        // As initiator, send our handshake first
+        let mut stream = connection.open_uni().await.map_err(|e| {
+            adic_types::error::AdicError::Network(format!(
+                "Failed to open handshake stream: {}",
+                e
+            ))
+        })?;
+
+        let msg = NetworkMessage::Handshake {
+            peer_id: self.local_peer_id.to_bytes(),
+            version: 1,
+            listening_port: Some(9001), // Default QUIC port, should be configurable
+        };
+
+        let data = serde_json::to_vec(&msg).map_err(|e| {
+            adic_types::error::AdicError::Serialization(format!(
+                "Failed to serialize handshake: {}",
+                e
+            ))
+        })?;
+
+        stream.write_all(&data).await.map_err(|e| {
+            adic_types::error::AdicError::Network(format!("Failed to send handshake: {}", e))
+        })?;
+
+        stream.finish().map_err(|e| {
+            adic_types::error::AdicError::Network(format!(
+                "Failed to finish handshake stream: {}",
+                e
+            ))
+        })?;
+
+        // Wait for response
+        let mut stream = connection.accept_uni().await.map_err(|e| {
+            adic_types::error::AdicError::Network(format!(
+                "Failed to accept handshake response: {}",
+                e
+            ))
+        })?;
+
+        let mut buffer = Vec::new();
+        let mut chunk = vec![0u8; 1024];
+        loop {
+            match stream.read(&mut chunk).await {
+                Ok(Some(n)) => buffer.extend_from_slice(&chunk[..n]),
+                Ok(None) => break,
+                Err(e) => {
+                    return Err(adic_types::error::AdicError::Network(format!(
+                        "Failed to read handshake response: {}",
+                        e
+                    )))
+                }
+            }
+        }
+
+        let response: NetworkMessage = serde_json::from_slice(&buffer).map_err(|e| {
+            adic_types::error::AdicError::Serialization(format!(
+                "Failed to deserialize handshake response: {}",
+                e
+            ))
+        })?;
+
+        match response {
+            NetworkMessage::Handshake { peer_id, .. } => {
+                let remote_peer_id = PeerId::from_bytes(&peer_id).map_err(|e| {
+                    adic_types::error::AdicError::Network(format!(
+                        "Invalid peer ID in handshake: {}",
+                        e
+                    ))
+                })?;
+                Ok(remote_peer_id)
+            }
+            _ => Err(adic_types::error::AdicError::Network(
+                "Unexpected message type in handshake response".to_string(),
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -481,7 +690,8 @@ mod tests {
     #[tokio::test]
     async fn test_discovery_protocol() {
         let config = DiscoveryConfig::default();
-        let protocol = DiscoveryProtocol::new(config);
+        let local_peer_id = PeerId::random();
+        let protocol = DiscoveryProtocol::new(config, local_peer_id);
 
         // Test adding peer
         let peer_id = PeerId::random();
@@ -506,7 +716,8 @@ mod tests {
             ..Default::default()
         };
 
-        let protocol = DiscoveryProtocol::new(config);
+        let local_peer_id = PeerId::random();
+        let protocol = DiscoveryProtocol::new(config, local_peer_id);
 
         // Should need discovery (no peers)
         assert!(protocol.needs_discovery().await);

@@ -145,7 +145,7 @@ impl NetworkEngine {
             max_peers: config.max_peers,
             ..Default::default()
         };
-        let discovery_protocol = Arc::new(DiscoveryProtocol::new(discovery_config));
+        let discovery_protocol = Arc::new(DiscoveryProtocol::new(discovery_config, peer_id));
 
         // Initialize routing
         info!("NetworkEngine::new - Initializing router");
@@ -340,11 +340,19 @@ impl NetworkEngine {
                                 match connecting.await {
                                     Ok(connection) => {
                                         let remote_addr = connection.remote_address();
-                                        debug!("Accepted QUIC connection from {}", remote_addr);
+                                        let connection_start = std::time::Instant::now();
+
+                                        info!(
+                                            remote_addr = %remote_addr,
+                                            protocol = "quic",
+                                            direction = "incoming",
+                                            "🔗 Connection accepted"
+                                        );
 
                                         // Perform handshake as responder
                                         match net.perform_handshake(&connection, false).await {
                                             Ok(remote_peer_id) => {
+                                                let handshake_duration = connection_start.elapsed();
                                                 // Add to connection pool
                                                 let transport = net.transport.read().await;
                                                 if let Err(e) = transport
@@ -367,8 +375,11 @@ impl NetworkEngine {
                                                     )
                                                     .await;
                                                     info!(
-                                                        "Accepted connection from peer {}",
-                                                        remote_peer_id
+                                                        local_peer = %net.peer_id,
+                                                        remote_peer = %remote_peer_id,
+                                                        remote_addr = %remote_addr,
+                                                        handshake_duration_ms = handshake_duration.as_millis(),
+                                                        "✅ Handshake succeeded"
                                                     );
 
                                                     // Trigger message sync with the newly connected peer
@@ -394,15 +405,26 @@ impl NetworkEngine {
                                                 }
                                             }
                                             Err(e) => {
+                                                let handshake_duration = connection_start.elapsed();
+
                                                 warn!(
-                                                    "Handshake failed with {}: {}",
-                                                    remote_addr, e
+                                                    remote_addr = %remote_addr,
+                                                    error = %e,
+                                                    handshake_duration_ms = handshake_duration.as_millis(),
+                                                    direction = "incoming",
+                                                    "❌ Handshake failed"
                                                 );
+                                                // Close the connection
+                                                connection.close(0u32.into(), b"handshake_failed");
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        error!("Failed to accept connection: {}", e);
+                                        error!(
+                                            error = %e,
+                                            error_type = std::any::type_name_of_val(&e),
+                                            "❌ Failed to accept connection"
+                                        );
                                     }
                                 }
                             });

@@ -72,6 +72,8 @@ pub struct TransportConfig {
     pub initial_mtu: u16,
     pub use_production_tls: bool,
     pub ca_cert_path: Option<String>,
+    pub node_cert_path: Option<String>,
+    pub node_key_path: Option<String>,
 }
 
 impl Default for TransportConfig {
@@ -87,6 +89,8 @@ impl Default for TransportConfig {
             initial_mtu: 1200,
             use_production_tls: true, // SECURITY: Default to production TLS
             ca_cert_path: None,
+            node_cert_path: None,
+            node_key_path: None,
         }
     }
 }
@@ -406,18 +410,59 @@ impl HybridTransport {
         debug!("build_server_config - Installing crypto provider");
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        debug!("build_server_config - Generating self-signed certificate");
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-            .map_err(|e| TransportError::InitializationFailed(e.to_string()))?;
-        debug!("build_server_config - Certificate generated");
+        // Load certificates - use provided paths or fall back to self-signed
+        let use_custom_certs = self.config.node_cert_path.is_some()
+            && self.config.node_key_path.is_some()
+            && self.config.node_cert_path.as_ref().map(|p| std::path::Path::new(p).exists()).unwrap_or(false)
+            && self.config.node_key_path.as_ref().map(|p| std::path::Path::new(p).exists()).unwrap_or(false);
 
-        let cert_der = cert.cert.der().to_vec();
-        let priv_key_der = cert.key_pair.serialize_der();
+        let (cert_chain, priv_key) = if use_custom_certs {
+            let cert_path = self.config.node_cert_path.as_ref().unwrap();
+            let key_path = self.config.node_key_path.as_ref().unwrap();
+            debug!("build_server_config - Loading node certificate from {}", cert_path);
 
-        let priv_key = rustls::pki_types::PrivateKeyDer::try_from(priv_key_der).map_err(|e| {
-            TransportError::InitializationFailed(format!("Invalid private key: {:?}", e))
-        })?;
-        let cert_chain = vec![rustls::pki_types::CertificateDer::from(cert_der)];
+            // Load certificate
+            let cert_file = std::fs::read(cert_path).map_err(|e| {
+                TransportError::InitializationFailed(format!("Failed to read cert file: {}", e))
+            })?;
+            let certs: Vec<rustls::pki_types::CertificateDer> = rustls_pemfile::certs(&mut cert_file.as_slice())
+                .filter_map(|cert| cert.ok())
+                .collect();
+            if certs.is_empty() {
+                return Err(TransportError::InitializationFailed(
+                    "No valid certificates found in file".into(),
+                ).into());
+            }
+
+            // Load private key
+            let key_file = std::fs::read(key_path).map_err(|e| {
+                TransportError::InitializationFailed(format!("Failed to read key file: {}", e))
+            })?;
+            let key = rustls_pemfile::private_key(&mut key_file.as_slice())
+                .map_err(|e| {
+                    TransportError::InitializationFailed(format!("Failed to parse key: {}", e))
+                })?
+                .ok_or_else(|| {
+                    TransportError::InitializationFailed("No private key found in file".into())
+                })?;
+
+            debug!("build_server_config - Loaded {} certificates", certs.len());
+            (certs, key)
+        } else {
+            debug!("build_server_config - Generating self-signed certificate");
+            let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+                .map_err(|e| TransportError::InitializationFailed(e.to_string()))?;
+            debug!("build_server_config - Certificate generated");
+
+            let cert_der = cert.cert.der().to_vec();
+            let priv_key_der = cert.key_pair.serialize_der();
+
+            let priv_key = rustls::pki_types::PrivateKeyDer::try_from(priv_key_der).map_err(|e| {
+                TransportError::InitializationFailed(format!("Invalid private key: {:?}", e))
+            })?;
+            let cert_chain = vec![rustls::pki_types::CertificateDer::from(cert_der)];
+            (cert_chain, priv_key)
+        };
 
         debug!("build_server_config - Creating server config with certificate");
         let server_config = ServerConfig::with_single_cert(cert_chain, priv_key)
@@ -428,10 +473,19 @@ impl HybridTransport {
     }
 
     pub async fn connect_quic(&self, addr: SocketAddr) -> Result<Connection> {
+        let connect_start = std::time::Instant::now();
+
         let endpoint = self
             .quic_endpoint
             .as_ref()
             .ok_or_else(|| TransportError::InitializationFailed("QUIC not initialized".into()))?;
+
+        debug!(
+            target_addr = %addr,
+            tls_enabled = self.config.use_production_tls,
+            has_ca_cert = self.config.ca_cert_path.is_some(),
+            "🔌 Initiating QUIC connection"
+        );
 
         let client_config = self.build_client_config()?;
         let connecting = endpoint
@@ -440,7 +494,16 @@ impl HybridTransport {
 
         let connection = connecting.await.map_err(TransportError::QuicError)?;
 
-        debug!("QUIC connection established to {}", addr);
+        let connect_duration = connect_start.elapsed();
+
+        info!(
+            target_addr = %addr,
+            connect_duration_ms = connect_duration.as_millis(),
+            connection_id = ?connection.stable_id(),
+            rtt_ms = connection.rtt().as_millis(),
+            "✅ QUIC connection established"
+        );
+
         Ok(connection)
     }
 
@@ -452,26 +515,36 @@ impl HybridTransport {
             // Production: Use proper CA verification
             let mut roots = rustls::RootCertStore::empty();
 
+            let ca_path_exists = self.config.ca_cert_path.as_ref()
+                .map(|p| std::path::Path::new(p).exists())
+                .unwrap_or(false);
+
             if let Some(ca_path) = &self.config.ca_cert_path {
-                // Load custom CA certificate
-                let ca_file = std::fs::read(ca_path).map_err(|e| {
-                    TransportError::InitializationFailed(format!("Failed to read CA cert: {}", e))
-                })?;
-                let ca_certs: Vec<_> = rustls_pemfile::certs(&mut ca_file.as_slice())
-                    .collect::<std::result::Result<Vec<_>, _>>()
-                    .map_err(|e| {
-                        TransportError::InitializationFailed(format!(
-                            "Failed to parse CA cert: {}",
-                            e
-                        ))
+                if ca_path_exists {
+                    // Load custom CA certificate
+                    let ca_file = std::fs::read(ca_path).map_err(|e| {
+                        TransportError::InitializationFailed(format!("Failed to read CA cert: {}", e))
                     })?;
-                for cert in ca_certs {
-                    roots.add(cert).map_err(|e| {
-                        TransportError::InitializationFailed(format!(
-                            "Failed to add CA cert: {}",
-                            e
-                        ))
-                    })?;
+                    let ca_certs: Vec<rustls::pki_types::CertificateDer> = rustls_pemfile::certs(&mut ca_file.as_slice())
+                        .filter_map(|cert| cert.ok())
+                        .collect();
+                    if ca_certs.is_empty() {
+                        return Err(TransportError::InitializationFailed(
+                            "No valid CA certificates found in file".into(),
+                        ).into());
+                    }
+                    for cert in ca_certs {
+                        roots.add(cert).map_err(|e| {
+                            TransportError::InitializationFailed(format!(
+                                "Failed to add CA cert: {}",
+                                e
+                            ))
+                        })?;
+                    }
+                } else {
+                    warn!("CA cert path configured but file does not exist: {}", ca_path);
+                    // Fall back to system roots
+                    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
                 }
             } else {
                 // Use system root certificates
