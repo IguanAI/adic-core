@@ -2,6 +2,7 @@
 
 pub mod codecs;
 pub mod deposit_verifier;
+pub mod dns_version;
 pub mod metrics;
 pub mod peer;
 pub mod pipeline;
@@ -22,6 +23,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::time::timeout;
 
 use libp2p::{identity::Keypair, Multiaddr, PeerId};
 use tokio::sync::RwLock;
@@ -38,7 +40,7 @@ use crate::peer::PeerManager;
 use crate::pipeline::{MessagePipeline, PipelineConfig};
 use crate::protocol::{
     ConsensusProtocol, DiscoveryConfig, DiscoveryProtocol, GossipProtocol, StreamProtocol,
-    SyncProtocol,
+    SyncProtocol, UpdateProtocol, UpdateProtocolConfig,
 };
 use crate::resilience::NetworkResilience;
 use crate::routing::HypertangleRouter;
@@ -55,6 +57,7 @@ pub struct NetworkConfig {
     pub bootstrap_peers: Vec<Multiaddr>,
     pub listen_addresses: Vec<Multiaddr>,
     pub enable_metrics: bool,
+    pub data_dir: std::path::PathBuf,
 }
 
 impl Default for NetworkConfig {
@@ -66,6 +69,7 @@ impl Default for NetworkConfig {
             bootstrap_peers: vec![],
             listen_addresses: vec!["/ip4/0.0.0.0/tcp/9000".parse().unwrap()],
             enable_metrics: true,
+            data_dir: std::path::PathBuf::from("./data"),
         }
     }
 }
@@ -85,6 +89,7 @@ pub struct NetworkEngine {
     consensus_protocol: Arc<ConsensusProtocol>,
     stream_protocol: Arc<StreamProtocol>,
     discovery_protocol: Arc<DiscoveryProtocol>,
+    update_protocol: Arc<UpdateProtocol>,
     router: Arc<HypertangleRouter>,
     pipeline: Arc<MessagePipeline>,
     state_sync: Arc<StateSync>,
@@ -102,20 +107,20 @@ impl NetworkEngine {
         consensus: Arc<ConsensusEngine>,
         finality: Arc<FinalityEngine>,
     ) -> Result<Self> {
-        info!("NetworkEngine::new - Starting initialization");
         let peer_id = PeerId::from(keypair.public());
-
-        info!("Initializing network engine with peer ID: {}", peer_id);
+        info!(
+            peer_id = %peer_id,
+            "🚀 Network engine initialization started"
+        );
 
         // Initialize transport
-        info!("NetworkEngine::new - Initializing transport");
+        debug!("Initializing transport layer");
         let mut transport = HybridTransport::new(config.transport.clone(), keypair.clone());
-        info!("NetworkEngine::new - Calling transport.initialize()");
         transport.initialize().await?;
-        info!("NetworkEngine::new - Transport initialized successfully");
+        debug!("Transport layer initialized");
 
         // Initialize peer manager with real deposit verifier
-        info!("NetworkEngine::new - Creating peer manager");
+        debug!("Creating peer manager");
         let deposit_manager = Arc::new(adic_consensus::DepositManager::new(
             adic_consensus::DEFAULT_DEPOSIT_AMOUNT,
         ));
@@ -126,37 +131,47 @@ impl NetworkEngine {
             config.max_peers,
             deposit_verifier,
         ));
-        info!("NetworkEngine::new - Peer manager created");
+        debug!(
+            max_peers = config.max_peers,
+            "Peer manager created"
+        );
 
         // Initialize protocols
-        info!("NetworkEngine::new - Initializing protocols");
+        debug!("Initializing network protocols");
         let gossip = Arc::new(GossipProtocol::new(&keypair, Default::default())?);
 
         let sync_protocol = Arc::new(SyncProtocol::new(Default::default()));
         let consensus_protocol = Arc::new(ConsensusProtocol::new(Default::default()));
         let stream_protocol = Arc::new(StreamProtocol::new(Default::default()));
-        info!("NetworkEngine::new - Protocols initialized");
+        let (update_protocol, _update_events) = UpdateProtocol::new(
+            UpdateProtocolConfig::default(),
+            config.data_dir.clone(),
+            peer_id,
+        ).map_err(|e| AdicError::Network(format!("Failed to initialize update protocol: {}", e)))?;
+        let update_protocol = Arc::new(update_protocol);
+        debug!("Network protocols initialized");
 
         // Initialize discovery protocol
-        info!("NetworkEngine::new - Initializing discovery protocol");
+        debug!("Initializing discovery protocol");
         let discovery_config = DiscoveryConfig {
             bootstrap_nodes: config.bootstrap_peers.clone(),
             min_peers: config.max_peers / 4, // Aim for at least 25% of max
             max_peers: config.max_peers,
             ..Default::default()
         };
-        let discovery_protocol = Arc::new(DiscoveryProtocol::new(discovery_config, peer_id));
+        let mut discovery_protocol = DiscoveryProtocol::new(discovery_config, peer_id);
+        discovery_protocol.set_peer_manager(Arc::clone(&peer_manager));
+        let discovery_protocol = Arc::new(discovery_protocol);
 
         // Initialize routing
-        info!("NetworkEngine::new - Initializing router");
+        debug!("Initializing hypertangle router");
         let router = Arc::new(HypertangleRouter::new(peer_id));
 
         // Initialize pipeline
-        info!("NetworkEngine::new - Initializing message pipeline");
+        debug!("Initializing message pipeline");
         let pipeline = Arc::new(MessagePipeline::new(config.pipeline.clone()));
-        info!("NetworkEngine::new - Starting pipeline cleanup task");
         pipeline.start_cleanup_task().await;
-        info!("NetworkEngine::new - Pipeline cleanup task started");
+        debug!("Pipeline cleanup task started");
 
         // Initialize state sync
         let state_sync = Arc::new(StateSync::new(
@@ -179,12 +194,19 @@ impl NetworkEngine {
         };
 
         // Subscribe to default topics
-        info!("NetworkEngine::new - Subscribing to default topics");
+        debug!("Subscribing to default topics");
         gossip.subscribe("adic/messages").await?;
         gossip.subscribe("adic/tips").await?;
         gossip.subscribe("adic/finality").await?;
         gossip.subscribe("adic/conflicts").await?;
-        info!("NetworkEngine::new - Topic subscriptions complete");
+        debug!(
+            topics = ?["adic/messages", "adic/tips", "adic/finality", "adic/conflicts"],
+            "Topic subscriptions complete"
+        );
+
+        // Capture values before moving config
+        let max_peers = config.max_peers;
+        let bootstrap_peers_count = config.bootstrap_peers.len();
 
         let result = Ok(Self {
             config,
@@ -200,6 +222,7 @@ impl NetworkEngine {
             consensus_protocol,
             stream_protocol,
             discovery_protocol,
+            update_protocol,
             router,
             pipeline,
             state_sync,
@@ -209,7 +232,12 @@ impl NetworkEngine {
             shutdown_signal: Arc::new(AtomicBool::new(false)),
         });
 
-        info!("NetworkEngine::new - Complete! Returning network engine");
+        info!(
+            peer_id = %peer_id,
+            max_peers = max_peers,
+            bootstrap_peers = bootstrap_peers_count,
+            "🌐 Network engine initialized"
+        );
         result
     }
 
@@ -224,11 +252,18 @@ impl NetworkEngine {
         // Start accepting incoming connections
         info!(transport = "hybrid", "⏳ Starting accept loop");
         self.start_accept_loop().await;
+
+        // Start update protocol background tasks
+        info!("Starting update protocol background tasks");
+        self.update_protocol.clone().start_background_tasks();
         info!(transport = "hybrid", "✅ Accept loop started");
 
         // Start listening on configured addresses
         for addr in &self.config.listen_addresses {
-            info!("Listening on {}", addr);
+            info!(
+                address = %addr,
+                "Listening on address"
+            );
         }
 
         // Get actual listening ports for logging
@@ -249,7 +284,11 @@ impl NetworkEngine {
                 .query_bootstrap_nodes_with_arc(transport_clone)
                 .await
             {
-                warn!("Failed to query bootstrap nodes: {}", e);
+                warn!(
+                    error = %e,
+                    bootstrap_count = self.config.bootstrap_peers.len(),
+                    "⚠️ Failed to query bootstrap nodes"
+                );
             } else {
                 info!(
                     bootstrap_count = self.config.bootstrap_peers.len(),
@@ -259,13 +298,13 @@ impl NetworkEngine {
         }
 
         // Start background tasks
-        info!("Starting gossip handler...");
+        debug!("Starting gossip handler");
         self.start_gossip_handler().await;
-        info!("Starting sync handler...");
+        debug!("Starting sync handler");
         self.start_sync_handler().await;
-        info!("Starting consensus handler...");
+        debug!("Starting consensus handler");
         self.start_consensus_handler().await;
-        info!("Starting maintenance tasks...");
+        debug!("Starting maintenance tasks");
         self.start_maintenance_tasks().await;
 
         info!(
@@ -305,9 +344,8 @@ impl NetworkEngine {
     }
 
     async fn start_accept_loop(&self) {
-        info!("start_accept_loop - Called");
+        debug!("Starting connection accept loop");
         let network = self.clone();
-        info!("start_accept_loop - Network cloned");
 
         tokio::spawn(async move {
             info!(
@@ -317,7 +355,10 @@ impl NetworkEngine {
             loop {
                 // Check shutdown signal first
                 if network.shutdown_signal.load(Ordering::Relaxed) {
-                    info!("Accept loop shutting down for peer {}", network.peer_id);
+                    info!(
+                        peer_id = %network.peer_id,
+                        "Accept loop shutting down"
+                    );
                     break;
                 }
 
@@ -368,6 +409,30 @@ impl NetworkEngine {
                                                         e
                                                     );
                                                 } else {
+                                                    // Add peer to the peer manager
+                                                    use crate::peer::{PeerInfo, ConnectionState, MessageStats};
+                                                    use adic_types::PublicKey;
+                                                    let peer_info = PeerInfo {
+                                                        peer_id: remote_peer_id,
+                                                        addresses: vec![],
+                                                        public_key: PublicKey::from_bytes([0; 32]), // Will be updated later
+                                                        reputation_score: 50.0,
+                                                        latency_ms: None,
+                                                        bandwidth_mbps: None,
+                                                        last_seen: std::time::Instant::now(),
+                                                        connection_state: ConnectionState::Connected,
+                                                        message_stats: MessageStats::default(),
+                                                        padic_location: None,
+                                                    };
+
+                                                    if let Err(e) = net.peer_manager.add_peer(peer_info).await {
+                                                        debug!(
+                                                            peer_id = %remote_peer_id,
+                                                            error = %e,
+                                                            "Failed to add peer to peer manager"
+                                                        );
+                                                    }
+
                                                     // Start receiving messages
                                                     net.start_quic_receiver(
                                                         connection,
@@ -400,7 +465,11 @@ impl NetworkEngine {
                                                     // Send the actual sync request
                                                     if let Err(e) = net.send_sync_request(remote_peer_id,
                                                         crate::protocol::sync::SyncRequest::GetFrontier).await {
-                                                        warn!("Failed to send sync request to peer {}: {}", remote_peer_id, e);
+                                                        warn!(
+                                                            peer_id = %remote_peer_id,
+                                                            error = %e,
+                                                            "Failed to send sync request"
+                                                        );
                                                     }
                                                 }
                                             }
@@ -464,7 +533,10 @@ impl NetworkEngine {
             .add_connection(peer_id, connection)
             .await?;
 
-        info!("Connected to peer {}", peer_id);
+        info!(
+            peer_id = %peer_id,
+            "🤝 Peer connected"
+        );
         Ok(())
     }
 
@@ -482,19 +554,54 @@ impl NetworkEngine {
             .add_outgoing_connection(remote_peer_id, connection.clone())
             .await?;
 
+        // Add peer to the peer manager
+        use crate::peer::{PeerInfo, ConnectionState, MessageStats};
+        use adic_types::PublicKey;
+        let peer_info = PeerInfo {
+            peer_id: remote_peer_id,
+            addresses: vec![],
+            public_key: PublicKey::from_bytes([0; 32]), // Will be updated later
+            reputation_score: 50.0,
+            latency_ms: None,
+            bandwidth_mbps: None,
+            last_seen: std::time::Instant::now(),
+            connection_state: ConnectionState::Connected,
+            message_stats: MessageStats::default(),
+            padic_location: None,
+        };
+
+        if let Err(e) = self.peer_manager.add_peer(peer_info).await {
+            debug!(
+                peer_id = %remote_peer_id,
+                error = %e,
+                "Failed to add peer to peer manager"
+            );
+        }
+
         // Start receiving messages from this peer
         self.start_quic_receiver(connection, remote_peer_id).await;
 
-        info!("Connected to peer {} at {}", remote_peer_id, addr);
+        info!(
+            peer_id = %remote_peer_id,
+            address = %addr,
+            "🤝 Peer connected"
+        );
 
         // Trigger message sync with the newly connected peer
-        info!("Starting incremental sync with peer {}", remote_peer_id);
+        debug!(
+            peer_id = %remote_peer_id,
+            "Starting incremental sync"
+        );
         if let Err(e) = self
             .sync_protocol
             .start_incremental_sync(remote_peer_id)
             .await
         {
-            warn!("Failed to start sync with peer {}: {}", remote_peer_id, e);
+            warn!(
+                peer_id = %remote_peer_id,
+                error = %e,
+                "Failed to start sync with peer"
+            );
         }
         // Send the actual sync request
         if let Err(e) = self
@@ -578,7 +685,13 @@ impl NetworkEngine {
                     ..
                 } => {
                     if let Some(port) = listening_port {
-                        info!("Peer listening on port {}", port);
+                        if let Ok(pid) = PeerId::from_bytes(&peer_id) {
+                            debug!(
+                                peer = %pid,
+                                port = port,
+                                "Peer listening port discovered"
+                            );
+                        }
                     }
                     PeerId::from_bytes(&peer_id).map_err(|e| {
                         AdicError::Network(format!("Invalid peer ID in handshake: {}", e))
@@ -642,7 +755,13 @@ impl NetworkEngine {
                     ..
                 } => {
                     if let Some(port) = listening_port {
-                        info!("Peer listening on port {}", port);
+                        if let Ok(pid) = PeerId::from_bytes(&peer_id) {
+                            debug!(
+                                peer = %pid,
+                                port = port,
+                                "Peer listening port discovered"
+                            );
+                        }
                     }
                     PeerId::from_bytes(&peer_id).map_err(|e| {
                         AdicError::Network(format!("Invalid peer ID in handshake: {}", e))
@@ -718,10 +837,34 @@ impl NetworkEngine {
                     }
                     Err(quinn::ConnectionError::ApplicationClosed(_)) => {
                         info!("Connection closed by peer {}", remote_peer_id);
+                        // Update peer state to disconnected
+                        if let Err(e) = network
+                            .peer_manager
+                            .update_peer_connection_state(&remote_peer_id, crate::peer::ConnectionState::Disconnected)
+                            .await
+                        {
+                            warn!("Failed to update peer state: {}", e);
+                        }
+                        // Remove connection from pool
+                        if let Ok(transport) = network.transport.try_read() {
+                            transport.connection_pool().remove_connection(&remote_peer_id).await;
+                        }
                         break;
                     }
                     Err(e) => {
                         warn!("Error accepting stream from {}: {}", remote_peer_id, e);
+                        // Update peer state to disconnected
+                        if let Err(e) = network
+                            .peer_manager
+                            .update_peer_connection_state(&remote_peer_id, crate::peer::ConnectionState::Disconnected)
+                            .await
+                        {
+                            warn!("Failed to update peer state: {}", e);
+                        }
+                        // Remove connection from pool
+                        if let Ok(transport) = network.transport.try_read() {
+                            transport.connection_pool().remove_connection(&remote_peer_id).await;
+                        }
                         break;
                     }
                 }
@@ -917,6 +1060,13 @@ impl NetworkEngine {
                     from_peer, sync_response
                 );
                 self.handle_sync_response(sync_response, from_peer).await
+            }
+            NetworkMessage::Update(update_msg) => {
+                debug!(
+                    "Received update message from peer {}: {:?}",
+                    from_peer, update_msg
+                );
+                self.handle_update_message(update_msg, from_peer).await
             }
         }
     }
@@ -1222,6 +1372,7 @@ impl NetworkEngine {
         let transport = self.transport.clone();
         let shutdown_signal = self.shutdown_signal.clone();
         let peer_id = self.peer_id;
+        let network = self.clone();
 
         tokio::spawn(async move {
             info!("Maintenance task starting for peer {}", peer_id);
@@ -1260,6 +1411,52 @@ impl NetworkEngine {
 
                 // Cleanup stale discovered peers
                 discovery.cleanup_stale_peers().await;
+
+                // Attempt to reconnect to important disconnected peers
+                let disconnected_peers = peer_manager.get_disconnected_peers().await;
+                for (peer_id, addresses) in disconnected_peers.iter().take(3) {
+                    // Only try to reconnect to high-reputation peers
+                    if let Some(peer_info) = peer_manager.get_peer(&peer_id).await {
+                        if peer_info.reputation_score > 70.0 {
+                            info!(
+                                peer_id = %peer_id,
+                                reputation = peer_info.reputation_score,
+                                addresses = addresses.len(),
+                                "🔄 Attempting to reconnect to important peer"
+                            );
+
+                            // Try to reconnect using the first available address
+                            if let Some(addr) = addresses.first() {
+                                if let Some(socket_addr) = network.multiaddr_to_socket_addr(addr) {
+                                    match timeout(
+                                        Duration::from_secs(10),
+                                        network.connect_peer(socket_addr)
+                                    ).await {
+                                        Ok(Ok(_)) => {
+                                            info!(
+                                                peer_id = %peer_id,
+                                                "✅ Successfully reconnected to peer"
+                                            );
+                                        }
+                                        Ok(Err(e)) => {
+                                            debug!(
+                                                peer_id = %peer_id,
+                                                error = %e,
+                                                "Failed to reconnect to peer"
+                                            );
+                                        }
+                                        Err(_) => {
+                                            debug!(
+                                                peer_id = %peer_id,
+                                                "Reconnection attempt timed out"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Optimize routing
                 router.optimize_routes().await;
@@ -1492,6 +1689,11 @@ impl NetworkEngine {
         }
     }
 
+    /// Get access to the transport layer for sending messages
+    pub async fn transport(&self) -> tokio::sync::RwLockReadGuard<'_, HybridTransport> {
+        self.transport.read().await
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         // Signal all background tasks to shut down
         self.shutdown_signal.store(true, Ordering::Relaxed);
@@ -1567,8 +1769,16 @@ impl NetworkEngine {
         &self.router
     }
 
+    pub fn get_update_protocol(&self) -> Option<Arc<UpdateProtocol>> {
+        Some(self.update_protocol.clone())
+    }
+
     pub async fn get_connected_peers(&self) -> Vec<PeerId> {
         self.peer_manager.get_connected_peers().await
+    }
+
+    pub async fn get_all_peers_info(&self) -> Vec<peer::PeerInfo> {
+        self.peer_manager.get_all_peers_info().await
     }
 
     pub async fn get_network_stats(&self) -> NetworkStats {
@@ -1581,9 +1791,73 @@ impl NetworkEngine {
             bytes_received: 0,
         }
     }
+
+    fn multiaddr_to_socket_addr(&self, addr: &Multiaddr) -> Option<std::net::SocketAddr> {
+        use libp2p::multiaddr::Protocol;
+
+        let mut ip = None;
+        let mut port = None;
+
+        for proto in addr.iter() {
+            match proto {
+                Protocol::Ip4(addr) => ip = Some(std::net::IpAddr::V4(addr)),
+                Protocol::Ip6(addr) => ip = Some(std::net::IpAddr::V6(addr)),
+                Protocol::Tcp(p) | Protocol::Udp(p) => port = Some(p),
+                _ => {}
+            }
+        }
+
+        if let (Some(ip), Some(port)) = (ip, port) {
+            Some(std::net::SocketAddr::new(ip, port))
+        } else {
+            None
+        }
+    }
+
+    /// Handle update messages for P2P binary distribution
+    async fn handle_update_message(
+        &self,
+        message: crate::protocol::update::UpdateMessage,
+        from_peer: PeerId,
+    ) -> Result<()> {
+        // Process through update protocol
+        match self.update_protocol.handle_message(message.clone(), from_peer).await
+            .map_err(|e| AdicError::Network(format!("Update protocol error: {}", e)))? {
+            Some(response) => {
+                // Send response back to peer
+                let transport = self.transport.read().await;
+                transport.send_update_message(&from_peer, response).await?;
+            }
+            None => {
+                // No response needed
+            }
+        }
+        Ok(())
+    }
+
+    /// Get version information for all known peers
+    pub async fn get_peer_versions(&self) -> HashMap<String, String> {
+        // Get all peer versions from the update protocol
+        let all_versions = self.update_protocol.get_all_peer_versions().await;
+
+        // Convert PeerId to String for the result
+        let mut result = HashMap::new();
+        for (version, peer_ids) in all_versions {
+            for peer_id in peer_ids {
+                result.insert(peer_id.to_string(), version.clone());
+            }
+        }
+
+        result
+    }
+
+    /// Get current node version
+    pub fn get_current_version(&self) -> String {
+        env!("CARGO_PKG_VERSION").to_string()
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NetworkStats {
     pub peer_count: usize,
     pub connected_peers: usize,
@@ -1596,6 +1870,7 @@ pub struct NetworkStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
     #[tokio::test]
     async fn test_network_engine_creation() {
@@ -1603,5 +1878,81 @@ mod tests {
         let _config = NetworkConfig::default();
 
         // Would need mock storage, consensus, and finality engines for full test
+    }
+
+    #[tokio::test]
+    async fn test_multiaddr_to_socket_addr() {
+        use adic_consensus::ConsensusEngine;
+        use adic_finality::{FinalityConfig, FinalityEngine};
+        use adic_storage::{StorageConfig, StorageEngine};
+        use adic_types::AdicParams;
+        use tempfile::tempdir;
+
+        // Create a minimal NetworkEngine for testing
+        let params = AdicParams::default();
+        let keypair = Keypair::generate_ed25519();
+
+        let temp_dir = tempdir().unwrap();
+        let storage_config = StorageConfig {
+            backend_type: adic_storage::store::BackendType::RocksDB {
+                path: temp_dir.path().join("test").to_str().unwrap().to_string(),
+            },
+            ..Default::default()
+        };
+        let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
+        let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
+        let finality = Arc::new(FinalityEngine::new(
+            FinalityConfig::from(&params),
+            consensus.clone(),
+            storage.clone(),
+        ));
+
+        let config = NetworkConfig {
+            listen_addresses: vec!["/ip4/127.0.0.1/tcp/0".parse().unwrap()],
+            ..Default::default()
+        };
+
+        let network = NetworkEngine::new(config, keypair, storage, consensus, finality)
+            .await
+            .unwrap();
+
+        // Test IPv4 address
+        let addr_ipv4: Multiaddr = "/ip4/127.0.0.1/tcp/9000".parse().unwrap();
+        let socket_addr = network.multiaddr_to_socket_addr(&addr_ipv4);
+        assert!(socket_addr.is_some());
+        assert_eq!(
+            socket_addr.unwrap(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9000)
+        );
+
+        // Test IPv6 address
+        let addr_ipv6: Multiaddr = "/ip6/::1/tcp/9001".parse().unwrap();
+        let socket_addr = network.multiaddr_to_socket_addr(&addr_ipv6);
+        assert!(socket_addr.is_some());
+        assert_eq!(
+            socket_addr.unwrap(),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)), 9001)
+        );
+
+        // Test UDP address
+        let addr_udp: Multiaddr = "/ip4/192.168.1.1/udp/5000".parse().unwrap();
+        let socket_addr = network.multiaddr_to_socket_addr(&addr_udp);
+        assert!(socket_addr.is_some());
+        assert_eq!(
+            socket_addr.unwrap(),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 5000)
+        );
+
+        // Test invalid address (no port)
+        let addr_no_port: Multiaddr = "/ip4/127.0.0.1".parse().unwrap();
+        let socket_addr = network.multiaddr_to_socket_addr(&addr_no_port);
+        assert!(socket_addr.is_none());
+
+        // Test invalid address (no IP)
+        let addr_no_ip: Multiaddr = "/tcp/9000".parse().unwrap();
+        let socket_addr = network.multiaddr_to_socket_addr(&addr_no_ip);
+        assert!(socket_addr.is_none());
+
+        std::mem::forget(temp_dir); // Prevent cleanup during test
     }
 }

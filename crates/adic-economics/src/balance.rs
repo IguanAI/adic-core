@@ -179,7 +179,11 @@ impl BalanceManager {
 
                 // Record transaction (ignore errors to not fail the transfer)
                 if let Err(e) = self.storage.record_transaction(tx_record).await {
-                    debug!("Failed to record transaction {}: {}", tx_hash, e);
+                    debug!(
+                        tx_hash = %tx_hash,
+                        error = %e,
+                        "Failed to record transaction"
+                    );
                 }
 
                 info!(

@@ -31,6 +31,8 @@ ADIC-DAG Core is a Rust implementation of the **ADIC-DAG protocol** as specified
 - **Deterministic Finality**: K-core coverage and persistent homology stabilization
 - **Reputation-Weighted**: Non-transferable ADIC-Rep scores weight consensus
 - **Energy Descent Conflict Resolution**: Mathematically guaranteed convergence
+- **P2P Update Distribution**: Self-updating network with cryptographic verification
+- **Swarm Analytics**: Real-time collective network performance monitoring
 
 ### ✨ Protocol Features (Implementation Status)
 
@@ -57,6 +59,8 @@ This implementation provides a foundation for the ADIC-DAG protocol but contains
 - **Network Gossip**: P2P message propagation with axis-aware overlays
 - **Economics Integration**: ✅ **Fully Implemented** - Token accounting, balance management, and API endpoints
 - **Wallet System**: ✅ **Fully Implemented** - Complete wallet with transactions, signing, and faucet
+- **P2P Update System**: ✅ **Fully Implemented** - Distributed binary updates with verification
+- **Swarm Analytics**: ✅ **Fully Implemented** - Network-wide performance monitoring
 
 ### ⚠️ Partially Implemented / Simplified
 - **F2 Homology Finality**: Heuristic approximation, not full persistent homology pipeline
@@ -131,6 +135,12 @@ cargo test --all
 
 # In another terminal, run local test (creates test messages)
 ./target/release/adic test --count 10
+
+# Check for updates
+./target/release/adic update check
+
+# Monitor swarm update statistics
+curl http://localhost:8080/update/swarm
 ```
 
 ### Verify Installation

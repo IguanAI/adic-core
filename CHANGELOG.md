@@ -5,6 +5,116 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2024-12-28
+
+### Added
+- **P2P Update Distribution System**: Complete peer-to-peer software update infrastructure
+  - Binary chunking and distribution protocol with 1MB chunks
+  - SHA256 hash verification for each chunk and complete binaries
+  - Rate limiting and concurrent transfer management
+  - Retry mechanisms with exponential backoff
+  - DNS-based version discovery at `_version.adic.network.adicl1.com`
+  - Graceful binary replacement using copyover technique (maintaining socket connections)
+
+- **Swarm-Wide Speed Tracking and Analytics**: Real-time collective network metrics
+  - SwarmMetrics message type for peer speed sharing
+  - SwarmSpeedTracker module aggregating network-wide statistics
+  - Total download/upload speeds across all peers
+  - Peer state categorization (downloading, seeding, idle)
+  - Version distribution tracking across the network
+  - Automatic metric expiry for stale peer data
+  - `/update/swarm` API endpoint for swarm statistics
+
+- **Modern Progress Display System**: Clean, borderless progress bars
+  - Chunk-based download tracking with verification stages
+  - Real-time speed calculation with smoothing algorithms
+  - ETA estimation with weighted recent samples
+  - Swarm statistics integration showing collective speeds
+  - Support for both TTY and non-TTY environments
+  - Formatted output for bytes, speeds, and durations
+
+- **Binary Storage and Management**: Efficient binary chunk storage
+  - BinaryStore module for chunk management
+  - In-memory chunk caching for performance
+  - Binary assembly from distributed chunks
+  - Version metadata management
+  - Automatic cache cleanup
+
+- **Update Manager**: Automated update orchestration
+  - Scheduled update checking with configurable intervals
+  - Update windows for maintenance periods
+  - DNS discovery with P2P fallback
+  - Progress tracking through multiple phases
+  - Integration with swarm statistics
+  - Auto-update with manual confirmation options
+
+- **Cryptographic Update Verification**: Secure update validation
+  - Ed25519 signature verification for binaries
+  - SHA256 hash verification for integrity
+  - Version record signature validation
+  - Support for custom verification keys
+
+- **New CLI Commands**: Update management interface
+  - `adic update check` - Check for available updates
+  - `adic update download` - Download new version via P2P
+  - `adic update apply` - Apply downloaded update (copyover)
+  - `adic update status` - View current update status
+
+- **Comprehensive Structured Logging Improvements**: Complete logging overhaul
+  - 30+ logging violations fixed across all modules
+  - Structured fields replacing string formatting
+  - Standardized field naming conventions
+  - Performance metrics in critical logs
+  - Lazy evaluation for better performance
+  - Created `LOGGING_IMPROVEMENTS.md` documentation
+
+### Changed
+- **Network Protocol Enhancement**: Added update protocol to network engine
+  - UpdateProtocol integrated into NetworkEngine initialization
+  - Periodic swarm metrics broadcasting (every 5 seconds)
+  - Enhanced peer connection handling for update distribution
+
+- **Logging System**: Comprehensive improvements for production readiness
+  - Converted all embedded variables to structured fields
+  - Changed verbose initialization logs from info! to debug!
+  - Added context fields (peer_id, version, chunk_index, etc.)
+  - Removed println!/dbg! from non-test source files
+
+### Fixed
+- **Compilation Issues**: Resolved logging-related compilation errors
+  - Fixed incorrect variable references in logging statements
+  - Resolved PeerId serialization issues in logs
+  - Fixed missing field references in structured logs
+
+- **Network Issues**: Improved P2P update distribution
+  - Fixed chunk request retry logic
+  - Improved error handling in update protocol
+  - Better peer selection for chunk downloads
+
+### Documentation
+- **Logging Best Practices**: Complete guide at `docs/LOGGING_BEST_PRACTICES.md`
+  - Structured field conventions
+  - Performance guidelines
+  - Module-specific patterns
+  - Anti-patterns to avoid
+
+- **Update System Documentation**: Comprehensive guides for the new update system
+  - Architecture and protocol documentation
+  - Configuration options for update manager
+  - Security considerations for P2P updates
+
+### Security
+- Update verification using Ed25519 signatures
+- Chunk integrity verification with SHA256
+- DNS TXT record validation for version announcements
+- Secure copyover technique preserving active connections
+
+### Performance
+- Chunk-based distribution reduces memory usage
+- Parallel chunk downloads from multiple peers
+- In-memory caching for frequently accessed chunks
+- Lazy evaluation in structured logging
+
 ## [0.1.6] - 2024-12-24
 
 ### Fixed

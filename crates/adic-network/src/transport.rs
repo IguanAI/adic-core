@@ -12,6 +12,7 @@ use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
 use crate::protocol::discovery::DiscoveryMessage;
+use crate::protocol::update::UpdateMessage;
 use adic_types::{AdicError, AdicMessage, Result};
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +59,8 @@ pub enum NetworkMessage {
     /// Sync protocol messages
     SyncRequest(crate::protocol::sync::SyncRequest),
     SyncResponse(crate::protocol::sync::SyncResponse),
+    /// Update protocol messages for P2P binary distribution
+    Update(UpdateMessage),
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +239,7 @@ impl ConnectionPool {
             .map(|(k, v)| (*k, v.connection.clone()))
             .collect()
     }
+
 }
 
 pub struct HybridTransport {
@@ -465,8 +469,15 @@ impl HybridTransport {
         };
 
         debug!("build_server_config - Creating server config with certificate");
-        let server_config = ServerConfig::with_single_cert(cert_chain, priv_key)
+        let mut server_config = ServerConfig::with_single_cert(cert_chain, priv_key)
             .map_err(|e| TransportError::InitializationFailed(e.to_string()))?;
+
+        // Configure transport parameters for faster disconnection detection
+        let mut transport_config = quinn::TransportConfig::default();
+        transport_config.max_idle_timeout(Some(quinn::VarInt::from_u32(5_000).into())); // 5 seconds
+        transport_config.keep_alive_interval(Some(Duration::from_secs(2))); // 2 seconds
+        server_config.transport_config(Arc::new(transport_config));
+
         debug!("build_server_config - Server config created successfully");
 
         Ok(server_config)
@@ -579,11 +590,18 @@ impl HybridTransport {
                 .with_no_client_auth()
         };
 
-        let client_config = ClientConfig::new(Arc::new(
+        let mut client_config = ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(crypto).map_err(|e| {
                 TransportError::InitializationFailed(format!("Failed to create QUIC config: {}", e))
             })?,
         ));
+
+        // Configure transport parameters for faster disconnection detection
+        let mut transport_config = quinn::TransportConfig::default();
+        transport_config.max_idle_timeout(Some(quinn::VarInt::from_u32(5_000).into())); // 5 seconds
+        transport_config.keep_alive_interval(Some(Duration::from_secs(2))); // 2 seconds
+        client_config.transport_config(Arc::new(transport_config));
+
         Ok(client_config)
     }
 
@@ -694,6 +712,22 @@ impl HybridTransport {
             .await
     }
 
+    /// Send an update message to a specific peer
+    pub async fn send_update_message(
+        &self,
+        peer_id: &PeerId,
+        message: UpdateMessage,
+    ) -> Result<()> {
+        let network_msg = NetworkMessage::Update(message);
+        let data = serde_json::to_vec(&network_msg).map_err(|e| {
+            TransportError::ConnectionFailed(format!("Failed to serialize update message: {}", e))
+        })?;
+
+        // Use high priority for update messages to ensure timely delivery
+        self.send_with_priority(peer_id, &data, PriorityLane::Data)
+            .await
+    }
+
     /// Broadcast a discovery message to all connected peers
     pub async fn broadcast_discovery_message(&self, message: DiscoveryMessage) -> Result<()> {
         let connections = self.connection_pool.get_all_connections().await;
@@ -701,6 +735,20 @@ impl HybridTransport {
             if let Err(e) = self.send_discovery_message(&peer_id, message.clone()).await {
                 warn!(
                     "Failed to send discovery message to peer {}: {}",
+                    peer_id, e
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Broadcast an update message to all connected peers
+    pub async fn broadcast_update_message(&self, message: UpdateMessage) -> Result<()> {
+        let connections = self.connection_pool.get_all_connections().await;
+        for (peer_id, _) in connections {
+            if let Err(e) = self.send_update_message(&peer_id, message.clone()).await {
+                warn!(
+                    "Failed to send update message to peer {}: {}",
                     peer_id, e
                 );
             }

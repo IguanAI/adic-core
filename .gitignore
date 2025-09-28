@@ -68,6 +68,16 @@ MANIFEST
 *.profraw
 *.profdata
 
+# Media files
+*.mp4
+*.webm
+*.jpeg
+*.jpg
+*.png
+*.gif
+*.avi
+*.mov
+
 # Backup files
 *.bak
 *.backup
@@ -90,11 +100,22 @@ node.key
 # Test data and config directories
 /test-data/
 /config/
+test-node-data*/
+node*/
+certs*/
+certs-*/
 
 # Local test files and configurations
 test_*.sh
-testnet-config.toml
+test-*.sh
+test_*.py
+local-*.toml
 adic-config.toml
+
+# Deployment scripts with sensitive info
+deploy.sh
+install-on-server.sh
+update-bootstrap.sh
 
 # Local documentation drafts
 LOGGING_IMPROVEMENTS.md
@@ -348,6 +369,10 @@ result-*
 *.seed
 *.dat
 nohup.out
+
+# Patch files
+*.patch
+*.diff
 
 # Large files that shouldn't be in repo
 *.iso

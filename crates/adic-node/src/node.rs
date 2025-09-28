@@ -1,5 +1,6 @@
 use crate::config::NodeConfig;
 use crate::genesis::{account_address_from_hex, GenesisConfig, GenesisHyperedge};
+use crate::update_manager;
 use crate::wallet::NodeWallet;
 use crate::wallet_registry::WalletRegistry;
 use adic_consensus::ConsensusEngine;
@@ -32,6 +33,7 @@ pub struct AdicNode {
     pub finality: Arc<FinalityEngine>,
     pub economics: Arc<EconomicsEngine>,
     pub network: Option<Arc<RwLock<NetworkEngine>>>,
+    pub update_manager: Option<Arc<update_manager::UpdateManager>>,
     index: Arc<MessageIndex>,
     tip_manager: Arc<TipManager>,
     running: Arc<RwLock<bool>>,
@@ -208,7 +210,7 @@ impl AdicNode {
         let tip_manager = Arc::new(TipManager::new());
 
         // Initialize network if enabled
-        let network = if config.network.enabled {
+        let (network, update_manager) = if config.network.enabled {
             info!("🌐 Initializing P2P network...");
 
             // Parse listen addresses
@@ -250,6 +252,7 @@ impl AdicNode {
                 bootstrap_peers,
                 max_peers: config.network.max_peers,
                 enable_metrics: false,
+                data_dir: data_dir.clone(),
                 transport: adic_network::TransportConfig {
                     quic_listen_addr: format!("0.0.0.0:{}", config.network.quic_port)
                         .parse()
@@ -276,10 +279,44 @@ impl AdicNode {
             )
             .await?;
 
-            Some(Arc::new(RwLock::new(network)))
+            // Initialize update manager if network is available
+            let network_arc = Arc::new(RwLock::new(network));
+
+            let update_manager = if config.network.enabled {
+                let network_clone = {
+                    let net = network_arc.read().await;
+                    net.clone()
+                };
+
+                let update_config = update_manager::UpdateConfig {
+                    auto_update: config.network.auto_update,
+                    dns_domain: "adic.network.adicl1.com".to_string(),
+                    ..Default::default()
+                };
+
+                match update_manager::UpdateManager::new(
+                    env!("CARGO_PKG_VERSION").to_string(),
+                    Arc::new(network_clone),
+                    data_dir.clone(),
+                    update_config,
+                ) {
+                    Ok(manager) => {
+                        info!("✅ Update manager initialized");
+                        Some(Arc::new(manager))
+                    }
+                    Err(e) => {
+                        warn!("Failed to initialize update manager: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            (Some(network_arc), update_manager)
         } else {
             info!("P2P network disabled");
-            None
+            (None, None)
         };
 
         Ok(Self {
@@ -293,6 +330,7 @@ impl AdicNode {
             finality,
             economics,
             network,
+            update_manager,
             index,
             tip_manager,
             running: Arc::new(RwLock::new(false)),
@@ -368,6 +406,14 @@ impl AdicNode {
                         warn!("Failed to resolve bootstrap peer: {}", e);
                     }
                 }
+            }
+        }
+
+        // Start update manager if enabled
+        if let Some(ref update_manager) = self.update_manager {
+            info!("Starting update manager...");
+            if let Err(e) = update_manager.start().await {
+                warn!("Failed to start update manager: {}", e);
             }
         }
 
@@ -1197,6 +1243,7 @@ impl Clone for AdicNode {
             finality: Arc::clone(&self.finality),
             economics: Arc::clone(&self.economics),
             network: self.network.as_ref().map(Arc::clone),
+            update_manager: self.update_manager.as_ref().map(Arc::clone),
             index: Arc::clone(&self.index),
             tip_manager: Arc::clone(&self.tip_manager),
             running: Arc::clone(&self.running),

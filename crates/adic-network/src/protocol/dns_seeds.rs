@@ -101,11 +101,15 @@ impl DnsSeedDiscovery {
         // Parse as multiaddr
         match addr_str.parse::<Multiaddr>() {
             Ok(addr) => {
-                debug!("Parsed valid multiaddr: {}", addr);
+                debug!(multiaddr = %addr, "Parsed valid multiaddr");
                 Some(addr)
             }
             Err(e) => {
-                warn!("Failed to parse multiaddr from '{}': {}", addr_str, e);
+                warn!(
+                    addr_str = %addr_str,
+                    error = %e,
+                    "Failed to parse multiaddr"
+                );
                 None
             }
         }
@@ -220,12 +224,12 @@ mod tests {
             .unwrap();
 
         let seeds = discovery.discover_seeds().await;
-        println!("Discovered {} seeds from DNS", seeds.len());
+        debug!(seed_count = seeds.len(), "Discovered seeds from DNS");
 
         // When properly configured, should find at least one seed
         if !seeds.is_empty() {
             for seed in &seeds {
-                println!("  - {}", seed);
+                debug!(seed = %seed, "Found seed");
             }
         }
     }

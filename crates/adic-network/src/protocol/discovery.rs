@@ -75,6 +75,7 @@ pub struct DiscoveryProtocol {
     known_peers: Arc<RwLock<HashMap<PeerId, PeerInfo>>>,
     active_discoveries: Arc<RwLock<HashSet<PeerId>>>,
     last_discovery: Arc<RwLock<Instant>>,
+    peer_manager: Option<Arc<crate::peer::PeerManager>>,
 }
 
 impl DiscoveryProtocol {
@@ -85,7 +86,12 @@ impl DiscoveryProtocol {
             known_peers: Arc::new(RwLock::new(HashMap::new())),
             active_discoveries: Arc::new(RwLock::new(HashSet::new())),
             last_discovery: Arc::new(RwLock::new(Instant::now())),
+            peer_manager: None,
         }
+    }
+
+    pub fn set_peer_manager(&mut self, peer_manager: Arc<crate::peer::PeerManager>) {
+        self.peer_manager = Some(peer_manager);
     }
 
     /// Start discovery process
@@ -241,6 +247,36 @@ impl DiscoveryProtocol {
                                         peer_id = %remote_peer_id,
                                         "Bootstrap connection added to pool"
                                     );
+
+                                    // Add bootstrap peer to PeerManager if available
+                                    if let Some(ref peer_manager) = self.peer_manager {
+                                        let bootstrap_peer_info = crate::peer::PeerInfo {
+                                            peer_id: remote_peer_id,
+                                            addresses: vec![addr.clone()],
+                                            public_key: adic_types::PublicKey::from_bytes([0u8; 32]), // Placeholder
+                                            reputation_score: 1.0,
+                                            latency_ms: Some(connect_duration.as_millis() as u64),
+                                            bandwidth_mbps: None,
+                                            last_seen: std::time::Instant::now(),
+                                            connection_state: crate::peer::ConnectionState::Connected,
+                                            message_stats: Default::default(),
+                                            padic_location: None,
+                                        };
+
+                                        if let Err(e) = peer_manager.add_peer(bootstrap_peer_info).await {
+                                            warn!(
+                                                bootstrap_addr = %addr,
+                                                error = %e,
+                                                "Failed to add bootstrap peer to PeerManager"
+                                            );
+                                        } else {
+                                            info!(
+                                                bootstrap_addr = %addr,
+                                                peer_id = %remote_peer_id,
+                                                "Bootstrap peer added to PeerManager"
+                                            );
+                                        }
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -585,6 +621,7 @@ impl DiscoveryProtocol {
     }
 
     /// Extract PeerId from a multiaddr
+    #[allow(dead_code)]
     fn extract_peer_id_from_multiaddr(&self, addr: &Multiaddr) -> Option<PeerId> {
         use libp2p::multiaddr::Protocol;
 
@@ -600,7 +637,7 @@ impl DiscoveryProtocol {
     async fn perform_bootstrap_handshake(
         &self,
         connection: &quinn::Connection,
-        addr: &Multiaddr,
+        _addr: &Multiaddr,
     ) -> Result<PeerId> {
         use crate::transport::NetworkMessage;
 

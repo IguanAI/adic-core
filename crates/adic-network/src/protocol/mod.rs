@@ -1,13 +1,21 @@
+pub mod binary_store;
 pub mod consensus;
 pub mod discovery;
 pub mod dns_seeds;
 pub mod gossip;
 pub mod stream;
+pub mod swarm_tracker;
 pub mod sync;
+pub mod update;
+pub mod update_protocol;
 
+pub use binary_store::{BinaryStore, BinaryMetadata};
 pub use consensus::{ConsensusConfig, ConsensusMessage, ConsensusProtocol};
 pub use discovery::{DiscoveryConfig, DiscoveryMessage, DiscoveryProtocol};
 pub use dns_seeds::{DnsSeedConfig, DnsSeedDiscovery};
 pub use gossip::{GossipConfig, GossipMessage, GossipProtocol};
 pub use stream::{StreamConfig, StreamProtocol, StreamRequest};
+pub use swarm_tracker::{SwarmSpeedTracker, SwarmStatistics, PeerMetrics};
 pub use sync::{SyncConfig, SyncProtocol, SyncRequest, SyncResponse};
+pub use update::{UpdateMessage, UpdateState, VersionInfo, BinaryChunkData};
+pub use update_protocol::{UpdateProtocol, UpdateProtocolConfig, UpdateProtocolEvent};

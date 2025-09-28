@@ -91,6 +91,8 @@ pub struct NetworkConfig {
     pub ca_cert_path: Option<String>,
     pub node_cert_path: Option<String>,
     pub node_key_path: Option<String>,
+    #[serde(default)]
+    pub auto_update: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +176,7 @@ impl Default for NodeConfig {
                 ca_cert_path: None,
                 node_cert_path: None,
                 node_key_path: None,
+                auto_update: false,
             },
             logging: LoggingConfig::default(),
         }

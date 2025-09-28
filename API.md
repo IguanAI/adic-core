@@ -588,6 +588,83 @@ adic_peers_connected 5
 # ... additional metrics
 ```
 
+### Update System Endpoints
+
+#### GET /update/swarm **[IMPLEMENTED]**
+Get real-time swarm-wide update statistics.
+
+**Response:**
+```json
+{
+  "success": true,
+  "swarm": {
+    "total_download_speed": 52428800,
+    "total_upload_speed": 104857600,
+    "downloading_peers": 12,
+    "seeding_peers": 45,
+    "idle_peers": 8,
+    "total_active_transfers": 24,
+    "average_download_progress": 67.5,
+    "version_distribution": {
+      "0.1.6": 45,
+      "0.1.7": 20
+    },
+    "total_peers": 65,
+    "download_speed_mbps": 50.0,
+    "upload_speed_mbps": 100.0
+  }
+}
+```
+
+#### GET /update/status **[IMPLEMENTED]**
+Get current node update status.
+
+**Response:**
+```json
+{
+  "current_version": "0.1.6",
+  "latest_version": "0.1.7",
+  "update_available": true,
+  "update_state": "idle",
+  "auto_update_enabled": false,
+  "last_check": "2024-12-28T12:00:00Z",
+  "next_check": "2024-12-28T13:00:00Z"
+}
+```
+
+#### POST /update/check **[IMPLEMENTED]**
+Manually trigger an update check.
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Update check initiated",
+  "update_available": true,
+  "latest_version": "0.1.7",
+  "current_version": "0.1.6"
+}
+```
+
+#### GET /update/progress **[IMPLEMENTED]**
+Get detailed update download progress.
+
+**Response:**
+```json
+{
+  "status": "downloading",
+  "version": "0.1.7",
+  "progress_percent": 45.2,
+  "chunks_received": 23,
+  "total_chunks": 51,
+  "download_speed": 2097152,
+  "upload_speed": 524288,
+  "eta_seconds": 120,
+  "peers_connected": 8,
+  "verification_status": "pending"
+}
+```
+
 ### Bulk Query Endpoints
 
 #### GET /v1/messages/bulk **[IMPLEMENTED]**

@@ -48,6 +48,9 @@ headers = "0.4"
 base64 = "0.22.1"
 sha2 = "0.10"
 rpassword = "7.3"
+indicatif = "0.17"
+console = "0.15"
+nix = { version = "0.29", features = ["process", "fs"] }
 
 [features]
 default = ["rocksdb"]

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Clone)]
 struct AppState {
@@ -61,12 +61,41 @@ struct ErrorResponse {
     error: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct PeerInfoResponse {
+    peer_id: String,
+    addresses: Vec<String>,
+    connection_state: String,
+    reputation_score: f64,
+    latency_ms: Option<u64>,
+    version: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct NetworkStatusResponse {
+    peer_count: usize,
+    connected_peers: usize,
+    messages_sent: u64,
+    messages_received: u64,
+    bytes_sent: u64,
+    bytes_received: u64,
+}
+
 #[derive(Deserialize)]
 struct TracesQuery {
     limit: Option<usize>,
 }
 
 pub fn start_api_server(node: AdicNode, host: String, port: u16) -> JoinHandle<()> {
+    start_api_server_with_listener(node, host, port, None)
+}
+
+pub fn start_api_server_with_listener(
+    node: AdicNode,
+    host: String,
+    port: u16,
+    existing_listener: Option<tokio::net::TcpListener>
+) -> JoinHandle<()> {
     let metrics = metrics::Metrics::new();
     let state = Arc::new(AppState {
         node: node.clone(),
@@ -85,6 +114,15 @@ pub fn start_api_server(node: AdicNode, host: String, port: u16) -> JoinHandle<(
         .route("/submit", post(submit_message))
         .route("/message/:id", get(get_message))
         .route("/tips", get(get_tips))
+        // Network endpoints
+        .route("/peers", get(get_peers))
+        .route("/network/status", get(get_network_status))
+        // Update endpoints
+        .route("/update/status", get(get_update_status))
+        .route("/update/check", post(trigger_update_check))
+        .route("/update/apply", post(trigger_update_apply))
+        .route("/update/progress", get(get_update_progress))
+        .route("/update/swarm", get(get_update_swarm_stats))
         // Wallet and transaction endpoints
         .route("/wallet/info", get(wallet_info_handler))
         .route("/wallet/balance/:address", get(balance_handler))
@@ -146,9 +184,25 @@ pub fn start_api_server(node: AdicNode, host: String, port: u16) -> JoinHandle<(
     info!("Starting API server on {}", addr);
 
     tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(&addr)
-            .await
-            .expect("Failed to bind API server");
+        let listener = if let Some(existing) = existing_listener {
+            info!("Using restored API listener from copyover");
+            existing
+        } else {
+            tokio::net::TcpListener::bind(&addr)
+                .await
+                .expect("Failed to bind API server")
+        };
+
+        // Store the file descriptor in the update manager if available
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = listener.as_raw_fd();
+            if let Some(ref update_manager) = node.update_manager {
+                update_manager.set_api_listener_fd(fd).await;
+                debug!("Stored API listener fd {} in update manager", fd);
+            }
+        }
 
         axum::serve(listener, app).await.expect("API server failed");
     })
@@ -354,6 +408,329 @@ async fn get_tips(State(state): State<Arc<AppState>>) -> Response {
             (StatusCode::OK, Json(response)).into_response()
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn get_update_status(State(state): State<Arc<AppState>>) -> Response {
+    // Get current version
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    // Get update manager state if available
+    let (update_state, latest_version, update_available) = if let Some(ref update_manager) = state.node.update_manager {
+        let state = update_manager.get_state().await;
+        let latest = update_manager.get_latest_version().await;
+        let available = latest.as_ref().map(|v| v.version != current_version).unwrap_or(false);
+
+        let state_str = match state {
+            adic_network::protocol::update::UpdateState::Idle => "idle",
+            adic_network::protocol::update::UpdateState::CheckingVersion => "checking",
+            adic_network::protocol::update::UpdateState::Downloading { .. } => "downloading",
+            adic_network::protocol::update::UpdateState::Verifying { .. } => "verifying",
+            adic_network::protocol::update::UpdateState::Applying { .. } => "applying",
+            adic_network::protocol::update::UpdateState::Complete { .. } => "complete",
+            adic_network::protocol::update::UpdateState::Failed { .. } => "error",
+        };
+
+        (state_str.to_string(), latest.map(|v| v.version), available)
+    } else {
+        ("idle".to_string(), None, false)
+    };
+
+    // Get version distribution if network is enabled
+    let version_distribution = if let Some(ref network) = state.node.network {
+        let network_lock = network.read().await;
+        let peer_versions = network_lock.get_peer_versions().await;
+
+        // Count versions
+        let mut version_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for version in peer_versions.values() {
+            *version_counts.entry(version.clone()).or_insert(0) += 1;
+        }
+
+        Some(version_counts)
+    } else {
+        None
+    };
+
+    let response = serde_json::json!({
+        "current_version": current_version,
+        "update_available": update_available,
+        "latest_version": latest_version.unwrap_or_else(|| current_version.to_string()),
+        "update_state": update_state,
+        "auto_update_enabled": state.node.update_manager.is_some(),
+        "last_check": chrono::Utc::now().to_rfc3339(),
+        "version_distribution": version_distribution,
+    });
+
+    tracing::info!(
+        current_version = current_version,
+        "📦 Update status retrieved"
+    );
+
+    (StatusCode::OK, Json(response)).into_response()
+}
+
+async fn get_update_progress(State(state): State<Arc<AppState>>) -> Response {
+    if let Some(ref update_manager) = state.node.update_manager {
+        let state = update_manager.get_state().await;
+
+        let response = match state {
+            adic_network::protocol::update::UpdateState::Idle => {
+                serde_json::json!({
+                    "status": "idle",
+                    "message": "No update in progress"
+                })
+            },
+            adic_network::protocol::update::UpdateState::CheckingVersion => {
+                serde_json::json!({
+                    "status": "checking",
+                    "message": "Checking for updates..."
+                })
+            },
+            adic_network::protocol::update::UpdateState::Downloading { version, progress, chunks_received, total_chunks } => {
+                serde_json::json!({
+                    "status": "downloading",
+                    "version": version,
+                    "progress_percent": (progress * 100.0) as u32,
+                    "chunks_received": chunks_received,
+                    "total_chunks": total_chunks,
+                    "message": format!("Downloading version {} ({}/{} chunks)", version, chunks_received, total_chunks)
+                })
+            },
+            adic_network::protocol::update::UpdateState::Verifying { version } => {
+                serde_json::json!({
+                    "status": "verifying",
+                    "version": version,
+                    "message": format!("Verifying binary signature for version {}", version)
+                })
+            },
+            adic_network::protocol::update::UpdateState::Applying { version } => {
+                serde_json::json!({
+                    "status": "applying",
+                    "version": version,
+                    "message": format!("Applying update to version {}", version)
+                })
+            },
+            adic_network::protocol::update::UpdateState::Complete { version, success } => {
+                serde_json::json!({
+                    "status": "complete",
+                    "version": version,
+                    "success": success,
+                    "message": if success {
+                        format!("Successfully updated to version {}", version)
+                    } else {
+                        format!("Update to version {} completed with issues", version)
+                    }
+                })
+            },
+            adic_network::protocol::update::UpdateState::Failed { version, error } => {
+                serde_json::json!({
+                    "status": "error",
+                    "version": version,
+                    "message": error,
+                    "error": true
+                })
+            },
+        };
+
+        (StatusCode::OK, Json(response)).into_response()
+    } else {
+        let response = serde_json::json!({
+            "status": "disabled",
+            "message": "Update manager not initialized"
+        });
+        (StatusCode::OK, Json(response)).into_response()
+    }
+}
+
+async fn get_update_swarm_stats(State(state): State<Arc<AppState>>) -> Response {
+    if let Some(ref update_manager) = state.node.update_manager {
+        // Get swarm statistics from update protocol
+        let stats = update_manager.get_swarm_statistics().await;
+
+        let response = serde_json::json!({
+            "success": true,
+            "swarm": {
+                "total_download_speed": stats.total_download_speed,
+                "total_upload_speed": stats.total_upload_speed,
+                "downloading_peers": stats.downloading_peers,
+                "seeding_peers": stats.seeding_peers,
+                "idle_peers": stats.idle_peers,
+                "total_active_transfers": stats.total_active_transfers,
+                "average_download_progress": stats.average_download_progress,
+                "version_distribution": stats.version_distribution,
+                "total_peers": stats.downloading_peers + stats.seeding_peers + stats.idle_peers,
+                "download_speed_mbps": stats.total_download_speed as f64 / 1_048_576.0,
+                "upload_speed_mbps": stats.total_upload_speed as f64 / 1_048_576.0,
+            }
+        });
+
+        (StatusCode::OK, Json(response)).into_response()
+    } else {
+        let response = serde_json::json!({
+            "success": false,
+            "message": "Update manager not initialized"
+        });
+        (StatusCode::SERVICE_UNAVAILABLE, Json(response)).into_response()
+    }
+}
+
+async fn trigger_update_check(State(state): State<Arc<AppState>>) -> Response {
+    if let Some(ref update_manager) = state.node.update_manager {
+        match update_manager.check_for_update().await {
+            Ok(Some(version)) => {
+                let response = serde_json::json!({
+                    "success": true,
+                    "message": format!("Update available: version {}", version.version),
+                    "version": version.version,
+                    "hash": version.sha256_hash,
+                });
+                (StatusCode::OK, Json(response)).into_response()
+            },
+            Ok(None) => {
+                let response = serde_json::json!({
+                    "success": true,
+                    "message": "No update available",
+                });
+                (StatusCode::OK, Json(response)).into_response()
+            },
+            Err(e) => {
+                let response = serde_json::json!({
+                    "success": false,
+                    "message": format!("Failed to check for update: {}", e),
+                });
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(response)).into_response()
+            }
+        }
+    } else {
+        let response = serde_json::json!({
+            "success": false,
+            "message": "Update manager not initialized"
+        });
+        (StatusCode::SERVICE_UNAVAILABLE, Json(response)).into_response()
+    }
+}
+
+async fn trigger_update_apply(State(state): State<Arc<AppState>>) -> Response {
+    if let Some(ref update_manager) = state.node.update_manager {
+        // First check if an update is available
+        match update_manager.get_latest_version().await {
+            Some(version) => {
+                // Trigger the update in the background
+                let update_manager = update_manager.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = update_manager.start_auto_update().await {
+                        tracing::error!("Failed to apply update: {}", e);
+                    }
+                });
+
+                let response = serde_json::json!({
+                    "success": true,
+                    "message": format!("Starting update to version {}", version.version),
+                    "version": version.version,
+                });
+                (StatusCode::OK, Json(response)).into_response()
+            },
+            None => {
+                let response = serde_json::json!({
+                    "success": false,
+                    "message": "No update available to apply",
+                });
+                (StatusCode::BAD_REQUEST, Json(response)).into_response()
+            }
+        }
+    } else {
+        let response = serde_json::json!({
+            "success": false,
+            "message": "Update manager not initialized"
+        });
+        (StatusCode::SERVICE_UNAVAILABLE, Json(response)).into_response()
+    }
+}
+
+async fn get_peers(State(state): State<Arc<AppState>>) -> Response {
+    // Check if network is enabled
+    if let Some(ref network) = state.node.network {
+        let network_lock = network.read().await;
+        let peers_info = network_lock.get_all_peers_info().await;
+
+        // Get peer versions
+        let peer_versions = network_lock.get_peer_versions().await;
+
+        // Convert PeerInfo to PeerInfoResponse
+        let peer_responses: Vec<PeerInfoResponse> = peers_info
+            .into_iter()
+            .map(|info| {
+                let connection_state = match info.connection_state {
+                    adic_network::peer::ConnectionState::Connected => "connected",
+                    adic_network::peer::ConnectionState::Connecting => "connecting",
+                    adic_network::peer::ConnectionState::Disconnected => "disconnected",
+                    adic_network::peer::ConnectionState::Failed => "failed",
+                };
+
+                // Get version for this peer
+                let version = peer_versions.get(&info.peer_id.to_string()).cloned();
+
+                PeerInfoResponse {
+                    peer_id: info.peer_id.to_string(),
+                    addresses: info.addresses.iter().map(|a| a.to_string()).collect(),
+                    connection_state: connection_state.to_string(),
+                    reputation_score: info.reputation_score,
+                    latency_ms: info.latency_ms,
+                    version,
+                }
+            })
+            .collect();
+
+        // Log the state retrieval with structured field as per best practices
+        tracing::info!(
+            peer_count = peer_responses.len(),
+            "📡 Peers retrieved"
+        );
+
+        (StatusCode::OK, Json(peer_responses)).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "Network is not enabled".to_string(),
+            }),
+        )
+            .into_response()
+    }
+}
+
+async fn get_network_status(State(state): State<Arc<AppState>>) -> Response {
+    // Check if network is enabled
+    if let Some(ref network) = state.node.network {
+        let network_lock = network.read().await;
+        let stats = network_lock.get_network_stats().await;
+
+        let response = NetworkStatusResponse {
+            peer_count: stats.peer_count,
+            connected_peers: stats.connected_peers,
+            messages_sent: stats.messages_sent,
+            messages_received: stats.messages_received,
+            bytes_sent: stats.bytes_sent,
+            bytes_received: stats.bytes_received,
+        };
+
+        // Log the network status retrieval with structured fields as per best practices
+        tracing::info!(
+            peer_count = stats.peer_count,
+            connected_peers = stats.connected_peers,
+            "🌐 Network status retrieved"
+        );
+
+        (StatusCode::OK, Json(response)).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "Network is not enabled".to_string(),
+            }),
+        )
+            .into_response()
     }
 }
 

@@ -1,0 +1,66 @@
+# ADIC Testnet Configuration
+# This configuration connects to the ADIC testnet using DNS seed discovery
+
+[node]
+data_dir = "./data/testnet"
+validator = true
+bootstrap = false
+
+[storage]
+backend_type = "rocksdb"
+path = "./data/testnet/db"
+cache_size = 134217728  # 128 MB
+enable_statistics = true
+
+[consensus]
+# Testnet parameters (same as mainnet for now)
+p = 3
+d = 3
+k = 20
+q = 3
+rho = [2, 2, 1]
+r_min = 0.5
+r_sum_min = 2.0
+max_depth = 12
+alpha = 1.0
+beta = 1.0
+gamma = 0.9
+delta = 0.01
+deposit = 0.1  # Test ADIC deposit amount
+
+[api]
+enabled = true
+host = "127.0.0.1"
+port = 8080
+max_connections = 100
+
+[network]
+enabled = true
+p2p_port = 9000
+quic_port = 9001
+# Bootstrap peers will be discovered via DNS
+bootstrap_peers = []
+# DNS seed domains for automatic peer discovery
+dns_seeds = ["_seeds.adicl1.com"]
+max_peers = 50
+use_production_tls = false  # Using self-signed certs for testnet
+auto_update = true  # Enable automatic updates for testnet
+
+[economics]
+# Testnet economics (reduced values for testing)
+initial_supply = 1000000.0  # 1M test ADIC
+genesis_allocations = []
+max_supply = 10000000.0  # 10M test ADIC
+
+[finality]
+# Finality parameters
+k_core_threshold = 10  # Lower threshold for testnet
+min_depth = 6
+min_reputation = 1.0
+min_diversity = 2
+stabilization_window = 5
+bottleneck_epsilon = 0.1
+
+[logging]
+level = "info"
+format = "pretty"  # Options: pretty, json, compact

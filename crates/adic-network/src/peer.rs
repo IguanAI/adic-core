@@ -493,6 +493,29 @@ impl PeerManager {
         }
     }
 
+    pub async fn get_disconnected_peers(&self) -> Vec<(PeerId, Vec<Multiaddr>)> {
+        let peers = self.peers.read().await;
+        peers
+            .iter()
+            .filter(|(_, info)| info.connection_state == ConnectionState::Disconnected)
+            .map(|(id, info)| (*id, info.addresses.clone()))
+            .collect()
+    }
+
+    pub async fn mark_peer_as_important(&self, peer_id: &PeerId) -> Result<()> {
+        let mut peers = self.peers.write().await;
+        if let Some(peer) = peers.get_mut(peer_id) {
+            // Boost reputation for important peers
+            peer.reputation_score = (peer.reputation_score + 20.0).min(100.0);
+            info!(
+                peer_id = %peer_id,
+                new_reputation = peer.reputation_score,
+                "⭐ Marked peer as important"
+            );
+        }
+        Ok(())
+    }
+
     pub async fn get_connected_peers(&self) -> Vec<PeerId> {
         let peers = self.peers.read().await;
         peers
@@ -513,6 +536,42 @@ impl PeerManager {
             .iter()
             .filter(|(_, info)| info.connection_state == ConnectionState::Connected)
             .count()
+    }
+
+    pub async fn get_all_peers_info(&self) -> Vec<PeerInfo> {
+        let peers = self.peers.read().await;
+        peers.values().cloned().collect()
+    }
+
+    pub async fn update_peer_connection_state(
+        &self,
+        peer_id: &PeerId,
+        new_state: ConnectionState,
+    ) -> Result<()> {
+        let mut peers = self.peers.write().await;
+        if let Some(peer) = peers.get_mut(peer_id) {
+            let old_state = peer.connection_state;
+            peer.connection_state = new_state;
+            peer.last_seen = Instant::now();
+
+            info!(
+                peer_id = %peer_id,
+                old_state = ?old_state,
+                new_state = ?new_state,
+                "📡 Peer connection state updated"
+            );
+
+            if new_state == ConnectionState::Disconnected {
+                self.event_sender
+                    .send(PeerEvent::PeerDisconnected(*peer_id))
+                    .map_err(|e| AdicError::Network(format!("Failed to send event: {}", e)))?;
+            } else if new_state == ConnectionState::Connected && old_state != ConnectionState::Connected {
+                self.event_sender
+                    .send(PeerEvent::PeerConnected(*peer_id))
+                    .map_err(|e| AdicError::Network(format!("Failed to send event: {}", e)))?;
+            }
+        }
+        Ok(())
     }
 
     pub fn event_stream(&self) -> Arc<RwLock<mpsc::UnboundedReceiver<PeerEvent>>> {
@@ -570,5 +629,152 @@ mod tests {
 
         let score = manager.calculate_peer_score(&peer_info).await;
         assert!(score > 0.0 && score <= 1.0);
+    }
+
+    #[tokio::test]
+    async fn test_update_peer_connection_state() {
+        use crate::deposit_verifier::RealDepositVerifier;
+        use adic_consensus::{DepositManager, DEFAULT_DEPOSIT_AMOUNT};
+
+        let keypair = Keypair::generate_ed25519();
+        let deposit_mgr = Arc::new(DepositManager::new(DEFAULT_DEPOSIT_AMOUNT));
+        let verifier: Arc<dyn DepositVerifier> = Arc::new(RealDepositVerifier::new(deposit_mgr));
+        let manager = PeerManager::new(&keypair, 100, verifier);
+
+        // Add a peer first
+        let peer_info = PeerInfo {
+            peer_id: PeerId::random(),
+            addresses: vec![],
+            public_key: PublicKey::from_bytes([1; 32]),
+            reputation_score: 50.0,
+            latency_ms: Some(20),
+            bandwidth_mbps: Some(50.0),
+            last_seen: Instant::now(),
+            connection_state: ConnectionState::Connected,
+            message_stats: MessageStats::default(),
+            padic_location: None,
+        };
+
+        let peer_id = peer_info.peer_id;
+        manager.add_peer(peer_info).await.unwrap();
+
+        // Test state transition to Disconnected
+        manager.update_peer_connection_state(&peer_id, ConnectionState::Disconnected).await.unwrap();
+        let peer = manager.get_peer(&peer_id).await.unwrap();
+        assert_eq!(peer.connection_state, ConnectionState::Disconnected);
+
+        // Test state transition back to Connected
+        manager.update_peer_connection_state(&peer_id, ConnectionState::Connected).await.unwrap();
+        let peer = manager.get_peer(&peer_id).await.unwrap();
+        assert_eq!(peer.connection_state, ConnectionState::Connected);
+    }
+
+    #[tokio::test]
+    async fn test_get_disconnected_peers() {
+        use crate::deposit_verifier::RealDepositVerifier;
+        use adic_consensus::{DepositManager, DEFAULT_DEPOSIT_AMOUNT};
+
+        let keypair = Keypair::generate_ed25519();
+        let deposit_mgr = Arc::new(DepositManager::new(DEFAULT_DEPOSIT_AMOUNT));
+        let verifier: Arc<dyn DepositVerifier> = Arc::new(RealDepositVerifier::new(deposit_mgr));
+        let manager = PeerManager::new(&keypair, 100, verifier);
+
+        // Add multiple peers with different states
+        for i in 0..3 {
+            let state = if i == 1 {
+                ConnectionState::Disconnected
+            } else {
+                ConnectionState::Connected
+            };
+
+            let peer_info = PeerInfo {
+                peer_id: PeerId::random(),
+                addresses: vec![],
+                public_key: PublicKey::from_bytes([i as u8; 32]),
+                reputation_score: 50.0,
+                latency_ms: Some(20),
+                bandwidth_mbps: Some(50.0),
+                last_seen: Instant::now(),
+                connection_state: state,
+                message_stats: MessageStats::default(),
+                padic_location: None,
+            };
+
+            manager.add_peer(peer_info).await.unwrap();
+        }
+
+        let disconnected = manager.get_disconnected_peers().await;
+        assert_eq!(disconnected.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_mark_peer_as_important() {
+        use crate::deposit_verifier::RealDepositVerifier;
+        use adic_consensus::{DepositManager, DEFAULT_DEPOSIT_AMOUNT};
+
+        let keypair = Keypair::generate_ed25519();
+        let deposit_mgr = Arc::new(DepositManager::new(DEFAULT_DEPOSIT_AMOUNT));
+        let verifier: Arc<dyn DepositVerifier> = Arc::new(RealDepositVerifier::new(deposit_mgr));
+        let manager = PeerManager::new(&keypair, 100, verifier);
+
+        // Add a peer with low reputation
+        let peer_info = PeerInfo {
+            peer_id: PeerId::random(),
+            addresses: vec![],
+            public_key: PublicKey::from_bytes([1; 32]),
+            reputation_score: 50.0,
+            latency_ms: Some(20),
+            bandwidth_mbps: Some(50.0),
+            last_seen: Instant::now(),
+            connection_state: ConnectionState::Connected,
+            message_stats: MessageStats::default(),
+            padic_location: None,
+        };
+
+        let peer_id = peer_info.peer_id;
+        manager.add_peer(peer_info).await.unwrap();
+
+        // Mark as important and check reputation boost
+        manager.mark_peer_as_important(&peer_id).await.unwrap();
+        let peer = manager.get_peer(&peer_id).await.unwrap();
+        assert_eq!(peer.reputation_score, 70.0);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_stale_peers() {
+        use crate::deposit_verifier::RealDepositVerifier;
+        use adic_consensus::{DepositManager, DEFAULT_DEPOSIT_AMOUNT};
+        use std::time::Duration;
+        use tokio::time::sleep;
+
+        let keypair = Keypair::generate_ed25519();
+        let deposit_mgr = Arc::new(DepositManager::new(DEFAULT_DEPOSIT_AMOUNT));
+        let verifier: Arc<dyn DepositVerifier> = Arc::new(RealDepositVerifier::new(deposit_mgr));
+        let manager = PeerManager::new(&keypair, 100, verifier);
+
+        // Add a peer with very old last_seen
+        let mut peer_info = PeerInfo {
+            peer_id: PeerId::random(),
+            addresses: vec![],
+            public_key: PublicKey::from_bytes([1; 32]),
+            reputation_score: 50.0,
+            latency_ms: Some(20),
+            bandwidth_mbps: Some(50.0),
+            last_seen: Instant::now(),
+            connection_state: ConnectionState::Connected,
+            message_stats: MessageStats::default(),
+            padic_location: None,
+        };
+
+        // Manually set last_seen to past (simulating stale peer)
+        peer_info.last_seen = Instant::now() - Duration::from_secs(150);
+        let peer_id = peer_info.peer_id;
+        manager.add_peer(peer_info).await.unwrap();
+
+        // Run cleanup
+        manager.cleanup_stale_peers().await;
+
+        // Peer should be removed
+        assert!(manager.get_peer(&peer_id).await.is_none());
     }
 }

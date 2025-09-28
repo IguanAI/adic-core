@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use std::time::Duration;
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod api;
@@ -10,11 +11,15 @@ mod api_wallet_tx;
 mod auth;
 mod cli;
 mod config;
+mod copyover;
 mod economics_api;
 mod genesis;
 mod logging;
 mod metrics;
 mod node;
+mod progress_display;
+mod update_manager;
+mod update_verifier;
 mod wallet;
 mod wallet_registry;
 
@@ -57,6 +62,18 @@ enum Commands {
         /// Enable validator mode
         #[arg(long)]
         validator: bool,
+
+        /// Copyover recovery mode (internal use)
+        #[arg(long, hide = true)]
+        copyover_recovery: bool,
+
+        /// Copyover pipe file descriptor (internal use)
+        #[arg(long, hide = true)]
+        copyover_pipe: Option<i32>,
+
+        /// Copyover API listener file descriptor (internal use)
+        #[arg(long, hide = true)]
+        copyover_fd: Option<i32>,
     },
 
     /// Initialize a new node configuration
@@ -88,6 +105,12 @@ enum Commands {
     Wallet {
         #[command(subcommand)]
         command: WalletCommands,
+    },
+
+    /// Manage node updates
+    Update {
+        #[command(subcommand)]
+        subcommand: UpdateCommands,
     },
 }
 
@@ -135,6 +158,25 @@ enum WalletCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum UpdateCommands {
+    /// Check for available updates
+    Check,
+
+    /// Download the latest update
+    Download,
+
+    /// Apply a downloaded update (triggers copyover)
+    Apply {
+        /// Path to the new binary (defaults to ./adic.new)
+        #[arg(long)]
+        binary: Option<PathBuf>,
+    },
+
+    /// Show current update status
+    Status,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load .env file if it exists (ignore if it doesn't)
@@ -161,8 +203,9 @@ async fn main() -> Result<()> {
         logging::display_boot_banner("0.1.5");
     }
 
-    // Show emoji legend if enabled
-    if logging_config.show_emoji_legend && logging_config.use_emojis {
+    // Show emoji legend only for the start command
+    let is_start_command = matches!(cli.command, Commands::Start { .. });
+    if is_start_command && logging_config.show_emoji_legend && logging_config.use_emojis {
         logging::display_emoji_legend();
     }
 
@@ -191,7 +234,84 @@ async fn main() -> Result<()> {
             quic_port,
             api_port,
             validator,
+            copyover_recovery,
+            copyover_pipe,
+            copyover_fd,
         } => {
+            // Check if we're recovering from copyover
+            if copyover_recovery {
+                if let Some(pipe_fd) = copyover_pipe {
+                    info!("🔄 Recovering from copyover (pipe_fd={})", pipe_fd);
+
+                    // Recover state from copyover
+                    let state = copyover::CopyoverManager::recover_from_copyover(pipe_fd as i32)?;
+
+                    info!(
+                        version = %state.version,
+                        data_dir = %state.data_dir,
+                        "📥 Recovered copyover state"
+                    );
+
+                    // Restore API listener from copyover_fd if provided
+                    let api_listener = if let Some(api_fd) = copyover_fd {
+                        use std::os::unix::io::FromRawFd;
+                        let std_listener = unsafe { std::net::TcpListener::from_raw_fd(api_fd) };
+                        std_listener.set_nonblocking(true)?;
+                        Some(tokio::net::TcpListener::from_std(std_listener)?)
+                    } else {
+                        None
+                    };
+
+                    // Load config from recovered path
+                    let config_path = PathBuf::from(&state.config_path);
+                    let mut config = if config_path.exists() {
+                        config::NodeConfig::from_file(&config_path)?
+                    } else {
+                        config::NodeConfig::default()
+                    };
+
+                    // Apply recovered data directory
+                    config.node.data_dir = PathBuf::from(&state.data_dir);
+
+                    info!("✅ Copyover recovery complete, starting node");
+
+                    // Start node with recovered config
+                    let node = node::AdicNode::new(config.clone()).await?;
+                    info!(
+                        node_id = %node.node_id(),
+                        "🎯 Node initialized with recovered state"
+                    );
+
+                    // Start the HTTP API server with recovered listener if available
+                    let server_handle = api::start_api_server_with_listener(
+                        node.clone(),
+                        config.api.host.clone(),
+                        config.api.port,
+                        api_listener
+                    );
+
+                    // Run the node
+                    tokio::select! {
+                        result = node.run() => {
+                            if let Err(e) = result {
+                                error!("Node error: {}", e);
+                            }
+                        }
+                        _ = tokio::signal::ctrl_c() => {
+                            info!("Received shutdown signal");
+                        }
+                    }
+
+                    // Cleanup
+                    info!("Shutting down...");
+                    // Node doesn't have explicit shutdown, just abort the server
+                    server_handle.abort();
+
+                    return Ok(());
+                }
+            }
+
+            // Normal startup path
             // Priority order: CLI args > ENV vars > Config file > Defaults
 
             // 1. Start with config file or defaults
@@ -485,6 +605,139 @@ async fn main() -> Result<()> {
                     Ok(())
                 }
             }
+        }
+
+        Commands::Update { subcommand } => {
+            handle_update_command(subcommand, cli.config).await
+        }
+    }
+}
+
+async fn handle_update_command(cmd: UpdateCommands, config_path: Option<PathBuf>) -> Result<()> {
+    use adic_network::dns_version::DnsVersionDiscovery;
+
+    match cmd {
+        UpdateCommands::Check => {
+            info!("🔍 Checking for updates...");
+
+            // Get current version from Cargo.toml
+            let current_version = env!("CARGO_PKG_VERSION");
+
+            // Check DNS for updates
+            let dns = DnsVersionDiscovery::new("adic.network.adicl1.com".to_string())?;
+            match dns.check_for_update(current_version).await {
+                Ok(Some(update)) => {
+                    println!("🆕 Update available!");
+                    println!("  Current version: {}", current_version);
+                    println!("  Latest version:  {}", update.version);
+                    println!("  SHA256:         {}", &update.sha256_hash[..16]);
+                    if let Some(date) = update.release_date {
+                        println!("  Release date:   {}", date);
+                    }
+                    println!("\nRun 'adic update download' to download the update");
+                }
+                Ok(None) => {
+                    println!("✅ You're on the latest version ({})", current_version);
+                }
+                Err(e) => {
+                    warn!("⚠️ Failed to check for updates: {}", e);
+                    println!("Failed to check for updates. Please try again later.");
+                }
+            }
+            Ok(())
+        }
+
+        UpdateCommands::Download => {
+            use crate::progress_display::SimpleProgress;
+
+            info!("📥 Checking for updates to download...");
+
+            // Get current version
+            let current_version = env!("CARGO_PKG_VERSION");
+
+            // Check DNS for updates
+            let dns = DnsVersionDiscovery::new("adic.network.adicl1.com".to_string())?;
+            match dns.check_for_update(current_version).await {
+                Ok(Some(update)) => {
+                    println!("Found update: v{}", update.version);
+                    println!("SHA256: {}", &update.sha256_hash[..32]);
+                    println!();
+
+                    // In standalone mode, we can't use P2P yet
+                    // This is a placeholder for future HTTP fallback
+                    println!("Note: Standalone download requires P2P network connection.");
+                    println!("Please run 'adic start' to connect to the network first,");
+                    println!("or download the binary manually from the official source.");
+
+                    // Demonstrate what the progress would look like
+                    println!("\nWhen P2P is available, download will show progress like this:\n");
+
+                    // Show a demo progress bar
+                    use crate::progress_display::DownloadProgressBar;
+                    use std::io::IsTerminal;
+
+                    if std::io::stderr().is_terminal() {
+                        let demo_bar = DownloadProgressBar::new_chunk_progress(&update.version, 10);
+                        for i in 1..=10 {
+                            demo_bar.update_chunk(i, 10, 2.5, 4);
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                        }
+                        demo_bar.start_verification();
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        demo_bar.finish_success(&update.version);
+                    } else {
+                        let mut simple_progress = SimpleProgress::new(&update.version);
+                        for i in 1..=10 {
+                            simple_progress.update(i as u64 * 1024 * 1024, 10 * 1024 * 1024);
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                        }
+                        simple_progress.finish_success();
+                    }
+                }
+                Ok(None) => {
+                    println!("✅ You're already on the latest version ({})", current_version);
+                }
+                Err(e) => {
+                    warn!("⚠️ Failed to check for updates: {}", e);
+                    println!("Failed to check for updates. Please try again later.");
+                }
+            }
+
+            Ok(())
+        }
+
+        UpdateCommands::Apply { binary } => {
+            let binary_path = binary.unwrap_or_else(|| PathBuf::from("./adic.new"));
+
+            if !binary_path.exists() {
+                return Err(anyhow::anyhow!("Binary not found at {:?}", binary_path));
+            }
+
+            info!("🔄 Applying update via copyover...");
+
+            let mut copyover = copyover::CopyoverManager::new();
+
+            // In standalone mode, we don't have API fd to preserve
+            // This would be populated when running as a node
+            copyover.prepare_state(
+                None, // No API fd in CLI mode
+                config_path.unwrap_or_else(|| PathBuf::from("./adic-config.toml")).to_string_lossy().to_string(),
+                "./data".to_string(),
+                env!("CARGO_PKG_VERSION").to_string(),
+            )?;
+
+            // Execute copyover
+            copyover.safe_copyover(&binary_path.to_string_lossy()).await?;
+
+            Ok(())
+        }
+
+        UpdateCommands::Status => {
+            println!("Update Status:");
+            println!("  Current version: {}", env!("CARGO_PKG_VERSION"));
+            println!("  Update system:   Ready");
+            println!("\nUse 'adic update check' to check for updates");
+            Ok(())
         }
     }
 }
