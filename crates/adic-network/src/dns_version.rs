@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Result};
-use hickory_resolver::TokioAsyncResolver;
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::TokioAsyncResolver;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use std::sync::Arc;
 use tracing::{debug, info};
 
 /// DNS-based version discovery for ADIC network
@@ -32,10 +32,8 @@ struct CachedVersion {
 impl DnsVersionDiscovery {
     /// Create a new DNS version discovery instance
     pub fn new(domain: String) -> Result<Self> {
-        let resolver = TokioAsyncResolver::tokio(
-            ResolverConfig::default(),
-            ResolverOpts::default(),
-        );
+        let resolver =
+            TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
 
         Ok(Self {
             resolver,
@@ -67,7 +65,8 @@ impl DnsVersionDiscovery {
             "🌐 Querying DNS for version info"
         );
 
-        let response = self.resolver
+        let response = self
+            .resolver
             .txt_lookup(txt_name.clone())
             .await
             .map_err(|e| anyhow!("DNS lookup failed: {}", e))?;

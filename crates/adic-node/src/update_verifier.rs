@@ -1,13 +1,13 @@
 use anyhow::{anyhow, Result};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use hex;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 use tracing::{debug, info};
 
 /// Update verification keys - these would be the official ADIC signing keys
-const ADIC_UPDATE_PUBLIC_KEY: &str = "9f7b0675feb9e4e5a5c5b8f5a5b5c5d5e5f5061727374757677787980818283";
+const ADIC_UPDATE_PUBLIC_KEY: &str =
+    "9f7b0675feb9e4e5a5c5b8f5a5b5c5d5e5f5061727374757677787980818283";
 
 /// Verifies binary updates using Ed25519 signatures
 pub struct UpdateVerifier {
@@ -27,11 +27,15 @@ impl UpdateVerifier {
             .map_err(|e| anyhow!("Failed to decode public key: {}", e))?;
 
         if public_key_bytes.len() != 32 {
-            return Err(anyhow!("Invalid public key length: expected 32 bytes, got {}", public_key_bytes.len()));
+            return Err(anyhow!(
+                "Invalid public key length: expected 32 bytes, got {}",
+                public_key_bytes.len()
+            ));
         }
 
-        let verifying_key = VerifyingKey::from_bytes(&public_key_bytes.as_slice().try_into().unwrap())
-            .map_err(|e| anyhow!("Invalid public key: {}", e))?;
+        let verifying_key =
+            VerifyingKey::from_bytes(&public_key_bytes.as_slice().try_into().unwrap())
+                .map_err(|e| anyhow!("Invalid public key: {}", e))?;
 
         Ok(Self { verifying_key })
     }
@@ -44,8 +48,8 @@ impl UpdateVerifier {
         expected_hash: Option<&str>,
     ) -> Result<()> {
         // Read the binary
-        let binary_data = fs::read(binary_path)
-            .map_err(|e| anyhow!("Failed to read binary: {}", e))?;
+        let binary_data =
+            fs::read(binary_path).map_err(|e| anyhow!("Failed to read binary: {}", e))?;
 
         // Calculate hash
         let mut hasher = Sha256::new();
@@ -65,11 +69,14 @@ impl UpdateVerifier {
         }
 
         // Decode signature
-        let signature_bytes = hex::decode(signature_hex)
-            .map_err(|e| anyhow!("Failed to decode signature: {}", e))?;
+        let signature_bytes =
+            hex::decode(signature_hex).map_err(|e| anyhow!("Failed to decode signature: {}", e))?;
 
         if signature_bytes.len() != 64 {
-            return Err(anyhow!("Invalid signature length: expected 64 bytes, got {}", signature_bytes.len()));
+            return Err(anyhow!(
+                "Invalid signature length: expected 64 bytes, got {}",
+                signature_bytes.len()
+            ));
         }
 
         let signature = Signature::from_bytes(&signature_bytes.as_slice().try_into().unwrap());
@@ -114,7 +121,10 @@ impl UpdateVerifier {
                 .map_err(|e| anyhow!("Failed to decode chunk signature: {}", e))?;
 
             if signature_bytes.len() != 64 {
-                return Err(anyhow!("Invalid chunk signature length: expected 64 bytes, got {}", signature_bytes.len()));
+                return Err(anyhow!(
+                    "Invalid chunk signature length: expected 64 bytes, got {}",
+                    signature_bytes.len()
+                ));
             }
 
             let signature = Signature::from_bytes(&signature_bytes.as_slice().try_into().unwrap());
@@ -144,7 +154,10 @@ impl UpdateVerifier {
             .map_err(|e| anyhow!("Failed to decode version signature: {}", e))?;
 
         if signature_bytes.len() != 64 {
-            return Err(anyhow!("Invalid version signature length: expected 64 bytes, got {}", signature_bytes.len()));
+            return Err(anyhow!(
+                "Invalid version signature length: expected 64 bytes, got {}",
+                signature_bytes.len()
+            ));
         }
 
         let signature = Signature::from_bytes(&signature_bytes.as_slice().try_into().unwrap());
@@ -202,13 +215,19 @@ mod tests {
         let hash = format!("{:x}", hasher.finalize());
 
         // Verify should succeed
-        assert!(verifier.verify_binary(&binary_path, &signature, Some(&hash)).is_ok());
+        assert!(verifier
+            .verify_binary(&binary_path, &signature, Some(&hash))
+            .is_ok());
 
         // Verify with wrong signature should fail
-        assert!(verifier.verify_binary(&binary_path, &hex::encode([0u8; 64]), Some(&hash)).is_err());
+        assert!(verifier
+            .verify_binary(&binary_path, &hex::encode([0u8; 64]), Some(&hash))
+            .is_err());
 
         // Verify with wrong hash should fail
-        assert!(verifier.verify_binary(&binary_path, &signature, Some("wrong_hash")).is_err());
+        assert!(verifier
+            .verify_binary(&binary_path, &signature, Some("wrong_hash"))
+            .is_err());
 
         Ok(())
     }
@@ -236,10 +255,14 @@ mod tests {
         let signature = sign_data(chunk_data, &signing_key);
 
         // Verify should succeed
-        assert!(verifier.verify_chunk(chunk_data, &chunk_hash, Some(&signature)).is_ok());
+        assert!(verifier
+            .verify_chunk(chunk_data, &chunk_hash, Some(&signature))
+            .is_ok());
 
         // Verify with wrong hash should fail
-        assert!(verifier.verify_chunk(chunk_data, "wrong_hash", Some(&signature)).is_err());
+        assert!(verifier
+            .verify_chunk(chunk_data, "wrong_hash", Some(&signature))
+            .is_err());
 
         // Verify without signature should succeed if hash matches
         assert!(verifier.verify_chunk(chunk_data, &chunk_hash, None).is_ok());
@@ -267,13 +290,19 @@ mod tests {
         let signature = sign_data(message.as_bytes(), &signing_key);
 
         // Verify should succeed
-        assert!(verifier.verify_version_record(version, binary_hash, &signature).is_ok());
+        assert!(verifier
+            .verify_version_record(version, binary_hash, &signature)
+            .is_ok());
 
         // Verify with wrong version should fail
-        assert!(verifier.verify_version_record("0.1.0", binary_hash, &signature).is_err());
+        assert!(verifier
+            .verify_version_record("0.1.0", binary_hash, &signature)
+            .is_err());
 
         // Verify with wrong hash should fail
-        assert!(verifier.verify_version_record(version, "wrong_hash", &signature).is_err());
+        assert!(verifier
+            .verify_version_record(version, "wrong_hash", &signature)
+            .is_err());
 
         Ok(())
     }

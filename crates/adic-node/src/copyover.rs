@@ -1,13 +1,13 @@
 use anyhow::{anyhow, Result};
 use nix::fcntl::{fcntl, FcntlArg, FdFlag};
 use nix::unistd::{execve, pipe};
-use std::os::fd::AsRawFd as AsRawFdTrait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::ffi::CString;
 use std::fs;
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd as AsRawFdTrait;
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::path::Path;
 use tracing::{debug, error, info, warn};
@@ -52,6 +52,12 @@ pub struct CopyoverManager {
     state: Option<CopyoverState>,
 }
 
+impl Default for CopyoverManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CopyoverManager {
     /// Create a new copyover manager
     pub fn new() -> Self {
@@ -77,7 +83,7 @@ impl CopyoverManager {
         }
 
         self.state = Some(CopyoverState {
-            api_listener_fd: api_fd.map(|fd| fd as i32),
+            api_listener_fd: api_fd,
             config_path,
             data_dir,
             peers: Vec::new(), // Would be populated from PeerManager
@@ -95,16 +101,15 @@ impl CopyoverManager {
         new_flags.remove(FdFlag::FD_CLOEXEC);
         fcntl(fd, FcntlArg::F_SETFD(new_flags))?;
 
-        debug!(
-            fd = fd,
-            "🔓 Cleared CLOEXEC flag on file descriptor"
-        );
+        debug!(fd = fd, "🔓 Cleared CLOEXEC flag on file descriptor");
         Ok(())
     }
 
     /// Execute copyover to new binary
     pub fn execute_copyover(&self, new_binary_path: &str) -> Result<()> {
-        let state = self.state.as_ref()
+        let state = self
+            .state
+            .as_ref()
             .ok_or_else(|| anyhow!("No state prepared for copyover"))?;
 
         info!(
@@ -122,7 +127,7 @@ impl CopyoverManager {
         match unsafe { nix::unistd::fork() } {
             Ok(nix::unistd::ForkResult::Parent { child }) => {
                 // Parent process
-                drop(write_fd);  // Close write end of pipe in parent
+                drop(write_fd); // Close write end of pipe in parent
 
                 // Prepare arguments for new binary
                 let read_fd_raw = read_fd.as_raw_fd();
@@ -160,14 +165,14 @@ impl CopyoverManager {
             }
             Ok(nix::unistd::ForkResult::Child) => {
                 // Child process - write state and exit
-                drop(read_fd);  // Close read end of pipe in child
+                drop(read_fd); // Close read end of pipe in child
 
                 // Write state to pipe
                 let write_fd_raw = write_fd.as_raw_fd();
                 let mut pipe_writer = unsafe { fs::File::from_raw_fd(write_fd_raw) };
                 pipe_writer.write_all(state_json.as_bytes())?;
                 pipe_writer.sync_all()?;
-                std::mem::forget(pipe_writer);  // Don't close the fd on drop
+                std::mem::forget(pipe_writer); // Don't close the fd on drop
 
                 debug!("📝 State written to pipe, child exiting");
                 std::process::exit(0);
@@ -185,10 +190,7 @@ impl CopyoverManager {
     /// Recover from copyover (called in new process)
     #[allow(dead_code)]
     pub fn recover_from_copyover(pipe_fd: RawFd) -> Result<CopyoverState> {
-        info!(
-            pipe_fd = pipe_fd,
-            "📥 Recovering from copyover"
-        );
+        info!(pipe_fd = pipe_fd, "📥 Recovering from copyover");
 
         // Read state from pipe
         let mut pipe_reader = unsafe { fs::File::from_raw_fd(pipe_fd) };
@@ -255,9 +257,7 @@ impl CopyoverManager {
         }
 
         // Try running with --version to verify it's valid
-        let output = Command::new(binary_path)
-            .arg("--version")
-            .output()?;
+        let output = Command::new(binary_path).arg("--version").output()?;
 
         if output.status.success() {
             let version = String::from_utf8_lossy(&output.stdout);
@@ -299,14 +299,12 @@ mod tests {
             api_listener_fd: Some(3),
             config_path: "/path/to/config.toml".to_string(),
             data_dir: "/data".to_string(),
-            peers: vec![
-                PeerState {
-                    peer_id: "peer1".to_string(),
-                    addresses: vec!["127.0.0.1:9000".to_string()],
-                    reputation: 75.0,
-                    last_seen: 1234567890,
-                },
-            ],
+            peers: vec![PeerState {
+                peer_id: "peer1".to_string(),
+                addresses: vec!["127.0.0.1:9000".to_string()],
+                reputation: 75.0,
+                last_seen: 1234567890,
+            }],
             version: "0.1.0".to_string(),
             metadata: HashMap::new(),
         };

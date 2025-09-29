@@ -1,7 +1,11 @@
+#![allow(dead_code)]
+#![allow(clippy::assertions_on_constants)]
+
 use adic_network::protocol::update::{UpdateMessage, VersionInfo};
-use adic_network::protocol::update_protocol::{UpdateProtocol, UpdateProtocolConfig, UpdateProtocolEvent};
+use adic_network::protocol::update_protocol::{
+    UpdateProtocol, UpdateProtocolConfig, UpdateProtocolEvent,
+};
 use libp2p::PeerId;
-use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
@@ -40,9 +44,10 @@ mod update_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let peer_id = PeerId::random();
-        let (_protocol, _event_receiver) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
+        let (_protocol, _event_receiver) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
         // Protocol initialized successfully
-        assert!(true);
+        // Test placeholder
     }
 
     #[tokio::test]
@@ -57,7 +62,8 @@ mod update_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let peer_id = PeerId::random();
-        let (protocol, mut event_receiver) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
+        let (protocol, mut event_receiver) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
         let peer_id = PeerId::random();
 
         // Create a version announcement
@@ -96,11 +102,14 @@ mod update_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let peer_id = PeerId::random();
-        let (protocol, _event_receiver) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
+        let (protocol, _event_receiver) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
         let peer_id = PeerId::random();
 
         // Request a chunk
-        let result = protocol.request_chunk(peer_id, "0.2.0".to_string(), 0).await;
+        let result = protocol
+            .request_chunk(peer_id, "0.2.0".to_string(), 0)
+            .await;
 
         // Should succeed (even if chunk not available, request is sent)
         assert!(result.is_ok());
@@ -118,7 +127,8 @@ mod update_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let peer_id = PeerId::random();
-        let (protocol, mut event_receiver) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
+        let (protocol, mut event_receiver) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
         let peer_id = PeerId::random();
 
         // Simulate receiving a chunk
@@ -163,7 +173,8 @@ mod update_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let peer_id = PeerId::random();
-        let (protocol, _event_receiver) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
+        let (protocol, _event_receiver) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
         let peer_id = PeerId::random();
 
         // First announce a version
@@ -196,7 +207,8 @@ mod update_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let peer_id = PeerId::random();
-        let (protocol, _event_receiver) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
+        let (protocol, _event_receiver) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
         let peer1 = PeerId::random();
         let peer2 = PeerId::random();
 
@@ -240,7 +252,8 @@ mod update_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let peer_id = PeerId::random();
-        let (protocol, _event_receiver) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
+        let (protocol, _event_receiver) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
         let peer_id = PeerId::random();
 
         // Test successful completion
@@ -278,13 +291,16 @@ mod update_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let peer_id = PeerId::random();
-        let (protocol, _event_receiver) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
+        let (protocol, _event_receiver) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
         let peer_id = PeerId::random();
 
         // Send multiple chunk requests sequentially
         // (Protocol doesn't implement Clone, so we can't test concurrent requests easily)
         for i in 0..5 {
-            let result = protocol.request_chunk(peer_id, "0.2.0".to_string(), i).await;
+            let result = protocol
+                .request_chunk(peer_id, "0.2.0".to_string(), i)
+                .await;
             assert!(result.is_ok());
         }
     }
@@ -294,7 +310,8 @@ mod update_tests {
         let config = UpdateProtocolConfig::default();
         let temp_dir = tempfile::tempdir().unwrap();
         let peer_id = PeerId::random();
-        let (protocol, _event_receiver) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
+        let (protocol, _event_receiver) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
 
         let peer1 = PeerId::random();
         let peer2 = PeerId::random();

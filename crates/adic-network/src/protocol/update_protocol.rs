@@ -1,6 +1,9 @@
+use super::binary_store::{BinaryMetadata, BinaryStore};
+use super::swarm_tracker::SwarmSpeedTracker;
+use crate::protocol::update::{BinaryChunkData, UpdateMessage, VersionInfo};
 use anyhow::{anyhow, Result};
 use libp2p::PeerId;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,9 +11,6 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio::time;
 use tracing::{debug, info, warn};
-use crate::protocol::update::{UpdateMessage, VersionInfo, BinaryChunkData};
-use super::binary_store::{BinaryStore, BinaryMetadata};
-use super::swarm_tracker::SwarmSpeedTracker;
 
 /// Type alias for version-indexed chunk storage
 type VersionChunks = HashMap<String, HashMap<u32, Vec<u8>>>;
@@ -39,7 +39,7 @@ impl Default for UpdateProtocolConfig {
             max_concurrent_transfers: 5,
             chunk_timeout: Duration::from_secs(30),
             max_retries: 3,
-            upload_rate_limit: 0,  // Unlimited by default
+            upload_rate_limit: 0,   // Unlimited by default
             download_rate_limit: 0, // Unlimited by default
         }
     }
@@ -108,7 +108,11 @@ pub enum UpdateProtocolEvent {
 
 impl UpdateProtocol {
     /// Create a new update protocol instance
-    pub fn new(config: UpdateProtocolConfig, storage_dir: PathBuf, local_peer_id: PeerId) -> Result<(Self, mpsc::UnboundedReceiver<UpdateProtocolEvent>)> {
+    pub fn new(
+        config: UpdateProtocolConfig,
+        storage_dir: PathBuf,
+        local_peer_id: PeerId,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<UpdateProtocolEvent>)> {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
 
         // Create binary store for chunk management
@@ -134,10 +138,26 @@ impl UpdateProtocol {
     }
 
     /// Handle incoming update message
-    pub async fn handle_message(&self, message: UpdateMessage, from_peer: PeerId) -> Result<Option<UpdateMessage>> {
+    pub async fn handle_message(
+        &self,
+        message: UpdateMessage,
+        from_peer: PeerId,
+    ) -> Result<Option<UpdateMessage>> {
         match message {
-            UpdateMessage::VersionAnnounce { version, binary_hash, signature, total_chunks } => {
-                self.handle_version_announce(from_peer, version, binary_hash, signature, total_chunks).await?;
+            UpdateMessage::VersionAnnounce {
+                version,
+                binary_hash,
+                signature,
+                total_chunks,
+            } => {
+                self.handle_version_announce(
+                    from_peer,
+                    version,
+                    binary_hash,
+                    signature,
+                    total_chunks,
+                )
+                .await?;
                 Ok(None)
             }
             UpdateMessage::VersionQuery => {
@@ -148,11 +168,18 @@ impl UpdateProtocol {
                     available_versions: versions,
                 }))
             }
-            UpdateMessage::VersionResponse { current_version, available_versions } => {
-                self.handle_version_response(from_peer, current_version, available_versions).await?;
+            UpdateMessage::VersionResponse {
+                current_version,
+                available_versions,
+            } => {
+                self.handle_version_response(from_peer, current_version, available_versions)
+                    .await?;
                 Ok(None)
             }
-            UpdateMessage::BinaryRequest { version, chunk_index } => {
+            UpdateMessage::BinaryRequest {
+                version,
+                chunk_index,
+            } => {
                 // Serve the requested chunk if we have it
                 let chunk_data = self.get_chunk_for_upload(&version, chunk_index).await?;
                 Ok(Some(UpdateMessage::BinaryChunk {
@@ -163,12 +190,32 @@ impl UpdateProtocol {
                     chunk_hash: chunk_data.chunk_hash,
                 }))
             }
-            UpdateMessage::BinaryChunk { version, chunk_index, total_chunks, data, chunk_hash } => {
-                self.handle_binary_chunk(from_peer, version, chunk_index, total_chunks, data, chunk_hash).await?;
+            UpdateMessage::BinaryChunk {
+                version,
+                chunk_index,
+                total_chunks,
+                data,
+                chunk_hash,
+            } => {
+                self.handle_binary_chunk(
+                    from_peer,
+                    version,
+                    chunk_index,
+                    total_chunks,
+                    data,
+                    chunk_hash,
+                )
+                .await?;
                 Ok(None)
             }
-            UpdateMessage::UpdateComplete { version, peer_id, success, error_message } => {
-                self.handle_update_complete(from_peer, version, peer_id, success, error_message).await?;
+            UpdateMessage::UpdateComplete {
+                version,
+                peer_id,
+                success,
+                error_message,
+            } => {
+                self.handle_update_complete(from_peer, version, peer_id, success, error_message)
+                    .await?;
                 Ok(None)
             }
             UpdateMessage::SwarmMetrics {
@@ -182,16 +229,20 @@ impl UpdateProtocol {
                 ..
             } => {
                 // Update swarm tracker with peer metrics
-                self.swarm_tracker.update_peer_metrics(
-                    from_peer,
-                    download_speed,
-                    upload_speed,
-                    active_transfers,
-                    seeding_versions,
-                    downloading_version,
-                    download_progress,
-                    peer_count,
-                ).await?;
+                self.swarm_tracker
+                    .update_peer_metrics(
+                        from_peer,
+                        crate::protocol::swarm_tracker::PeerMetricsUpdate {
+                            download_speed,
+                            upload_speed,
+                            active_transfers,
+                            seeding_versions,
+                            downloading_version,
+                            download_progress,
+                            peer_count,
+                        },
+                    )
+                    .await?;
                 Ok(None)
             }
         }
@@ -228,7 +279,8 @@ impl UpdateProtocol {
         // Store peer's version
         {
             let mut peer_versions = self.peer_versions.write().await;
-            peer_versions.entry(from_peer)
+            peer_versions
+                .entry(from_peer)
                 .or_insert_with(Vec::new)
                 .push(version_info.clone());
         }
@@ -236,13 +288,19 @@ impl UpdateProtocol {
         // Track which peers have this version
         {
             let mut version_peers = self.version_peers.write().await;
-            version_peers.entry(version.clone())
+            version_peers
+                .entry(version.clone())
                 .or_insert_with(HashSet::new)
                 .insert(from_peer);
         }
 
         // Emit event
-        self.event_sender.send(UpdateProtocolEvent::VersionDiscovered(from_peer, version_info)).ok();
+        self.event_sender
+            .send(UpdateProtocolEvent::VersionDiscovered(
+                from_peer,
+                version_info,
+            ))
+            .ok();
 
         Ok(())
     }
@@ -271,12 +329,18 @@ impl UpdateProtocol {
         {
             let mut version_peers = self.version_peers.write().await;
             for version_info in available_versions {
-                version_peers.entry(version_info.version.clone())
+                version_peers
+                    .entry(version_info.version.clone())
                     .or_insert_with(HashSet::new)
                     .insert(from_peer);
 
                 // Emit discovery event
-                self.event_sender.send(UpdateProtocolEvent::VersionDiscovered(from_peer, version_info)).ok();
+                self.event_sender
+                    .send(UpdateProtocolEvent::VersionDiscovered(
+                        from_peer,
+                        version_info,
+                    ))
+                    .ok();
             }
         }
 
@@ -315,21 +379,26 @@ impl UpdateProtocol {
                 computed_hash = %computed_hash,
                 "⚠️ Chunk hash mismatch"
             );
-            self.event_sender.send(UpdateProtocolEvent::ChunkDownloadFailed(
-                version.clone(),
-                chunk_index,
-                "Hash mismatch".to_string()
-            )).ok();
+            self.event_sender
+                .send(UpdateProtocolEvent::ChunkDownloadFailed(
+                    version.clone(),
+                    chunk_index,
+                    "Hash mismatch".to_string(),
+                ))
+                .ok();
             return Err(anyhow!("Chunk hash verification failed"));
         }
 
         // Store the chunk using BinaryStore
-        self.binary_store.store_chunk(&version, chunk_index, data.clone()).await?;
+        self.binary_store
+            .store_chunk(&version, chunk_index, data.clone())
+            .await?;
 
         // Also keep in memory for backward compatibility
         {
             let mut chunks = self.downloaded_chunks.write().await;
-            chunks.entry(version.clone())
+            chunks
+                .entry(version.clone())
                 .or_insert_with(HashMap::new)
                 .insert(chunk_index, data.clone());
         }
@@ -337,7 +406,8 @@ impl UpdateProtocol {
         // Store chunk hash for future verification
         {
             let mut hashes = self.chunk_hashes.write().await;
-            hashes.entry(version.clone())
+            hashes
+                .entry(version.clone())
                 .or_insert_with(HashMap::new)
                 .insert(chunk_index, chunk_hash.clone());
         }
@@ -353,11 +423,13 @@ impl UpdateProtocol {
         }
 
         // Emit success event
-        self.event_sender.send(UpdateProtocolEvent::ChunkDownloadCompleted(
-            version.clone(),
-            chunk_index,
-            data.len()
-        )).ok();
+        self.event_sender
+            .send(UpdateProtocolEvent::ChunkDownloadCompleted(
+                version.clone(),
+                chunk_index,
+                data.len(),
+            ))
+            .ok();
 
         // Check if we have all chunks
         self.check_download_complete(&version, total_chunks).await?;
@@ -394,9 +466,16 @@ impl UpdateProtocol {
     /// Check if all chunks have been downloaded
     async fn check_download_complete(&self, version: &str, total_chunks: u32) -> Result<()> {
         // Check if we have all chunks using BinaryStore
-        if self.binary_store.has_complete_binary(version, total_chunks).await {
+        if self
+            .binary_store
+            .has_complete_binary(version, total_chunks)
+            .await
+        {
             // Assemble the binary from chunks
-            let binary_path = self.binary_store.assemble_binary(version, total_chunks).await?;
+            let binary_path = self
+                .binary_store
+                .assemble_binary(version, total_chunks)
+                .await?;
 
             // Read the assembled binary
             let binary = std::fs::read(&binary_path)?;
@@ -409,16 +488,23 @@ impl UpdateProtocol {
             );
 
             // Emit completion event
-            self.event_sender.send(UpdateProtocolEvent::BinaryDownloadCompleted(
-                version.to_string(),
-                binary
-            )).ok();
+            self.event_sender
+                .send(UpdateProtocolEvent::BinaryDownloadCompleted(
+                    version.to_string(),
+                    binary,
+                ))
+                .ok();
         }
         Ok(())
     }
 
     /// Request a specific chunk from a peer with retry logic
-    pub async fn request_chunk(&self, peer: PeerId, version: String, chunk_index: u32) -> Result<()> {
+    pub async fn request_chunk(
+        &self,
+        peer: PeerId,
+        version: String,
+        chunk_index: u32,
+    ) -> Result<()> {
         // Use semaphore for rate limiting
         let _permit = self.transfer_semaphore.acquire().await?;
 
@@ -431,20 +517,23 @@ impl UpdateProtocol {
                 let timeout = self.config.chunk_timeout;
 
                 if elapsed > timeout && transfer.attempts < self.config.max_retries {
-                    true  // Should retry
+                    true // Should retry
                 } else if elapsed > timeout {
                     // Max retries exceeded
-                    return Err(anyhow::anyhow!("Chunk transfer failed after {} attempts", transfer.attempts));
+                    return Err(anyhow::anyhow!(
+                        "Chunk transfer failed after {} attempts",
+                        transfer.attempts
+                    ));
                 } else {
-                    false  // Transfer still in progress
+                    false // Transfer still in progress
                 }
             } else {
-                true  // New transfer
+                true // New transfer
             }
         };
 
         if !should_retry {
-            return Ok(());  // Transfer already in progress
+            return Ok(()); // Transfer already in progress
         }
 
         // Update or create the transfer record
@@ -467,16 +556,18 @@ impl UpdateProtocol {
                     data: None,
                     hash: None,
                     verified: false,
-                }
+                },
             );
         }
 
         // Emit start event
-        self.event_sender.send(UpdateProtocolEvent::ChunkDownloadStarted(
-            version.clone(),
-            chunk_index,
-            peer
-        )).ok();
+        self.event_sender
+            .send(UpdateProtocolEvent::ChunkDownloadStarted(
+                version.clone(),
+                chunk_index,
+                peer,
+            ))
+            .ok();
 
         Ok(())
     }
@@ -484,7 +575,8 @@ impl UpdateProtocol {
     /// Get peers that have a specific version
     pub async fn get_peers_with_version(&self, version: &str) -> Vec<PeerId> {
         let version_peers = self.version_peers.read().await;
-        version_peers.get(version)
+        version_peers
+            .get(version)
             .map(|peers| peers.iter().copied().collect())
             .unwrap_or_default()
     }
@@ -492,7 +584,8 @@ impl UpdateProtocol {
     /// Get all known versions from peers
     pub async fn get_all_peer_versions(&self) -> HashMap<String, Vec<PeerId>> {
         let version_peers = self.version_peers.read().await;
-        version_peers.iter()
+        version_peers
+            .iter()
             .map(|(v, peers)| (v.clone(), peers.iter().copied().collect()))
             .collect()
     }
@@ -518,7 +611,9 @@ impl UpdateProtocol {
 
     /// Update local speed metrics
     pub async fn update_local_speed(&self, download_speed: u64, upload_speed: u64) {
-        self.swarm_tracker.update_local_speed(download_speed, upload_speed).await;
+        self.swarm_tracker
+            .update_local_speed(download_speed, upload_speed)
+            .await;
     }
 
     /// Create SwarmMetrics message for broadcasting
@@ -532,7 +627,8 @@ impl UpdateProtocol {
         // Determine if we're downloading anything
         let downloading_version = {
             let transfers = self.active_transfers.read().await;
-            transfers.iter()
+            transfers
+                .iter()
                 .map(|((version, _), _)| version.clone())
                 .next()
         };
@@ -543,7 +639,10 @@ impl UpdateProtocol {
             if let Some(version_chunks) = chunks.get(version) {
                 let downloaded = version_chunks.len();
                 // Try to get total chunks from version info
-                let total = self.peer_versions.read().await
+                let total = self
+                    .peer_versions
+                    .read()
+                    .await
                     .values()
                     .flatten()
                     .find(|v| v.version == *version)
@@ -562,13 +661,16 @@ impl UpdateProtocol {
         let peer_count = self.peer_versions.read().await.len();
 
         // Get current speeds from swarm tracker
-        let local_metrics = self.swarm_tracker.get_local_metrics(
-            active_transfers,
-            seeding_versions.clone(),
-            downloading_version.clone(),
-            download_progress,
-            peer_count,
-        ).await;
+        let local_metrics = self
+            .swarm_tracker
+            .get_local_metrics(
+                active_transfers,
+                seeding_versions.clone(),
+                downloading_version.clone(),
+                download_progress,
+                peer_count,
+            )
+            .await;
 
         UpdateMessage::SwarmMetrics {
             download_speed: local_metrics.download_speed,
@@ -612,14 +714,17 @@ impl UpdateProtocol {
         }
 
         // Store the chunk
-        self.binary_store.store_chunk(&version, chunk_index, data.clone()).await?;
+        self.binary_store
+            .store_chunk(&version, chunk_index, data.clone())
+            .await?;
 
         let data_len = data.len();
 
         // Store in downloaded chunks
         {
             let mut chunks = self.downloaded_chunks.write().await;
-            chunks.entry(version.clone())
+            chunks
+                .entry(version.clone())
                 .or_insert_with(HashMap::new)
                 .insert(chunk_index, data);
         }
@@ -627,7 +732,8 @@ impl UpdateProtocol {
         // Store the hash
         {
             let mut hashes = self.chunk_hashes.write().await;
-            hashes.entry(version.clone())
+            hashes
+                .entry(version.clone())
                 .or_insert_with(HashMap::new)
                 .insert(chunk_index, hash);
         }
@@ -639,11 +745,13 @@ impl UpdateProtocol {
         }
 
         // Emit completion event
-        self.event_sender.send(UpdateProtocolEvent::ChunkDownloadCompleted(
-            version,
-            chunk_index,
-            data_len
-        )).ok();
+        self.event_sender
+            .send(UpdateProtocolEvent::ChunkDownloadCompleted(
+                version,
+                chunk_index,
+                data_len,
+            ))
+            .ok();
 
         Ok(())
     }
@@ -662,7 +770,7 @@ impl UpdateProtocol {
                         version.clone(),
                         *chunk_index,
                         transfer.peer,
-                        transfer.attempts
+                        transfer.attempts,
                     ));
                 }
             }
@@ -680,10 +788,7 @@ impl UpdateProtocol {
 
                 // Find a different peer if possible
                 let peers = self.get_peers_with_version(&version).await;
-                let new_peer = peers.iter()
-                    .find(|p| **p != peer)
-                    .copied()
-                    .unwrap_or(peer);
+                let new_peer = peers.iter().find(|p| **p != peer).copied().unwrap_or(peer);
 
                 // Retry the request
                 self.request_chunk(new_peer, version, chunk_index).await?;
@@ -692,11 +797,13 @@ impl UpdateProtocol {
                 let mut transfers = self.active_transfers.write().await;
                 transfers.remove(&(version.clone(), chunk_index));
 
-                self.event_sender.send(UpdateProtocolEvent::ChunkDownloadFailed(
-                    version,
-                    chunk_index,
-                    format!("Failed after {} attempts", attempts)
-                )).ok();
+                self.event_sender
+                    .send(UpdateProtocolEvent::ChunkDownloadFailed(
+                        version,
+                        chunk_index,
+                        format!("Failed after {} attempts", attempts),
+                    ))
+                    .ok();
             }
         }
 
@@ -761,12 +868,19 @@ impl UpdateProtocol {
         });
     }
 
-    async fn get_chunk_for_upload(&self, version: &str, chunk_index: u32) -> Result<BinaryChunkData> {
+    async fn get_chunk_for_upload(
+        &self,
+        version: &str,
+        chunk_index: u32,
+    ) -> Result<BinaryChunkData> {
         // Fetch chunk from BinaryStore
         let chunk_data = self.binary_store.get_chunk(version, chunk_index).await?;
 
         // Get metadata to know total chunks
-        let metadata = self.binary_store.get_metadata(version).await
+        let metadata = self
+            .binary_store
+            .get_metadata(version)
+            .await
             .ok_or_else(|| anyhow!("Version {} not found in store", version))?;
 
         // Calculate chunk hash
@@ -782,7 +896,11 @@ impl UpdateProtocol {
     }
 
     /// Add a binary to the store for distribution
-    pub async fn add_binary_for_distribution(&self, version: String, binary_path: &std::path::Path) -> Result<BinaryMetadata> {
+    pub async fn add_binary_for_distribution(
+        &self,
+        version: String,
+        binary_path: &std::path::Path,
+    ) -> Result<BinaryMetadata> {
         self.binary_store.add_binary(version, binary_path).await
     }
 

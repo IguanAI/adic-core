@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use adic_node::update_manager::UpdateConfig;
 
 #[cfg(test)]
@@ -45,7 +47,7 @@ mod update_manager_tests {
             update_window_start: 2,
             update_window_end: 4,
             require_confirmation: false,
-            max_retries: 5,  // Set higher retry count
+            max_retries: 5, // Set higher retry count
             dns_domain: "test.adic.network".to_string(),
         };
 
@@ -64,9 +66,9 @@ mod update_manager_tests {
         assert_eq!(config.max_retries, 3);
 
         // Verify other defaults
-        assert_eq!(config.auto_update, false);
+        assert!(!config.auto_update);
         assert_eq!(config.check_interval, 3600); // 1 hour (actual default)
-        assert_eq!(config.require_confirmation, true);
+        assert!(config.require_confirmation);
     }
 
     #[tokio::test]
@@ -99,7 +101,7 @@ mod update_manager_tests {
             update_window_start: 2,
             update_window_end: 4,
             require_confirmation: false,
-            max_retries: 0,  // No retries
+            max_retries: 0, // No retries
             dns_domain: "test.adic.network".to_string(),
         };
 
@@ -116,7 +118,7 @@ mod update_manager_tests {
             update_window_start: 2,
             update_window_end: 4,
             require_confirmation: false,
-            max_retries: 100,  // Very high retry count
+            max_retries: 100, // Very high retry count
             dns_domain: "test.adic.network".to_string(),
         };
 
@@ -132,8 +134,8 @@ mod api_listener_tests {
     #[tokio::test]
     async fn test_api_listener_fd_storage() {
         // Create a mock update manager setup
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config = UpdateConfig::default();
+        let _temp_dir = tempfile::tempdir().unwrap();
+        let _config = UpdateConfig::default();
 
         // Note: We can't directly test UpdateManager without a full NetworkEngine setup
         // but we can verify the API listener FD mechanism exists

@@ -1,7 +1,17 @@
 use console::{style, Term};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle, ProgressState};
+use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use std::fmt::Write;
 use std::time::Duration;
+
+/// Swarm statistics for progress display
+#[allow(dead_code)]
+pub struct SwarmStats {
+    pub local_speed: f64,
+    pub peers: usize,
+    pub swarm_download_speed: f64,
+    pub swarm_upload_speed: f64,
+    pub swarm_peers: usize,
+}
 
 /// Modern, clean progress display for ADIC updates
 pub struct DownloadProgressBar {
@@ -23,14 +33,13 @@ impl DownloadProgressBar {
         let main_bar = multi_progress.add(ProgressBar::new(total_size));
 
         // Set up the clean, borderless style
-        let style = ProgressStyle::with_template(
-            "\n{msg}\n\n{bar:42} {percent:>6}%\n\n{prefix:.dim}"
-        )
-        .unwrap()
-        .progress_chars("▓▓░")
-        .with_key("percent", |state: &ProgressState, w: &mut dyn Write| {
-            write!(w, "{:>5.1}", state.fraction() * 100.0).unwrap()
-        });
+        let style =
+            ProgressStyle::with_template("\n{msg}\n\n{bar:42} {percent:>6}%\n\n{prefix:.dim}")
+                .unwrap()
+                .progress_chars("▓▓░")
+                .with_key("percent", |state: &ProgressState, w: &mut dyn Write| {
+                    write!(w, "{:>5.1}", state.fraction() * 100.0).unwrap()
+                });
 
         main_bar.set_style(style);
         main_bar.set_message(format!("Downloading ADIC v{}...", version));
@@ -54,14 +63,12 @@ impl DownloadProgressBar {
         let main_bar = multi_progress.add(ProgressBar::new(total_chunks as u64));
 
         // Ultra-clean style optimized for chunks
-        let style = ProgressStyle::with_template(
-            "{msg}\n\n{bar:42} {percent:>6}%\n\n{prefix}"
-        )
-        .unwrap()
-        .progress_chars("▓▓░")
-        .with_key("percent", |state: &ProgressState, w: &mut dyn Write| {
-            write!(w, "{:>5.1}", state.fraction() * 100.0).unwrap()
-        });
+        let style = ProgressStyle::with_template("{msg}\n\n{bar:42} {percent:>6}%\n\n{prefix}")
+            .unwrap()
+            .progress_chars("▓▓░")
+            .with_key("percent", |state: &ProgressState, w: &mut dyn Write| {
+                write!(w, "{:>5.1}", state.fraction() * 100.0).unwrap()
+            });
 
         main_bar.set_style(style);
         main_bar.set_message(format!("Downloading ADIC v{}...", version));
@@ -75,7 +82,14 @@ impl DownloadProgressBar {
 
     /// Update download progress
     #[allow(dead_code)]
-    pub fn update(&self, current: u64, speed_bytes_per_sec: f64, peers: usize, chunks_done: u32, chunks_total: u32) {
+    pub fn update(
+        &self,
+        current: u64,
+        speed_bytes_per_sec: f64,
+        peers: usize,
+        chunks_done: u32,
+        chunks_total: u32,
+    ) {
         self.main_bar.set_position(current);
 
         // Format the info line
@@ -101,17 +115,27 @@ impl DownloadProgressBar {
         // Build the stats line
         let stats_line = format!(
             "Peers: {}    •    Chunks: {}/{}    •    Verified: {}",
-            peers, chunks_done, chunks_total, chunks_done.saturating_sub(1)
+            peers,
+            chunks_done,
+            chunks_total,
+            chunks_done.saturating_sub(1)
         );
 
-        self.main_bar.set_prefix(format!("{}\n{}",
+        self.main_bar.set_prefix(format!(
+            "{}\n{}",
             style(info_line).dim(),
             style(stats_line).dim()
         ));
     }
 
     /// Update for chunk-based progress
-    pub fn update_chunk(&self, chunks_done: u32, chunks_total: u32, speed_chunks_per_sec: f64, peers: usize) {
+    pub fn update_chunk(
+        &self,
+        chunks_done: u32,
+        chunks_total: u32,
+        speed_chunks_per_sec: f64,
+        peers: usize,
+    ) {
         self.main_bar.set_position(chunks_done as u64);
 
         // Calculate ETA based on chunks
@@ -131,10 +155,12 @@ impl DownloadProgressBar {
 
         let stats_line = format!(
             "Peers: {}    •    Verified: {}",
-            peers, chunks_done.saturating_sub(1).min(chunks_done)
+            peers,
+            chunks_done.saturating_sub(1).min(chunks_done)
         );
 
-        self.main_bar.set_prefix(format!("{}\n{}",
+        self.main_bar.set_prefix(format!(
+            "{}\n{}",
             style(info_line).dim(),
             style(stats_line).dim()
         ));
@@ -142,22 +168,13 @@ impl DownloadProgressBar {
 
     /// Update chunk progress with swarm speed
     #[allow(dead_code)]
-    pub fn update_chunk_with_swarm(
-        &self,
-        chunks_done: u32,
-        chunks_total: u32,
-        local_speed: f64,
-        peers: usize,
-        swarm_download_speed: f64,
-        swarm_upload_speed: f64,
-        swarm_peers: usize,
-    ) {
+    pub fn update_chunk_with_swarm(&self, chunks_done: u32, chunks_total: u32, stats: SwarmStats) {
         self.main_bar.set_position(chunks_done as u64);
 
         // Calculate ETA based on chunks
         let remaining = chunks_total.saturating_sub(chunks_done);
-        let eta_secs = if local_speed > 0.0 {
-            (remaining as f64 / local_speed) as u64
+        let eta_secs = if stats.local_speed > 0.0 {
+            (remaining as f64 / stats.local_speed) as u64
         } else {
             0
         };
@@ -166,23 +183,25 @@ impl DownloadProgressBar {
         // Build the info lines
         let info_line = format!(
             "Chunks: {}/{}    •    {:.1} chunks/s    •    {} remaining",
-            chunks_done, chunks_total, local_speed, eta_str
+            chunks_done, chunks_total, stats.local_speed, eta_str
         );
 
         let stats_line = format!(
             "Peers: {}    •    Verified: {}",
-            peers, chunks_done.saturating_sub(1).min(chunks_done)
+            stats.peers,
+            chunks_done.saturating_sub(1).min(chunks_done)
         );
 
         // Add swarm statistics line
         let swarm_line = format!(
             "Swarm: ↓ {} / ↑ {} ({} peers distributing)",
-            format_bytes_per_second(swarm_download_speed),
-            format_bytes_per_second(swarm_upload_speed),
-            swarm_peers
+            format_bytes_per_second(stats.swarm_download_speed),
+            format_bytes_per_second(stats.swarm_upload_speed),
+            stats.swarm_peers
         );
 
-        self.main_bar.set_prefix(format!("{}\n{}\n{}",
+        self.main_bar.set_prefix(format!(
+            "{}\n{}\n{}",
             style(info_line).dim(),
             style(stats_line).dim(),
             style(swarm_line).cyan().dim()
@@ -195,11 +214,9 @@ impl DownloadProgressBar {
         self.main_bar.set_prefix("");
 
         // Change to a spinner style for verification
-        let spinner_style = ProgressStyle::with_template(
-            "\n{msg} {spinner}\n"
-        )
-        .unwrap()
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
+        let spinner_style = ProgressStyle::with_template("\n{msg} {spinner}\n")
+            .unwrap()
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
 
         self.main_bar.set_style(spinner_style);
         self.main_bar.enable_steady_tick(Duration::from_millis(80));
@@ -207,22 +224,20 @@ impl DownloadProgressBar {
 
     /// Mark download as complete
     pub fn finish_success(&self, version: &str) {
-        self.main_bar.finish_with_message(
-            format!("{}  Successfully downloaded ADIC v{}",
-                style("✓").green().bold(),
-                version
-            )
-        );
+        self.main_bar.finish_with_message(format!(
+            "{}  Successfully downloaded ADIC v{}",
+            style("✓").green().bold(),
+            version
+        ));
     }
 
     /// Mark download as failed
     pub fn finish_error(&self, error: &str) {
-        self.main_bar.abandon_with_message(
-            format!("{}  Download failed: {}",
-                style("✗").red().bold(),
-                error
-            )
-        );
+        self.main_bar.abandon_with_message(format!(
+            "{}  Download failed: {}",
+            style("✗").red().bold(),
+            error
+        ));
     }
 
     /// Clear the progress display

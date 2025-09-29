@@ -1,9 +1,13 @@
+#![allow(dead_code)]
+
 use adic_network::protocol::update::UpdateMessage;
-use adic_network::protocol::update_protocol::{UpdateProtocol, UpdateProtocolConfig, UpdateProtocolEvent};
+use adic_network::protocol::update_protocol::{
+    UpdateProtocol, UpdateProtocolConfig, UpdateProtocolEvent,
+};
 use libp2p::PeerId;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(test)]
@@ -38,7 +42,11 @@ mod retry_tests {
             let current_failures = self.fail_count.fetch_add(1, Ordering::SeqCst);
 
             if current_failures < self.max_failures {
-                Err(format!("Simulated failure {}/{}", current_failures + 1, self.max_failures))
+                Err(format!(
+                    "Simulated failure {}/{}",
+                    current_failures + 1,
+                    self.max_failures
+                ))
             } else {
                 self.chunks
                     .get(&(version.to_string(), chunk_index))
@@ -61,16 +69,18 @@ mod retry_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let local_peer_id = PeerId::random();
-        let (protocol, mut event_receiver) =
+        let (protocol, _event_receiver) =
             UpdateProtocol::new(config.clone(), temp_dir.path().to_path_buf(), local_peer_id)
-            .unwrap();
+                .unwrap();
 
         // Test that retry configuration is properly set
         assert_eq!(config.max_retries, 3);
 
         // Request a chunk which would trigger retry logic on failure
         let peer_id = PeerId::random();
-        let result = protocol.request_chunk(peer_id, "0.2.0".to_string(), 0).await;
+        let result = protocol
+            .request_chunk(peer_id, "0.2.0".to_string(), 0)
+            .await;
         assert!(result.is_ok());
 
         // In a real scenario, the chunk would be retried up to max_retries times
@@ -89,7 +99,8 @@ mod retry_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let local_peer_id = PeerId::random();
-        let (protocol, _) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), local_peer_id).unwrap();
+        let (protocol, _) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), local_peer_id).unwrap();
 
         // Start the timeout checker task
         let protocol_arc = Arc::new(protocol);
@@ -119,13 +130,16 @@ mod retry_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let local_peer_id = PeerId::random();
-        let (protocol, _) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), local_peer_id).unwrap();
+        let (protocol, _) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), local_peer_id).unwrap();
 
         let peer_id = PeerId::random();
 
         // Request multiple chunks concurrently (up to max_concurrent_transfers)
         for i in 0..5 {
-            let result = protocol.request_chunk(peer_id, "0.2.0".to_string(), i).await;
+            let result = protocol
+                .request_chunk(peer_id, "0.2.0".to_string(), i)
+                .await;
             assert!(result.is_ok());
         }
 
@@ -144,7 +158,8 @@ mod retry_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let local_peer_id = PeerId::random();
-        let (protocol, _) = UpdateProtocol::new(config, temp_dir.path().to_path_buf(), local_peer_id).unwrap();
+        let (protocol, _) =
+            UpdateProtocol::new(config, temp_dir.path().to_path_buf(), local_peer_id).unwrap();
 
         // Register multiple peers with the same version
         let peer1 = PeerId::random();
@@ -175,7 +190,7 @@ mod retry_tests {
         let config = UpdateProtocolConfig {
             max_concurrent_transfers: 5,
             chunk_timeout: Duration::from_millis(50), // Very short for testing
-            max_retries: 1, // Only 1 retry
+            max_retries: 1,                           // Only 1 retry
             upload_rate_limit: 0,
             download_rate_limit: 0,
         };
@@ -189,7 +204,9 @@ mod retry_tests {
         let peer_id = PeerId::random();
 
         // Request a chunk
-        let _ = protocol_arc.request_chunk(peer_id, "0.2.0".to_string(), 0).await;
+        let _ = protocol_arc
+            .request_chunk(peer_id, "0.2.0".to_string(), 0)
+            .await;
 
         // Wait for timeout
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -209,7 +226,9 @@ mod retry_tests {
                 }
             }
             false
-        }).await.unwrap_or(false);
+        })
+        .await
+        .unwrap_or(false);
     }
 
     #[tokio::test]
@@ -231,7 +250,9 @@ mod retry_tests {
 
         // Simulate receiving a chunk after some retries
         // First, request the chunk
-        let _ = protocol.request_chunk(peer_id, "0.2.0".to_string(), 0).await;
+        let _ = protocol
+            .request_chunk(peer_id, "0.2.0".to_string(), 0)
+            .await;
 
         // Then simulate receiving it successfully
         use sha2::{Digest, Sha256};
@@ -259,6 +280,8 @@ mod retry_tests {
                 }
             }
             false
-        }).await.unwrap_or(false);
+        })
+        .await
+        .unwrap_or(false);
     }
 }

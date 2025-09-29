@@ -253,17 +253,22 @@ impl DiscoveryProtocol {
                                         let bootstrap_peer_info = crate::peer::PeerInfo {
                                             peer_id: remote_peer_id,
                                             addresses: vec![addr.clone()],
-                                            public_key: adic_types::PublicKey::from_bytes([0u8; 32]), // Placeholder
+                                            public_key: adic_types::PublicKey::from_bytes(
+                                                [0u8; 32],
+                                            ), // Placeholder
                                             reputation_score: 1.0,
                                             latency_ms: Some(connect_duration.as_millis() as u64),
                                             bandwidth_mbps: None,
                                             last_seen: std::time::Instant::now(),
-                                            connection_state: crate::peer::ConnectionState::Connected,
+                                            connection_state:
+                                                crate::peer::ConnectionState::Connected,
                                             message_stats: Default::default(),
                                             padic_location: None,
                                         };
 
-                                        if let Err(e) = peer_manager.add_peer(bootstrap_peer_info).await {
+                                        if let Err(e) =
+                                            peer_manager.add_peer(bootstrap_peer_info).await
+                                        {
                                             warn!(
                                                 bootstrap_addr = %addr,
                                                 error = %e,
@@ -643,10 +648,7 @@ impl DiscoveryProtocol {
 
         // As initiator, send our handshake first
         let mut stream = connection.open_uni().await.map_err(|e| {
-            adic_types::error::AdicError::Network(format!(
-                "Failed to open handshake stream: {}",
-                e
-            ))
+            adic_types::error::AdicError::Network(format!("Failed to open handshake stream: {}", e))
         })?;
 
         let msg = NetworkMessage::Handshake {

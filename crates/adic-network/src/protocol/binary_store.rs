@@ -99,12 +99,20 @@ impl BinaryStore {
             let chunk_path = chunks_dir.join(format!("chunk_{:04}.bin", i));
             fs::write(&chunk_path, chunk_data)?;
 
-            debug!("Created chunk {} for version {}: {} bytes, hash: {}",
-                i, version, chunk_data.len(), &chunk_hash[..8]);
+            debug!(
+                "Created chunk {} for version {}: {} bytes, hash: {}",
+                i,
+                version,
+                chunk_data.len(),
+                &chunk_hash[..8]
+            );
         }
 
         // Copy binary to store
-        let stored_binary_path = self.base_dir.join("binaries").join(format!("{}.bin", version));
+        let stored_binary_path = self
+            .base_dir
+            .join("binaries")
+            .join(format!("{}.bin", version));
         fs::copy(binary_path, &stored_binary_path)?;
 
         // Create metadata
@@ -121,8 +129,10 @@ impl BinaryStore {
         let mut meta_lock = self.version_metadata.write().await;
         meta_lock.insert(version.clone(), metadata.clone());
 
-        info!("Successfully added binary version {}: {} chunks, {} bytes",
-            version, total_chunks, total_size);
+        info!(
+            "Successfully added binary version {}: {} chunks, {} bytes",
+            version, total_chunks, total_size
+        );
 
         Ok(metadata)
     }
@@ -139,7 +149,9 @@ impl BinaryStore {
         drop(cache);
 
         // Load from disk
-        let chunk_path = self.base_dir.join("chunks")
+        let chunk_path = self
+            .base_dir
+            .join("chunks")
             .join(version)
             .join(format!("chunk_{:04}.bin", chunk_index));
 
@@ -153,8 +165,12 @@ impl BinaryStore {
         let mut cache = self.chunk_cache.write().await;
         cache.insert(cache_key, chunk_data.clone());
 
-        debug!("Loaded chunk {}/{} from disk: {} bytes",
-            version, chunk_index, chunk_data.len());
+        debug!(
+            "Loaded chunk {}/{} from disk: {} bytes",
+            version,
+            chunk_index,
+            chunk_data.len()
+        );
 
         Ok(chunk_data)
     }
@@ -178,8 +194,13 @@ impl BinaryStore {
         let mut cache = self.chunk_cache.write().await;
         cache.insert((version.to_string(), chunk_index), data.clone());
 
-        debug!("Stored chunk {}/{}: {} bytes, hash: {}",
-            version, chunk_index, data.len(), &chunk_hash[..8]);
+        debug!(
+            "Stored chunk {}/{}: {} bytes, hash: {}",
+            version,
+            chunk_index,
+            data.len(),
+            &chunk_hash[..8]
+        );
 
         Ok(())
     }
@@ -207,10 +228,16 @@ impl BinaryStore {
             return Err(anyhow!("Not all chunks available for version {}", version));
         }
 
-        info!("Assembling binary for version {} from {} chunks", version, total_chunks);
+        info!(
+            "Assembling binary for version {} from {} chunks",
+            version, total_chunks
+        );
 
         let chunks_dir = self.base_dir.join("chunks").join(version);
-        let output_path = self.base_dir.join("binaries").join(format!("{}.bin", version));
+        let output_path = self
+            .base_dir
+            .join("binaries")
+            .join(format!("{}.bin", version));
 
         let mut output = fs::File::create(&output_path)?;
         let mut total_size = 0;
@@ -222,8 +249,10 @@ impl BinaryStore {
             output.write_all(&chunk_data)?;
         }
 
-        info!("Successfully assembled binary for version {}: {} bytes",
-            version, total_size);
+        info!(
+            "Successfully assembled binary for version {}: {} bytes",
+            version, total_size
+        );
 
         Ok(output_path)
     }

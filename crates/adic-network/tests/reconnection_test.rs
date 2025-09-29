@@ -7,7 +7,7 @@ use libp2p::identity::Keypair;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 use tracing::info;
 
 async fn create_test_node(name: &str, port: u16) -> Arc<NetworkEngine> {
@@ -17,12 +17,7 @@ async fn create_test_node(name: &str, port: u16) -> Arc<NetworkEngine> {
     let temp_dir = tempdir().unwrap();
     let storage_config = StorageConfig {
         backend_type: adic_storage::store::BackendType::RocksDB {
-            path: temp_dir
-                .path()
-                .join(name)
-                .to_str()
-                .unwrap()
-                .to_string(),
+            path: temp_dir.path().join(name).to_str().unwrap().to_string(),
         },
         ..Default::default()
     };
@@ -74,14 +69,18 @@ async fn test_peer_disconnection_and_state_update() {
 
     // Connect node2 to node1
     let node1_addr = format!("127.0.0.1:{}", 20000); // QUIC port
-    node2.connect_peer(node1_addr.parse().unwrap()).await.unwrap();
+    node2
+        .connect_peer(node1_addr.parse().unwrap())
+        .await
+        .unwrap();
 
     // Give connection time to establish
     sleep(Duration::from_millis(500)).await;
 
     // Wait for connection with retry logic
     let mut connected = false;
-    for _ in 0..10 {  // Try for up to 10 seconds
+    for _ in 0..10 {
+        // Try for up to 10 seconds
         sleep(Duration::from_secs(1)).await;
         let peers = node2.peer_manager().get_connected_peers().await;
         if peers.len() == 1 {
@@ -96,15 +95,19 @@ async fn test_peer_disconnection_and_state_update() {
 
     // Wait for disconnection to be detected with retry logic
     let mut disconnected = false;
-    for _ in 0..10 {  // Try for up to 10 seconds
+    for _ in 0..10 {
+        // Try for up to 10 seconds
         sleep(Duration::from_secs(1)).await;
         let peers = node2.peer_manager().get_connected_peers().await;
-        if peers.len() == 0 {
+        if peers.is_empty() {
             disconnected = true;
             break;
         }
     }
-    assert!(disconnected, "Node2 should have 0 connected peers after disconnection");
+    assert!(
+        disconnected,
+        "Node2 should have 0 connected peers after disconnection"
+    );
 
     // Check that the peer is marked as disconnected
     let all_peers = node2.peer_manager().get_all_peers_info().await;
@@ -132,7 +135,7 @@ async fn test_automatic_reconnection_to_important_peer() {
     sleep(Duration::from_secs(1)).await;
 
     // Create regular node that connects to bootstrap
-    let mut config = NetworkConfig {
+    let config = NetworkConfig {
         listen_addresses: vec!["/ip4/127.0.0.1/tcp/19130".parse().unwrap()],
         bootstrap_peers: vec![],
         max_peers: 10,
@@ -150,7 +153,12 @@ async fn test_automatic_reconnection_to_important_peer() {
     let temp_dir = tempdir().unwrap();
     let storage_config = StorageConfig {
         backend_type: adic_storage::store::BackendType::RocksDB {
-            path: temp_dir.path().join("regular").to_str().unwrap().to_string(),
+            path: temp_dir
+                .path()
+                .join("regular")
+                .to_str()
+                .unwrap()
+                .to_string(),
         },
         ..Default::default()
     };
@@ -167,7 +175,7 @@ async fn test_automatic_reconnection_to_important_peer() {
     let regular_node = Arc::new(
         NetworkEngine::new(config, keypair, storage, consensus, finality)
             .await
-            .unwrap()
+            .unwrap(),
     );
     regular_node.start().await.unwrap();
 
@@ -175,7 +183,10 @@ async fn test_automatic_reconnection_to_important_peer() {
     sleep(Duration::from_millis(500)).await;
 
     // Connect to bootstrap (port 19120 + 1000 = 20120)
-    regular_node.connect_peer("127.0.0.1:20120".parse().unwrap()).await.unwrap();
+    regular_node
+        .connect_peer("127.0.0.1:20120".parse().unwrap())
+        .await
+        .unwrap();
 
     // Give connection time to establish
     sleep(Duration::from_millis(500)).await;
@@ -183,7 +194,8 @@ async fn test_automatic_reconnection_to_important_peer() {
     // Wait for connection with retry logic
     let mut connected = false;
     let mut peers = vec![];
-    for _ in 0..10 {  // Try for up to 10 seconds
+    for _ in 0..10 {
+        // Try for up to 10 seconds
         sleep(Duration::from_secs(1)).await;
         peers = regular_node.peer_manager().get_connected_peers().await;
         if peers.len() == 1 {
@@ -202,18 +214,26 @@ async fn test_automatic_reconnection_to_important_peer() {
         .unwrap();
 
     // Verify high reputation
-    let peer_info = regular_node.peer_manager().get_peer(&bootstrap_peer_id).await.unwrap();
-    assert!(peer_info.reputation_score >= 70.0, "Bootstrap should have high reputation");
+    let peer_info = regular_node
+        .peer_manager()
+        .get_peer(&bootstrap_peer_id)
+        .await
+        .unwrap();
+    assert!(
+        peer_info.reputation_score >= 70.0,
+        "Bootstrap should have high reputation"
+    );
 
     // Simulate disconnection
     bootstrap.shutdown().await.unwrap();
 
     // Wait for disconnection with retry logic
     let mut disconnected = false;
-    for _ in 0..10 {  // Try for up to 10 seconds
+    for _ in 0..10 {
+        // Try for up to 10 seconds
         sleep(Duration::from_secs(1)).await;
         let connected = regular_node.peer_manager().get_connected_peers().await;
-        if connected.len() == 0 {
+        if connected.is_empty() {
             disconnected = true;
             break;
         }
@@ -234,7 +254,11 @@ async fn test_automatic_reconnection_to_important_peer() {
     // In real scenario, the maintenance task would attempt reconnection
     // For testing, we'll verify the peer is marked for reconnection
     let disconnected = regular_node.peer_manager().get_disconnected_peers().await;
-    assert_eq!(disconnected.len(), 1, "Should have 1 disconnected peer marked for reconnection");
+    assert_eq!(
+        disconnected.len(),
+        1,
+        "Should have 1 disconnected peer marked for reconnection"
+    );
 
     regular_node.shutdown().await.unwrap();
     bootstrap.shutdown().await.unwrap();
@@ -249,7 +273,7 @@ async fn test_stale_peer_cleanup() {
     node.start().await.unwrap();
 
     // Manually add a peer with old last_seen time (simulating stale peer)
-    use adic_network::peer::{PeerInfo, ConnectionState, MessageStats};
+    use adic_network::peer::{ConnectionState, MessageStats, PeerInfo};
     use adic_types::PublicKey;
     use libp2p::PeerId;
     use std::time::Instant;
@@ -294,7 +318,7 @@ async fn test_connection_state_transitions() {
     node.start().await.unwrap();
 
     // Add a test peer
-    use adic_network::peer::{PeerInfo, ConnectionState, MessageStats};
+    use adic_network::peer::{ConnectionState, MessageStats, PeerInfo};
     use adic_types::PublicKey;
     use libp2p::PeerId;
     use std::time::Instant;

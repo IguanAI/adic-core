@@ -6,6 +6,18 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
+/// Parameters for updating peer metrics
+#[derive(Debug, Clone)]
+pub struct PeerMetricsUpdate {
+    pub download_speed: u64,
+    pub upload_speed: u64,
+    pub active_transfers: u32,
+    pub seeding_versions: Vec<String>,
+    pub downloading_version: Option<String>,
+    pub download_progress: Option<f32>,
+    pub peer_count: usize,
+}
+
 /// Tracks metrics from a single peer
 #[derive(Debug, Clone)]
 pub struct PeerMetrics {
@@ -95,23 +107,17 @@ impl SwarmSpeedTracker {
     pub async fn update_peer_metrics(
         &self,
         peer_id: PeerId,
-        download_speed: u64,
-        upload_speed: u64,
-        active_transfers: u32,
-        seeding_versions: Vec<String>,
-        downloading_version: Option<String>,
-        download_progress: Option<f32>,
-        peer_count: usize,
+        update: PeerMetricsUpdate,
     ) -> Result<()> {
         let metrics = PeerMetrics {
             peer_id,
-            download_speed,
-            upload_speed,
-            active_transfers,
-            seeding_versions,
-            downloading_version,
-            download_progress,
-            peer_count,
+            download_speed: update.download_speed,
+            upload_speed: update.upload_speed,
+            active_transfers: update.active_transfers,
+            seeding_versions: update.seeding_versions,
+            downloading_version: update.downloading_version,
+            download_progress: update.download_progress,
+            peer_count: update.peer_count,
             last_updated: Instant::now(),
         };
 
@@ -121,9 +127,9 @@ impl SwarmSpeedTracker {
 
         debug!(
             peer_id = %peer_id,
-            download_speed = download_speed,
-            upload_speed = upload_speed,
-            active_transfers = active_transfers,
+            download_speed = metrics.download_speed,
+            upload_speed = metrics.upload_speed,
+            active_transfers = metrics.active_transfers,
             "Peer metrics updated"
         );
 
@@ -196,13 +202,17 @@ impl SwarmSpeedTracker {
             // Categorize peer state
             if let Some(ref version) = metrics.downloading_version {
                 stats.downloading_peers += 1;
-                stats.peers_by_state
+                stats
+                    .peers_by_state
                     .entry("downloading".to_string())
                     .or_default()
                     .push(*peer_id);
 
                 // Track version being downloaded
-                *stats.version_distribution.entry(version.clone()).or_insert(0) += 1;
+                *stats
+                    .version_distribution
+                    .entry(version.clone())
+                    .or_insert(0) += 1;
 
                 // Aggregate download progress
                 if let Some(progress) = metrics.download_progress {
@@ -211,18 +221,23 @@ impl SwarmSpeedTracker {
                 }
             } else if !metrics.seeding_versions.is_empty() {
                 stats.seeding_peers += 1;
-                stats.peers_by_state
+                stats
+                    .peers_by_state
                     .entry("seeding".to_string())
                     .or_default()
                     .push(*peer_id);
 
                 // Track versions being seeded
                 for version in &metrics.seeding_versions {
-                    *stats.version_distribution.entry(version.clone()).or_insert(0) += 1;
+                    *stats
+                        .version_distribution
+                        .entry(version.clone())
+                        .or_insert(0) += 1;
                 }
             } else {
                 stats.idle_peers += 1;
-                stats.peers_by_state
+                stats
+                    .peers_by_state
                     .entry("idle".to_string())
                     .or_default()
                     .push(*peer_id);
@@ -231,7 +246,8 @@ impl SwarmSpeedTracker {
 
         // Calculate average download progress
         if download_progress_count > 0 {
-            stats.average_download_progress = download_progress_sum / download_progress_count as f32;
+            stats.average_download_progress =
+                download_progress_sum / download_progress_count as f32;
         }
 
         // Include local metrics
@@ -309,11 +325,14 @@ impl SwarmSpeedTracker {
                 "idle"
             };
 
-            breakdown.entry(state.to_string()).or_insert_with(Vec::new).push((
-                *peer_id,
-                metrics.download_speed as f64 / 1_048_576.0,
-                metrics.upload_speed as f64 / 1_048_576.0,
-            ));
+            breakdown
+                .entry(state.to_string())
+                .or_insert_with(Vec::new)
+                .push((
+                    *peer_id,
+                    metrics.download_speed as f64 / 1_048_576.0,
+                    metrics.upload_speed as f64 / 1_048_576.0,
+                ));
         }
 
         breakdown

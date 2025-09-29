@@ -131,10 +131,7 @@ impl NetworkEngine {
             config.max_peers,
             deposit_verifier,
         ));
-        debug!(
-            max_peers = config.max_peers,
-            "Peer manager created"
-        );
+        debug!(max_peers = config.max_peers, "Peer manager created");
 
         // Initialize protocols
         debug!("Initializing network protocols");
@@ -147,7 +144,8 @@ impl NetworkEngine {
             UpdateProtocolConfig::default(),
             config.data_dir.clone(),
             peer_id,
-        ).map_err(|e| AdicError::Network(format!("Failed to initialize update protocol: {}", e)))?;
+        )
+        .map_err(|e| AdicError::Network(format!("Failed to initialize update protocol: {}", e)))?;
         let update_protocol = Arc::new(update_protocol);
         debug!("Network protocols initialized");
 
@@ -410,7 +408,9 @@ impl NetworkEngine {
                                                     );
                                                 } else {
                                                     // Add peer to the peer manager
-                                                    use crate::peer::{PeerInfo, ConnectionState, MessageStats};
+                                                    use crate::peer::{
+                                                        ConnectionState, MessageStats, PeerInfo,
+                                                    };
                                                     use adic_types::PublicKey;
                                                     let peer_info = PeerInfo {
                                                         peer_id: remote_peer_id,
@@ -420,12 +420,15 @@ impl NetworkEngine {
                                                         latency_ms: None,
                                                         bandwidth_mbps: None,
                                                         last_seen: std::time::Instant::now(),
-                                                        connection_state: ConnectionState::Connected,
+                                                        connection_state:
+                                                            ConnectionState::Connected,
                                                         message_stats: MessageStats::default(),
                                                         padic_location: None,
                                                     };
 
-                                                    if let Err(e) = net.peer_manager.add_peer(peer_info).await {
+                                                    if let Err(e) =
+                                                        net.peer_manager.add_peer(peer_info).await
+                                                    {
                                                         debug!(
                                                             peer_id = %remote_peer_id,
                                                             error = %e,
@@ -491,7 +494,7 @@ impl NetworkEngine {
                                     Err(e) => {
                                         error!(
                                             error = %e,
-                                            error_type = std::any::type_name_of_val(&e),
+                                            error_type = std::any::type_name::<anyhow::Error>(),
                                             "❌ Failed to accept connection"
                                         );
                                     }
@@ -555,7 +558,7 @@ impl NetworkEngine {
             .await?;
 
         // Add peer to the peer manager
-        use crate::peer::{PeerInfo, ConnectionState, MessageStats};
+        use crate::peer::{ConnectionState, MessageStats, PeerInfo};
         use adic_types::PublicKey;
         let peer_info = PeerInfo {
             peer_id: remote_peer_id,
@@ -840,14 +843,20 @@ impl NetworkEngine {
                         // Update peer state to disconnected
                         if let Err(e) = network
                             .peer_manager
-                            .update_peer_connection_state(&remote_peer_id, crate::peer::ConnectionState::Disconnected)
+                            .update_peer_connection_state(
+                                &remote_peer_id,
+                                crate::peer::ConnectionState::Disconnected,
+                            )
                             .await
                         {
                             warn!("Failed to update peer state: {}", e);
                         }
                         // Remove connection from pool
                         if let Ok(transport) = network.transport.try_read() {
-                            transport.connection_pool().remove_connection(&remote_peer_id).await;
+                            transport
+                                .connection_pool()
+                                .remove_connection(&remote_peer_id)
+                                .await;
                         }
                         break;
                     }
@@ -856,14 +865,20 @@ impl NetworkEngine {
                         // Update peer state to disconnected
                         if let Err(e) = network
                             .peer_manager
-                            .update_peer_connection_state(&remote_peer_id, crate::peer::ConnectionState::Disconnected)
+                            .update_peer_connection_state(
+                                &remote_peer_id,
+                                crate::peer::ConnectionState::Disconnected,
+                            )
                             .await
                         {
                             warn!("Failed to update peer state: {}", e);
                         }
                         // Remove connection from pool
                         if let Ok(transport) = network.transport.try_read() {
-                            transport.connection_pool().remove_connection(&remote_peer_id).await;
+                            transport
+                                .connection_pool()
+                                .remove_connection(&remote_peer_id)
+                                .await;
                         }
                         break;
                     }
@@ -1416,7 +1431,7 @@ impl NetworkEngine {
                 let disconnected_peers = peer_manager.get_disconnected_peers().await;
                 for (peer_id, addresses) in disconnected_peers.iter().take(3) {
                     // Only try to reconnect to high-reputation peers
-                    if let Some(peer_info) = peer_manager.get_peer(&peer_id).await {
+                    if let Some(peer_info) = peer_manager.get_peer(peer_id).await {
                         if peer_info.reputation_score > 70.0 {
                             info!(
                                 peer_id = %peer_id,
@@ -1430,8 +1445,10 @@ impl NetworkEngine {
                                 if let Some(socket_addr) = network.multiaddr_to_socket_addr(addr) {
                                     match timeout(
                                         Duration::from_secs(10),
-                                        network.connect_peer(socket_addr)
-                                    ).await {
+                                        network.connect_peer(socket_addr),
+                                    )
+                                    .await
+                                    {
                                         Ok(Ok(_)) => {
                                             info!(
                                                 peer_id = %peer_id,
@@ -1821,8 +1838,12 @@ impl NetworkEngine {
         from_peer: PeerId,
     ) -> Result<()> {
         // Process through update protocol
-        match self.update_protocol.handle_message(message.clone(), from_peer).await
-            .map_err(|e| AdicError::Network(format!("Update protocol error: {}", e)))? {
+        match self
+            .update_protocol
+            .handle_message(message.clone(), from_peer)
+            .await
+            .map_err(|e| AdicError::Network(format!("Update protocol error: {}", e)))?
+        {
             Some(response) => {
                 // Send response back to peer
                 let transport = self.transport.read().await;

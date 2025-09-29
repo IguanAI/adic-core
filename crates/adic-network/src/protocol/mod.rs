@@ -9,13 +9,13 @@ pub mod sync;
 pub mod update;
 pub mod update_protocol;
 
-pub use binary_store::{BinaryStore, BinaryMetadata};
+pub use binary_store::{BinaryMetadata, BinaryStore};
 pub use consensus::{ConsensusConfig, ConsensusMessage, ConsensusProtocol};
 pub use discovery::{DiscoveryConfig, DiscoveryMessage, DiscoveryProtocol};
 pub use dns_seeds::{DnsSeedConfig, DnsSeedDiscovery};
 pub use gossip::{GossipConfig, GossipMessage, GossipProtocol};
 pub use stream::{StreamConfig, StreamProtocol, StreamRequest};
-pub use swarm_tracker::{SwarmSpeedTracker, SwarmStatistics, PeerMetrics};
+pub use swarm_tracker::{PeerMetrics, SwarmSpeedTracker, SwarmStatistics};
 pub use sync::{SyncConfig, SyncProtocol, SyncRequest, SyncResponse};
-pub use update::{UpdateMessage, UpdateState, VersionInfo, BinaryChunkData};
+pub use update::{BinaryChunkData, UpdateMessage, UpdateState, VersionInfo};
 pub use update_protocol::{UpdateProtocol, UpdateProtocolConfig, UpdateProtocolEvent};

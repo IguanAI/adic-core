@@ -13,10 +13,7 @@ pub enum UpdateMessage {
     },
 
     /// Request a specific chunk of the binary
-    BinaryRequest {
-        version: String,
-        chunk_index: u32,
-    },
+    BinaryRequest { version: String, chunk_index: u32 },
 
     /// Transfer a chunk of binary data
     BinaryChunk {
@@ -30,7 +27,7 @@ pub enum UpdateMessage {
     /// Confirm successful update completion
     UpdateComplete {
         version: String,
-        peer_id: String,  // Use String instead of PeerId for serialization
+        peer_id: String, // Use String instead of PeerId for serialization
         success: bool,
         error_message: Option<String>,
     },
@@ -92,24 +89,48 @@ impl fmt::Display for UpdateMessage {
             UpdateMessage::VersionAnnounce { version, .. } => {
                 write!(f, "VersionAnnounce(v{})", version)
             }
-            UpdateMessage::BinaryRequest { version, chunk_index } => {
+            UpdateMessage::BinaryRequest {
+                version,
+                chunk_index,
+            } => {
                 write!(f, "BinaryRequest(v{}, chunk {})", version, chunk_index)
             }
-            UpdateMessage::BinaryChunk { version, chunk_index, total_chunks, .. } => {
-                write!(f, "BinaryChunk(v{}, {}/{})", version, chunk_index, total_chunks)
+            UpdateMessage::BinaryChunk {
+                version,
+                chunk_index,
+                total_chunks,
+                ..
+            } => {
+                write!(
+                    f,
+                    "BinaryChunk(v{}, {}/{})",
+                    version, chunk_index, total_chunks
+                )
             }
-            UpdateMessage::UpdateComplete { version, success, .. } => {
+            UpdateMessage::UpdateComplete {
+                version, success, ..
+            } => {
                 write!(f, "UpdateComplete(v{}, success={})", version, success)
             }
             UpdateMessage::VersionQuery => write!(f, "VersionQuery"),
-            UpdateMessage::VersionResponse { current_version, .. } => {
+            UpdateMessage::VersionResponse {
+                current_version, ..
+            } => {
                 write!(f, "VersionResponse(current: v{})", current_version)
             }
-            UpdateMessage::SwarmMetrics { download_speed, upload_speed, peer_count, .. } => {
-                write!(f, "SwarmMetrics(↓ {:.1} MB/s, ↑ {:.1} MB/s, {} peers)",
+            UpdateMessage::SwarmMetrics {
+                download_speed,
+                upload_speed,
+                peer_count,
+                ..
+            } => {
+                write!(
+                    f,
+                    "SwarmMetrics(↓ {:.1} MB/s, ↑ {:.1} MB/s, {} peers)",
                     *download_speed as f64 / 1_048_576.0,
                     *upload_speed as f64 / 1_048_576.0,
-                    peer_count)
+                    peer_count
+                )
             }
         }
     }
@@ -165,7 +186,9 @@ impl fmt::Display for UpdateState {
         match self {
             UpdateState::Idle => write!(f, "Idle"),
             UpdateState::CheckingVersion => write!(f, "Checking for updates"),
-            UpdateState::Downloading { version, progress, .. } => {
+            UpdateState::Downloading {
+                version, progress, ..
+            } => {
                 write!(f, "Downloading v{} ({:.1}%)", version, progress * 100.0)
             }
             UpdateState::Verifying { version } => write!(f, "Verifying v{}", version),

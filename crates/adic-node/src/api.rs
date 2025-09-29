@@ -94,7 +94,7 @@ pub fn start_api_server_with_listener(
     node: AdicNode,
     host: String,
     port: u16,
-    existing_listener: Option<tokio::net::TcpListener>
+    existing_listener: Option<tokio::net::TcpListener>,
 ) -> JoinHandle<()> {
     let metrics = metrics::Metrics::new();
     let state = Arc::new(AppState {
@@ -416,25 +416,29 @@ async fn get_update_status(State(state): State<Arc<AppState>>) -> Response {
     let current_version = env!("CARGO_PKG_VERSION");
 
     // Get update manager state if available
-    let (update_state, latest_version, update_available) = if let Some(ref update_manager) = state.node.update_manager {
-        let state = update_manager.get_state().await;
-        let latest = update_manager.get_latest_version().await;
-        let available = latest.as_ref().map(|v| v.version != current_version).unwrap_or(false);
+    let (update_state, latest_version, update_available) =
+        if let Some(ref update_manager) = state.node.update_manager {
+            let state = update_manager.get_state().await;
+            let latest = update_manager.get_latest_version().await;
+            let available = latest
+                .as_ref()
+                .map(|v| v.version != current_version)
+                .unwrap_or(false);
 
-        let state_str = match state {
-            adic_network::protocol::update::UpdateState::Idle => "idle",
-            adic_network::protocol::update::UpdateState::CheckingVersion => "checking",
-            adic_network::protocol::update::UpdateState::Downloading { .. } => "downloading",
-            adic_network::protocol::update::UpdateState::Verifying { .. } => "verifying",
-            adic_network::protocol::update::UpdateState::Applying { .. } => "applying",
-            adic_network::protocol::update::UpdateState::Complete { .. } => "complete",
-            adic_network::protocol::update::UpdateState::Failed { .. } => "error",
+            let state_str = match state {
+                adic_network::protocol::update::UpdateState::Idle => "idle",
+                adic_network::protocol::update::UpdateState::CheckingVersion => "checking",
+                adic_network::protocol::update::UpdateState::Downloading { .. } => "downloading",
+                adic_network::protocol::update::UpdateState::Verifying { .. } => "verifying",
+                adic_network::protocol::update::UpdateState::Applying { .. } => "applying",
+                adic_network::protocol::update::UpdateState::Complete { .. } => "complete",
+                adic_network::protocol::update::UpdateState::Failed { .. } => "error",
+            };
+
+            (state_str.to_string(), latest.map(|v| v.version), available)
+        } else {
+            ("idle".to_string(), None, false)
         };
-
-        (state_str.to_string(), latest.map(|v| v.version), available)
-    } else {
-        ("idle".to_string(), None, false)
-    };
 
     // Get version distribution if network is enabled
     let version_distribution = if let Some(ref network) = state.node.network {
@@ -442,7 +446,8 @@ async fn get_update_status(State(state): State<Arc<AppState>>) -> Response {
         let peer_versions = network_lock.get_peer_versions().await;
 
         // Count versions
-        let mut version_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut version_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for version in peer_versions.values() {
             *version_counts.entry(version.clone()).or_insert(0) += 1;
         }
@@ -480,14 +485,19 @@ async fn get_update_progress(State(state): State<Arc<AppState>>) -> Response {
                     "status": "idle",
                     "message": "No update in progress"
                 })
-            },
+            }
             adic_network::protocol::update::UpdateState::CheckingVersion => {
                 serde_json::json!({
                     "status": "checking",
                     "message": "Checking for updates..."
                 })
-            },
-            adic_network::protocol::update::UpdateState::Downloading { version, progress, chunks_received, total_chunks } => {
+            }
+            adic_network::protocol::update::UpdateState::Downloading {
+                version,
+                progress,
+                chunks_received,
+                total_chunks,
+            } => {
                 serde_json::json!({
                     "status": "downloading",
                     "version": version,
@@ -496,21 +506,21 @@ async fn get_update_progress(State(state): State<Arc<AppState>>) -> Response {
                     "total_chunks": total_chunks,
                     "message": format!("Downloading version {} ({}/{} chunks)", version, chunks_received, total_chunks)
                 })
-            },
+            }
             adic_network::protocol::update::UpdateState::Verifying { version } => {
                 serde_json::json!({
                     "status": "verifying",
                     "version": version,
                     "message": format!("Verifying binary signature for version {}", version)
                 })
-            },
+            }
             adic_network::protocol::update::UpdateState::Applying { version } => {
                 serde_json::json!({
                     "status": "applying",
                     "version": version,
                     "message": format!("Applying update to version {}", version)
                 })
-            },
+            }
             adic_network::protocol::update::UpdateState::Complete { version, success } => {
                 serde_json::json!({
                     "status": "complete",
@@ -522,7 +532,7 @@ async fn get_update_progress(State(state): State<Arc<AppState>>) -> Response {
                         format!("Update to version {} completed with issues", version)
                     }
                 })
-            },
+            }
             adic_network::protocol::update::UpdateState::Failed { version, error } => {
                 serde_json::json!({
                     "status": "error",
@@ -530,7 +540,7 @@ async fn get_update_progress(State(state): State<Arc<AppState>>) -> Response {
                     "message": error,
                     "error": true
                 })
-            },
+            }
         };
 
         (StatusCode::OK, Json(response)).into_response()
@@ -586,14 +596,14 @@ async fn trigger_update_check(State(state): State<Arc<AppState>>) -> Response {
                     "hash": version.sha256_hash,
                 });
                 (StatusCode::OK, Json(response)).into_response()
-            },
+            }
             Ok(None) => {
                 let response = serde_json::json!({
                     "success": true,
                     "message": "No update available",
                 });
                 (StatusCode::OK, Json(response)).into_response()
-            },
+            }
             Err(e) => {
                 let response = serde_json::json!({
                     "success": false,
@@ -630,7 +640,7 @@ async fn trigger_update_apply(State(state): State<Arc<AppState>>) -> Response {
                     "version": version.version,
                 });
                 (StatusCode::OK, Json(response)).into_response()
-            },
+            }
             None => {
                 let response = serde_json::json!({
                     "success": false,
@@ -683,10 +693,7 @@ async fn get_peers(State(state): State<Arc<AppState>>) -> Response {
             .collect();
 
         // Log the state retrieval with structured field as per best practices
-        tracing::info!(
-            peer_count = peer_responses.len(),
-            "📡 Peers retrieved"
-        );
+        tracing::info!(peer_count = peer_responses.len(), "📡 Peers retrieved");
 
         (StatusCode::OK, Json(peer_responses)).into_response()
     } else {

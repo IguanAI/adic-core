@@ -1,6 +1,6 @@
 # Rust
 /target/
-Cargo.lock
+# Cargo.lock is included for binary crates
 
 # IDE
 .vscode/
@@ -289,8 +289,7 @@ htmlcov/
 **/*.rs.bk
 *.pdb
 /target
-Cargo.lock
-!Cargo.lock  # Include for binary crates if needed
+# Cargo.lock is committed for binary crates
 
 # WASM artifacts
 pkg/

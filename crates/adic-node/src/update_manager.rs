@@ -1,19 +1,19 @@
-use anyhow::{anyhow, Result};
+use crate::progress_display::DownloadProgressBar;
+use crate::update_verifier::UpdateVerifier;
 use adic_network::dns_version::{DnsVersionDiscovery, VersionRecord};
-use adic_network::protocol::update::{UpdateState, VersionInfo, constants};
+use adic_network::protocol::update::{constants, UpdateState, VersionInfo};
 use adic_network::NetworkEngine;
+use anyhow::{anyhow, Result};
 use libp2p::PeerId;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::time::{interval, sleep};
 use tracing::{debug, error, info, warn};
-use crate::progress_display::DownloadProgressBar;
-use crate::update_verifier::UpdateVerifier;
 
 /// Simple tracker for chunk downloads
 struct ChunkTracker {
@@ -106,8 +106,8 @@ impl Default for UpdateConfig {
         Self {
             auto_update: false,
             check_interval: constants::VERSION_CHECK_INTERVAL_SECS,
-            update_window_start: 2,  // 2 AM
-            update_window_end: 4,     // 4 AM
+            update_window_start: 2, // 2 AM
+            update_window_end: 4,   // 4 AM
             require_confirmation: true,
             max_retries: 3,
             dns_domain: "adic.network".to_string(),
@@ -187,14 +187,16 @@ impl UpdateManager {
 
     /// Get latest available version
     pub async fn get_latest_version(&self) -> Option<VersionRecord> {
-        match self.dns_discovery.check_for_update(&self.current_version).await {
-            Ok(version) => version,
-            Err(_) => None,
-        }
+        self.dns_discovery
+            .check_for_update(&self.current_version)
+            .await
+            .unwrap_or_default()
     }
 
     /// Get swarm statistics from the update protocol
-    pub async fn get_swarm_statistics(&self) -> adic_network::protocol::swarm_tracker::SwarmStatistics {
+    pub async fn get_swarm_statistics(
+        &self,
+    ) -> adic_network::protocol::swarm_tracker::SwarmStatistics {
         // Get swarm statistics from the network engine's update protocol
         if let Some(update_protocol) = self.network.get_update_protocol() {
             update_protocol.get_swarm_statistics().await
@@ -215,7 +217,11 @@ impl UpdateManager {
         // Check DNS for latest version with retries
         let mut retry_count = 0;
         let result = loop {
-            match self.dns_discovery.check_for_update(&self.current_version).await {
+            match self
+                .dns_discovery
+                .check_for_update(&self.current_version)
+                .await
+            {
                 Ok(update) => break Ok(update),
                 Err(e) if retry_count < self.config.max_retries => {
                     debug!(
@@ -254,7 +260,11 @@ impl UpdateManager {
         }
 
         // Check DNS for latest version
-        let update_available = match self.dns_discovery.check_for_update(&self.current_version).await {
+        let update_available = match self
+            .dns_discovery
+            .check_for_update(&self.current_version)
+            .await
+        {
             Ok(update) => update,
             Err(e) => {
                 warn!(
@@ -383,11 +393,16 @@ impl UpdateManager {
         }
 
         // Request binary chunks from peers
-        let total_chunks = self.request_chunk_count(&peers[0], &version.version).await?;
+        let total_chunks = self
+            .request_chunk_count(&peers[0], &version.version)
+            .await?;
 
         // Create progress bar if we're in a TTY
         let progress = if io::stderr().is_terminal() {
-            Some(DownloadProgressBar::new_chunk_progress(&version.version, total_chunks))
+            Some(DownloadProgressBar::new_chunk_progress(
+                &version.version,
+                total_chunks,
+            ))
         } else {
             None
         };
@@ -417,7 +432,10 @@ impl UpdateManager {
                     }
                     Err(e) => {
                         if let Some(ref pb) = progress {
-                            pb.finish_error(&format!("Failed to download chunk {}: {}", chunk_idx, e));
+                            pb.finish_error(&format!(
+                                "Failed to download chunk {}: {}",
+                                chunk_idx, e
+                            ));
                         }
                         return Err(e);
                     }
@@ -428,18 +446,14 @@ impl UpdateManager {
             let verifier = UpdateVerifier::new()?;
 
             // Calculate chunk hash for verification
-            use sha2::{Sha256, Digest};
+            use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(&chunk);
             let chunk_hash = format!("{:x}", hasher.finalize());
 
             // Verify the chunk with its hash
             // Signature verification happens at the full binary level after assembly
-            verifier.verify_chunk(
-                &chunk,
-                &chunk_hash,
-                None
-            )?;
+            verifier.verify_chunk(&chunk, &chunk_hash, None)?;
 
             debug!(
                 chunk_index = chunk_idx,
@@ -462,7 +476,7 @@ impl UpdateManager {
                     tracker.chunks_complete(),
                     total_chunks,
                     tracker.chunks_per_second(),
-                    peers.len()
+                    peers.len(),
                 );
             }
 
@@ -501,7 +515,8 @@ impl UpdateManager {
 
         let chunks = self.chunks.read().await;
         for idx in 0..total_chunks {
-            let chunk = chunks.get(&idx)
+            let chunk = chunks
+                .get(&idx)
                 .ok_or_else(|| anyhow!("Missing chunk {}", idx))?;
             file.write_all(chunk)?;
         }
@@ -516,11 +531,7 @@ impl UpdateManager {
         let verifier = UpdateVerifier::new()?;
 
         // Verify the binary with hash and signature
-        verifier.verify_binary(
-            path,
-            &version.signature,
-            Some(&version.sha256_hash),
-        )?;
+        verifier.verify_binary(path, &version.signature, Some(&version.sha256_hash))?;
 
         // Also verify the version record signature if we have the proper format
         // The signature should be over "version:hash" message
@@ -585,7 +596,9 @@ impl UpdateManager {
         }
 
         // Move to final location
-        let final_path = self.data_dir.parent()
+        let final_path = self
+            .data_dir
+            .parent()
             .ok_or_else(|| anyhow!("Invalid data directory"))?
             .join("adic.new");
         fs::rename(binary_path, &final_path)?;
@@ -594,7 +607,9 @@ impl UpdateManager {
         let mut copyover = crate::copyover::CopyoverManager::new();
 
         // Get the config path (assuming it's in the parent of data_dir)
-        let config_path = self.data_dir.parent()
+        let config_path = self
+            .data_dir
+            .parent()
             .ok_or_else(|| anyhow!("Invalid data directory"))?
             .join("adic-config.toml");
 
@@ -615,7 +630,9 @@ impl UpdateManager {
         );
 
         // Execute the copyover - this will replace the current process
-        copyover.safe_copyover(&final_path.to_string_lossy()).await?;
+        copyover
+            .safe_copyover(&final_path.to_string_lossy())
+            .await?;
 
         // This line should never be reached if copyover succeeds
         Err(anyhow!("Copyover failed - process was not replaced"))
@@ -631,7 +648,9 @@ impl UpdateManager {
         let transport = self.network.transport().await;
         let query = UpdateMessage::VersionQuery;
 
-        transport.broadcast_update_message(query).await
+        transport
+            .broadcast_update_message(query)
+            .await
             .map_err(|e| anyhow!("Failed to broadcast version query: {}", e))?;
 
         Ok(())
@@ -656,7 +675,9 @@ impl UpdateManager {
             chunk_index: 0,
         };
 
-        transport.send_update_message(peer, request).await
+        transport
+            .send_update_message(peer, request)
+            .await
             .map_err(|e| anyhow!("Failed to request chunk count: {}", e))?;
 
         // In a real implementation, we'd wait for the response
@@ -674,7 +695,9 @@ impl UpdateManager {
             chunk_index: idx,
         };
 
-        transport.send_update_message(peer, request).await
+        transport
+            .send_update_message(peer, request)
+            .await
             .map_err(|e| anyhow!("Failed to request chunk {}: {}", idx, e))?;
 
         // In a real implementation, we'd wait for the BinaryChunk response

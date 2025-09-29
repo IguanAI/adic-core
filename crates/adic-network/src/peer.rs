@@ -565,7 +565,9 @@ impl PeerManager {
                 self.event_sender
                     .send(PeerEvent::PeerDisconnected(*peer_id))
                     .map_err(|e| AdicError::Network(format!("Failed to send event: {}", e)))?;
-            } else if new_state == ConnectionState::Connected && old_state != ConnectionState::Connected {
+            } else if new_state == ConnectionState::Connected
+                && old_state != ConnectionState::Connected
+            {
                 self.event_sender
                     .send(PeerEvent::PeerConnected(*peer_id))
                     .map_err(|e| AdicError::Network(format!("Failed to send event: {}", e)))?;
@@ -659,12 +661,18 @@ mod tests {
         manager.add_peer(peer_info).await.unwrap();
 
         // Test state transition to Disconnected
-        manager.update_peer_connection_state(&peer_id, ConnectionState::Disconnected).await.unwrap();
+        manager
+            .update_peer_connection_state(&peer_id, ConnectionState::Disconnected)
+            .await
+            .unwrap();
         let peer = manager.get_peer(&peer_id).await.unwrap();
         assert_eq!(peer.connection_state, ConnectionState::Disconnected);
 
         // Test state transition back to Connected
-        manager.update_peer_connection_state(&peer_id, ConnectionState::Connected).await.unwrap();
+        manager
+            .update_peer_connection_state(&peer_id, ConnectionState::Connected)
+            .await
+            .unwrap();
         let peer = manager.get_peer(&peer_id).await.unwrap();
         assert_eq!(peer.connection_state, ConnectionState::Connected);
     }
@@ -745,7 +753,6 @@ mod tests {
         use crate::deposit_verifier::RealDepositVerifier;
         use adic_consensus::{DepositManager, DEFAULT_DEPOSIT_AMOUNT};
         use std::time::Duration;
-        use tokio::time::sleep;
 
         let keypair = Keypair::generate_ed25519();
         let deposit_mgr = Arc::new(DepositManager::new(DEFAULT_DEPOSIT_AMOUNT));

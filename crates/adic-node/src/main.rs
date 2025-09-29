@@ -244,7 +244,7 @@ async fn main() -> Result<()> {
                     info!("🔄 Recovering from copyover (pipe_fd={})", pipe_fd);
 
                     // Recover state from copyover
-                    let state = copyover::CopyoverManager::recover_from_copyover(pipe_fd as i32)?;
+                    let state = copyover::CopyoverManager::recover_from_copyover(pipe_fd)?;
 
                     info!(
                         version = %state.version,
@@ -287,7 +287,7 @@ async fn main() -> Result<()> {
                         node.clone(),
                         config.api.host.clone(),
                         config.api.port,
-                        api_listener
+                        api_listener,
                     );
 
                     // Run the node
@@ -607,9 +607,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Update { subcommand } => {
-            handle_update_command(subcommand, cli.config).await
-        }
+        Commands::Update { subcommand } => handle_update_command(subcommand, cli.config).await,
     }
 }
 
@@ -695,7 +693,10 @@ async fn handle_update_command(cmd: UpdateCommands, config_path: Option<PathBuf>
                     }
                 }
                 Ok(None) => {
-                    println!("✅ You're already on the latest version ({})", current_version);
+                    println!(
+                        "✅ You're already on the latest version ({})",
+                        current_version
+                    );
                 }
                 Err(e) => {
                     warn!("⚠️ Failed to check for updates: {}", e);
@@ -721,13 +722,18 @@ async fn handle_update_command(cmd: UpdateCommands, config_path: Option<PathBuf>
             // This would be populated when running as a node
             copyover.prepare_state(
                 None, // No API fd in CLI mode
-                config_path.unwrap_or_else(|| PathBuf::from("./adic-config.toml")).to_string_lossy().to_string(),
+                config_path
+                    .unwrap_or_else(|| PathBuf::from("./adic-config.toml"))
+                    .to_string_lossy()
+                    .to_string(),
                 "./data".to_string(),
                 env!("CARGO_PKG_VERSION").to_string(),
             )?;
 
             // Execute copyover
-            copyover.safe_copyover(&binary_path.to_string_lossy()).await?;
+            copyover
+                .safe_copyover(&binary_path.to_string_lossy())
+                .await?;
 
             Ok(())
         }
