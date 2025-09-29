@@ -5,13 +5,13 @@
 name = "testnet-validator"
 data_dir = "./data/testnet"
 validator = true
-bootstrap = false
+keypair_path = "./data/testnet/keypair.json"
 
 [storage]
-backend_type = "rocksdb"
-path = "./data/testnet/db"
+backend = "rocksdb"
 cache_size = 134217728  # 128 MB
-enable_statistics = true
+snapshot_interval = 1000
+max_snapshots = 10
 
 [consensus]
 # Testnet parameters (same as mainnet for now)
@@ -22,12 +22,13 @@ q = 3
 rho = [2, 2, 1]
 r_min = 0.5
 r_sum_min = 2.0
-max_depth = 12
-alpha = 1.0
+depth_star = 12
+delta = 5
 beta = 1.0
 gamma = 0.9
-delta = 0.01
 deposit = 0.1  # Test ADIC deposit amount
+lambda = 1.0
+mu = 1.0
 
 [api]
 enabled = true
@@ -46,22 +47,17 @@ dns_seeds = ["_seeds.adicl1.com"]
 max_peers = 50
 use_production_tls = false  # Using self-signed certs for testnet
 auto_update = true  # Enable automatic updates for testnet
+ca_cert_path = ""
+node_cert_path = ""
+node_key_path = ""
 
-[economics]
-# Testnet economics (reduced values for testing)
-initial_supply = 1000000.0  # 1M test ADIC
-genesis_allocations = []
-max_supply = 10000000.0  # 10M test ADIC
-
-[finality]
-# Finality parameters
-k_core_threshold = 10  # Lower threshold for testnet
-min_depth = 6
-min_reputation = 1.0
-min_diversity = 2
-stabilization_window = 5
-bottleneck_epsilon = 0.1
+# Economics and finality sections are not needed in node config
 
 [logging]
 level = "info"
 format = "pretty"  # Options: pretty, json, compact
+use_emojis = true
+show_fields_at = "debug"
+file_rotation_size_mb = 100
+show_boot_banner = true
+show_emoji_legend = true
