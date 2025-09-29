@@ -2,6 +2,7 @@
 # This configuration connects to the ADIC testnet using DNS seed discovery
 
 [node]
+name = "testnet-validator"
 data_dir = "./data/testnet"
 validator = true
 bootstrap = false
