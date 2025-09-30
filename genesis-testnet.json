@@ -1,0 +1,28 @@
+{
+  "config": {
+    "deposit_amount": 0.1,
+    "timestamp": "2025-01-01T00:00:00Z",
+    "chain_id": "adic-testnet",
+    "genesis_identities": ["g0", "g1", "g2", "g3"],
+    "allocations": [
+      ["0100000000000000000000000000000000000000000000000000000000000000", 10000],
+      ["c1403f4763367340178077be2ab3144af2b9065901232335f960a9910bb9ab1b", 1000],
+      ["2f89601b32149388d38652ac432307bf183eb97de87b5599cb76d256fd7a7f89", 1000],
+      ["98831caf9b0861ec6eba3072275efc0de1557062043d317ba5f218361e028441", 1000],
+      ["52ba18a771da5f8ebfb7e0eb88a229b748637c8041e0ddf06271b0511e67a5d4", 10000]
+    ],
+    "parameters": {
+      "p": 3,
+      "d": 3,
+      "rho": [2, 2, 1],
+      "q": 3,
+      "k": 20,
+      "depth_star": 12,
+      "homology_window": 5,
+      "alpha": 1.0,
+      "beta": 1.0
+    }
+  },
+  "hash": "c8f8e4c8f9d8e5a7b3c2d1e9f0a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0",
+  "version": "1.0.0"
+}

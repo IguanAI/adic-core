@@ -240,9 +240,10 @@ peers.json
 banned_peers.json
 known_hosts
 
-# Genesis files (except the default one)
+# Genesis files (except the default one and testnet)
 genesis-*.json
 !genesis.json
+!genesis-testnet.json
 
 # Configuration overrides
 *-override.toml
