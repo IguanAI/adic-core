@@ -142,9 +142,10 @@ fi
 
 # Build and start the container
 print_info "Building ADIC node from source (this may take 5-10 minutes)..."
+print_info "Forcing fresh build to ensure latest code..."
 echo
 
-if $DOCKER_COMPOSE up -d --build; then
+if $DOCKER_COMPOSE build --no-cache && $DOCKER_COMPOSE up -d; then
     print_status "ADIC testnet validator node started successfully!"
 else
     print_error "Failed to start the node"
