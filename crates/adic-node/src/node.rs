@@ -1,5 +1,5 @@
 use crate::config::NodeConfig;
-use crate::genesis::{account_address_from_hex, GenesisConfig, GenesisHyperedge};
+use crate::genesis::{account_address_from_hex, GenesisManifest};
 use crate::update_manager;
 use crate::wallet::NodeWallet;
 use crate::wallet_registry::WalletRegistry;
@@ -122,29 +122,137 @@ impl AdicNode {
         let economics_storage = Arc::new(adic_economics::storage::MemoryStorage::new());
         let economics = Arc::new(EconomicsEngine::new(economics_storage.clone()).await?);
 
-        // Initialize genesis in economics engine
-        economics
-            .initialize_genesis()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to initialize economics genesis: {}", e))?;
+        // Only bootstrap nodes should create genesis
+        // Other nodes will sync genesis from the network
+        let is_bootstrap = config.node.bootstrap.unwrap_or(false);
 
-        // Apply genesis allocations on first startup
-        // Check if genesis has been applied by looking for genesis marker file
-        let genesis_marker = config.node.data_dir.join(".genesis_applied");
-        let genesis_applied = genesis_marker.exists();
+        if is_bootstrap {
+            info!("🚀 Bootstrap node: Initializing genesis state");
 
-        if !genesis_applied {
-            info!("🧬 Applying genesis allocations...");
-            let genesis_config = GenesisConfig::default();
+            // Initialize genesis in economics engine
+            economics
+                .initialize_genesis()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to initialize economics genesis: {}", e))?;
 
-            // Verify genesis config
-            genesis_config
+            // Apply genesis allocations on first startup
+            // Check if genesis has been applied by looking for genesis marker file
+            let genesis_marker = config.node.data_dir.join(".genesis_applied");
+            let genesis_applied = genesis_marker.exists();
+
+            if !genesis_applied {
+                info!("🧬 Applying genesis allocations...");
+                // Use genesis from config if provided, otherwise use default
+                let genesis_config = config.genesis.clone().unwrap_or_default();
+
+                // Verify genesis config
+                genesis_config
+                    .verify()
+                    .map_err(|e| anyhow::anyhow!("Invalid genesis config: {}", e))?;
+
+                // Calculate genesis hash for consistency
+                let genesis_hash = genesis_config.calculate_hash();
+                info!(genesis_hash = %genesis_hash, "Genesis hash calculated");
+
+                // Apply allocations
+                let balance_manager = &economics.balances;
+                for (address_hex, amount_adic) in genesis_config.allocations.iter() {
+                    let address = account_address_from_hex(address_hex).map_err(|e| {
+                        anyhow::anyhow!("Invalid genesis address {}: {}", address_hex, e)
+                    })?;
+                    let amount = AdicAmount::from_adic(*amount_adic as f64);
+
+                    balance_manager.credit(address, amount).await.map_err(|e| {
+                        anyhow::anyhow!("Failed to credit genesis allocation: {}", e)
+                    })?;
+
+                    debug!(
+                        "Genesis allocation: {} ADIC to {}",
+                        amount_adic,
+                        &address_hex[..8.min(address_hex.len())]
+                    );
+                }
+
+                // Create and save genesis manifest from the config we used
+                let genesis_manifest = GenesisManifest {
+                    config: genesis_config.clone(),
+                    hash: genesis_hash.clone(),
+                    version: "1.0.0".to_string(),
+                };
+                let genesis_path = config.node.data_dir.join("genesis.json");
+                let genesis_json = serde_json::to_string_pretty(&genesis_manifest)?;
+                std::fs::write(&genesis_path, genesis_json)?;
+
+                // Mark genesis as applied
+                std::fs::write(
+                    &genesis_marker,
+                    format!(
+                        "hash: {}\ntimestamp: {}\n",
+                        genesis_manifest.hash,
+                        chrono::Utc::now().to_rfc3339()
+                    ),
+                )?;
+
+                info!(
+                    genesis_hash = %genesis_manifest.hash,
+                    total_supply_adic = genesis_config.total_supply().to_adic(),
+                    allocation_count = genesis_config.allocations.len(),
+                    "✅ Genesis manifest created and applied"
+                );
+            } else {
+                info!(
+                    genesis_applied = true,
+                    marker_exists = true,
+                    "🧬 Genesis already applied, skipping"
+                );
+            }
+        } else {
+            info!("📡 Non-bootstrap node: Checking for genesis");
+
+            // Non-bootstrap nodes must have genesis provided
+            let genesis_path = config.node.data_dir.join("genesis.json");
+            if !genesis_path.exists() {
+                return Err(anyhow::anyhow!(
+                    "Non-bootstrap node requires genesis.json. Please obtain genesis from bootstrap node or network."
+                ));
+            }
+
+            // Load and verify genesis
+            info!("Loading genesis from {:?}", genesis_path);
+            let genesis_data = std::fs::read_to_string(&genesis_path)?;
+            let genesis_manifest: GenesisManifest = serde_json::from_str(&genesis_data)
+                .map_err(|e| anyhow::anyhow!("Failed to parse genesis: {}", e))?;
+
+            // Verify genesis integrity
+            genesis_manifest
                 .verify()
-                .map_err(|e| anyhow::anyhow!("Invalid genesis config: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Invalid genesis manifest: {}", e))?;
 
-            // Apply allocations
+            // Validate against canonical hash for network security
+            let canonical = GenesisManifest::canonical_hash();
+            if genesis_manifest.hash != canonical {
+                return Err(anyhow::anyhow!(
+                    "Genesis hash mismatch! Expected canonical hash {} but got {}. This node cannot join the network with a different genesis.",
+                    canonical,
+                    genesis_manifest.hash
+                ));
+            }
+
+            info!(
+                genesis_hash = %genesis_manifest.hash,
+                canonical_hash = %canonical,
+                "✅ Genesis loaded, verified, and matches canonical hash"
+            );
+
+            // Initialize economics with genesis state
+            economics
+                .initialize_genesis()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to initialize economics: {}", e))?;
+
+            // Apply genesis allocations
             let balance_manager = &economics.balances;
-            for (address_hex, amount_adic) in genesis_config.allocations.iter() {
+            for (address_hex, amount_adic) in genesis_manifest.config.allocations.iter() {
                 let address = account_address_from_hex(address_hex).map_err(|e| {
                     anyhow::anyhow!("Invalid genesis address {}: {}", address_hex, e)
                 })?;
@@ -154,43 +262,9 @@ impl AdicNode {
                     .credit(address, amount)
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to credit genesis allocation: {}", e))?;
-
-                debug!(
-                    "Genesis allocation: {} ADIC to {}",
-                    amount_adic,
-                    &address_hex[..8.min(address_hex.len())]
-                );
             }
 
-            // Create genesis hyperedge
-            let genesis_hyperedge = GenesisHyperedge::new();
-            info!(
-                manifest_hash = %genesis_hyperedge.manifest_hash(),
-                timestamp = %chrono::Utc::now().to_rfc3339(),
-                "🧬 Genesis manifest created"
-            );
-
-            // Mark genesis as applied by creating marker file
-            std::fs::write(
-                &genesis_marker,
-                format!(
-                    "manifest: {}\ntimestamp: {}\n",
-                    genesis_hyperedge.manifest_hash(),
-                    chrono::Utc::now().to_rfc3339()
-                ),
-            )?;
-
-            info!(
-                total_supply_adic = genesis_config.total_supply().to_adic(),
-                allocation_count = genesis_config.allocations.len(),
-                "✅ Genesis allocations applied successfully"
-            );
-        } else {
-            info!(
-                genesis_applied = true,
-                marker_exists = true,
-                "🧬 Genesis already applied, skipping"
-            );
+            info!("✅ Genesis state applied from manifest");
         }
 
         // Log node wallet balance

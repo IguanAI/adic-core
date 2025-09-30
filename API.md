@@ -75,7 +75,7 @@ Get node status including network statistics and finality metrics.
 ```json
 {
   "node_id": "a1b2c3d4e5f6789...",
-  "version": "0.1.4",
+  "version": "0.1.8",
   "capabilities": {
     "sse_streaming": false,
     "websocket": false,
@@ -108,6 +108,46 @@ Get node status including network statistics and finality metrics.
 - `bulk_queries`: Bulk endpoints available (`/v1/messages/bulk`, `/v1/messages/range`, `/v1/messages/since/:id`)
 - `weights_in_tips`: Weighted tips with MRW scores (currently false - future enhancement)
 - `versioned_api`: API versioning support (true)
+
+### Network Operations
+
+#### GET /peers **[IMPLEMENTED]**
+Get list of connected peers.
+
+**Response:**
+```json
+{
+  "peers": [
+    {
+      "id": "peer_id_hex",
+      "address": "192.168.1.100:19000",
+      "connected_since": "2025-01-15T10:30:00Z",
+      "messages_received": 150,
+      "messages_sent": 200,
+      "latency_ms": 45
+    }
+  ],
+  "count": 1
+}
+```
+
+#### GET /network/status **[IMPLEMENTED]**
+Get detailed network status information.
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "peers_connected": 5,
+  "inbound_connections": 3,
+  "outbound_connections": 2,
+  "network_bandwidth": {
+    "upload_bytes": 1048576,
+    "download_bytes": 2097152
+  },
+  "last_message_received": "2025-01-15T12:30:00Z"
+}
+```
 
 ### Message Operations
 
@@ -543,7 +583,7 @@ Get detailed node statistics.
 {
   "node": {
     "uptime": 3600,
-    "version": "0.1.4",
+    "version": "0.1.8",
     "memory_usage": 1024000,
     "cpu_usage": 0.15
   },
@@ -588,6 +628,138 @@ adic_peers_connected 5
 # ... additional metrics
 ```
 
+### Advanced Metrics
+
+#### GET /v1/diversity/stats **[IMPLEMENTED]**
+Get diversity metrics across DAG axes.
+
+**Response:**
+```json
+{
+  "axes": [
+    {
+      "axis": 0,
+      "diversity_score": 0.85,
+      "coverage": 0.92,
+      "message_distribution": {
+        "min": 10,
+        "max": 150,
+        "mean": 75.5,
+        "stddev": 25.3
+      }
+    },
+    {
+      "axis": 1,
+      "diversity_score": 0.78,
+      "coverage": 0.88,
+      "message_distribution": {
+        "min": 15,
+        "max": 140,
+        "mean": 70.2,
+        "stddev": 22.1
+      }
+    }
+  ],
+  "overall_diversity": 0.82,
+  "timestamp": "2025-01-20T12:00:00Z"
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:8080/v1/diversity/stats | jq '.'
+```
+
+#### GET /v1/energy/active **[IMPLEMENTED]**
+Get active energy descent paths and metrics.
+
+**Response:**
+```json
+{
+  "active_paths": [
+    {
+      "message_id": "hex_string",
+      "current_energy": 0.75,
+      "initial_energy": 1.0,
+      "descent_steps": 5,
+      "stabilized": false,
+      "last_updated": "2025-01-20T12:00:00Z"
+    }
+  ],
+  "total_active": 12,
+  "average_energy": 0.65,
+  "convergence_rate": 0.92
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:8080/v1/energy/active | jq '.'
+```
+
+#### GET /v1/finality/kcore/metrics **[IMPLEMENTED]**
+Get k-core finality metrics and thresholds.
+
+**Response:**
+```json
+{
+  "k_value": 20,
+  "current_k_core_size": 450,
+  "messages_finalized_count": 445,
+  "finalization_rate": 0.95,
+  "average_finalization_depth": 15.5,
+  "pending_messages": 5,
+  "metrics": {
+    "min_depth": 12,
+    "max_depth": 20,
+    "median_depth": 15
+  }
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:8080/v1/finality/kcore/metrics | jq '.'
+```
+
+#### GET /v1/admissibility/rates **[IMPLEMENTED]**
+Get admissibility check statistics and rates.
+
+**Response:**
+```json
+{
+  "total_checks": 10000,
+  "passed": 9500,
+  "failed": 500,
+  "pass_rate": 0.95,
+  "recent_checks": [
+    {
+      "message_id": "hex_string",
+      "passed": true,
+      "timestamp": "2025-01-20T12:00:00Z",
+      "reasons": []
+    },
+    {
+      "message_id": "hex_string",
+      "passed": false,
+      "timestamp": "2025-01-20T11:59:00Z",
+      "reasons": ["insufficient_diversity", "low_reputation"]
+    }
+  ],
+  "failure_reasons": {
+    "insufficient_diversity": 200,
+    "low_reputation": 150,
+    "invalid_parents": 100,
+    "other": 50
+  }
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:8080/v1/admissibility/rates | jq '.'
+```
+
 ### Update System Endpoints
 
 #### GET /update/swarm **[IMPLEMENTED]**
@@ -606,8 +778,8 @@ Get real-time swarm-wide update statistics.
     "total_active_transfers": 24,
     "average_download_progress": 67.5,
     "version_distribution": {
-      "0.1.6": 45,
-      "0.1.7": 20
+      "0.1.7": 45,
+      "0.1.8": 20
     },
     "total_peers": 65,
     "download_speed_mbps": 50.0,
@@ -622,8 +794,8 @@ Get current node update status.
 **Response:**
 ```json
 {
-  "current_version": "0.1.6",
-  "latest_version": "0.1.7",
+  "current_version": "0.1.7",
+  "latest_version": "0.1.8",
   "update_available": true,
   "update_state": "idle",
   "auto_update_enabled": false,
@@ -641,8 +813,8 @@ Manually trigger an update check.
   "success": true,
   "message": "Update check initiated",
   "update_available": true,
-  "latest_version": "0.1.7",
-  "current_version": "0.1.6"
+  "latest_version": "0.1.8",
+  "current_version": "0.1.7"
 }
 ```
 
@@ -653,7 +825,7 @@ Get detailed update download progress.
 ```json
 {
   "status": "downloading",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "progress_percent": 45.2,
   "chunks_received": 23,
   "total_chunks": 51,
@@ -664,6 +836,23 @@ Get detailed update download progress.
   "verification_status": "pending"
 }
 ```
+
+#### POST /update/apply **[IMPLEMENTED]**
+Apply a downloaded update (restart required).
+
+**Authentication Required:** Yes (admin only)
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Update applied successfully. Restart required.",
+  "version": "0.1.8",
+  "restart_required": true
+}
+```
+
+**Note:** This endpoint triggers the application of a downloaded update. The node must be restarted for the update to take effect.
 
 ### Bulk Query Endpoints
 
@@ -840,6 +1029,162 @@ curl -X POST http://localhost:8080/wallet/sign \
 curl http://localhost:8080/wallet/transactions/ADDRESS | jq '.'
 ```
 
+### Wallet Registry
+
+#### POST /wallet/register **[IMPLEMENTED]**
+Register a wallet with optional metadata.
+
+**Request Body:**
+```json
+{
+  "address": "hex_string",
+  "metadata": {
+    "label": "My Main Wallet",
+    "type": "validator"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "address": "hex_string",
+  "registered_at": "2025-01-15T12:00:00Z"
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/wallet/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "YOUR_ADDRESS",
+    "metadata": {
+      "label": "Validator Node 1"
+    }
+  }' | jq '.'
+```
+
+#### GET /wallet/registered **[IMPLEMENTED]**
+Get list of all registered wallets.
+
+**Response:**
+```json
+{
+  "wallets": [
+    {
+      "address": "hex_string",
+      "registered_at": "2025-01-15T12:00:00Z",
+      "metadata": {
+        "label": "My Main Wallet"
+      }
+    }
+  ],
+  "count": 1
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:8080/wallet/registered | jq '.'
+```
+
+#### GET /wallet/registry/stats **[IMPLEMENTED]**
+Get wallet registry statistics.
+
+**Response:**
+```json
+{
+  "total_registered": 150,
+  "active_wallets": 120,
+  "validator_wallets": 45,
+  "total_balance": "15000000000000000"
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:8080/wallet/registry/stats | jq '.'
+```
+
+#### GET /wallet/info/:address **[IMPLEMENTED]**
+Get detailed information about a specific wallet.
+
+**Parameters:**
+- `address` (path) - Wallet address in hex format
+
+**Response:**
+```json
+{
+  "address": "hex_string",
+  "balance": "1000000000000000",
+  "registered": true,
+  "registered_at": "2025-01-15T12:00:00Z",
+  "metadata": {
+    "label": "My Main Wallet"
+  },
+  "transaction_count": 50,
+  "last_activity": "2025-01-20T15:30:00Z"
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:8080/wallet/info/YOUR_ADDRESS | jq '.'
+```
+
+#### POST /wallet/export **[IMPLEMENTED]**
+Export wallet data (encrypted).
+
+**Authentication Required:** Yes
+
+**Response:**
+```json
+{
+  "success": true,
+  "export_data": "encrypted_base64_string",
+  "exported_at": "2025-01-20T12:00:00Z"
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/wallet/export \
+  -H "Authorization: Bearer YOUR_TOKEN" | jq '.'
+```
+
+#### POST /wallet/import **[IMPLEMENTED]**
+Import wallet data from encrypted export.
+
+**Authentication Required:** Yes
+
+**Request Body:**
+```json
+{
+  "export_data": "encrypted_base64_string"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "address": "hex_string",
+  "imported_at": "2025-01-20T12:00:00Z"
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:8080/wallet/import \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "export_data": "YOUR_ENCRYPTED_DATA"
+  }' | jq '.'
+```
+
 ### Monitor Metrics
 
 ```bash
@@ -855,6 +1200,28 @@ Official SDKs are planned for:
 - Go
 
 ## Changelog
+
+### v0.1.8
+- Added genesis system endpoints (GET /v1/economics/genesis, POST /v1/economics/initialize)
+- Added network operation endpoints (GET /peers, GET /network/status)
+- Added wallet registry endpoints (POST /wallet/register, GET /wallet/registered, GET /wallet/registry/stats, GET /wallet/info/:address)
+- Added wallet import/export endpoints (POST /wallet/export, POST /wallet/import)
+- Added advanced metrics endpoints (GET /v1/diversity/stats, GET /v1/energy/active, GET /v1/finality/kcore/metrics, GET /v1/admissibility/rates)
+- Added update apply endpoint (POST /update/apply)
+- Updated version references to 0.1.8
+- Enhanced API documentation with complete endpoint coverage
+
+### v0.1.7
+- Added update system endpoints (GET /update/swarm, GET /update/status, POST /update/check, GET /update/progress)
+- Improved peer-to-peer update distribution
+- Enhanced swarm-wide statistics tracking
+- Added version distribution metrics
+
+### v0.1.6
+- Added bulk query endpoints (GET /v1/messages/bulk, GET /v1/messages/range, GET /v1/messages/since/:id)
+- Enhanced capability detection in /status endpoint
+- Improved pagination support for large queries
+- Added Explorer Backend compatibility
 
 ### v0.1.5
 - Added complete wallet implementation with transaction support

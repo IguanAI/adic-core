@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "adic-bench"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "adic-consensus",
  "adic-crypto",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "adic-consensus"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "adic-crypto",
  "adic-economics",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "adic-crypto"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "adic-consensus",
  "adic-math",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "adic-economics"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "adic-storage",
  "adic-types",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "adic-finality"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "adic-consensus",
  "adic-crypto",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "adic-math"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "adic-types",
  "num-bigint",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "adic-mrw"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "adic-consensus",
  "adic-math",
@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "adic-network"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "adic-consensus",
  "adic-crypto",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "adic-node"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "adic-consensus",
  "adic-crypto",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "adic-storage"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "adic-crypto",
  "adic-types",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "adic-types"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "bincode",
  "blake3",

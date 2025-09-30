@@ -10,6 +10,7 @@ async fn create_test_node() -> Arc<AdicNode> {
 
     let mut config = NodeConfig::default();
     config.node.data_dir = temp_dir.path().to_path_buf();
+    config.node.bootstrap = Some(true); // Set as bootstrap node for tests
     config.storage.backend = "memory".to_string();
     config.network.enabled = false; // Disable networking for tests
 

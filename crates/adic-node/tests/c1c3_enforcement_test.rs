@@ -10,7 +10,8 @@ async fn test_node_initialization() {
     // Test that node can be initialized with default config
     let mut config = NodeConfig::default();
     config.node.data_dir = temp_dir.path().to_path_buf();
-    // Use in-memory storage for tests to avoid persistence
+    config.node.bootstrap = Some(true); // Set as bootstrap node for tests
+                                        // Use in-memory storage for tests to avoid persistence
     config.storage.backend = "memory".to_string();
 
     let node = Arc::new(AdicNode::new(config).await.unwrap());

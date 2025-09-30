@@ -12,6 +12,7 @@ async fn test_node_basic_operations() {
     let mut config = NodeConfig::default();
     // Use in-memory storage for this test
     config.storage.backend = "memory".to_string();
+    config.node.bootstrap = Some(true); // Set as bootstrap node for tests
     let node = Arc::new(AdicNode::new(config).await.unwrap());
 
     // The actual persistence and recovery tests should be in the storage module

@@ -5,6 +5,119 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2025-09-30
+
+### Added
+- **Genesis Configuration System**: Complete genesis state management for network initialization
+  - Full genesis configuration with token allocations (300.4M ADIC mainnet supply)
+  - Canonical genesis hash: `e03dffb732c202021e35225771c033b1217b0e6241be360ad88f6d7ac43675f8`
+  - Genesis manifest with cryptographic commitment to initial state
+  - Support for both mainnet and testnet genesis configurations
+
+- **Bootstrap Node Support**: Special node type for network initialization
+  - `bootstrap = true` configuration flag
+  - Automatic genesis.json manifest creation
+  - Genesis allocation application to economics engine
+  - Bootstrap nodes serve as initial network anchors
+
+- **Genesis Hash Validation**: Network security through genesis verification
+  - Non-bootstrap nodes validate against canonical genesis hash
+  - Prevents accidental network splits from mismatched genesis
+  - Cryptographic verification of genesis state consistency
+
+- **Configuration File Updates**: All config files now include [genesis] sections
+  - `bootstrap-config.toml` with mainnet allocations (300.4M ADIC)
+  - `testnet-config.toml` with testnet allocations (23K ADIC)
+  - Config files for node1, node2, node3 with test allocations
+  - `adic-config.toml` and `config/bootstrap-node.toml` with mainnet settings
+
+- **Enhanced Update Script**: `update-bootstrap.sh` now handles configuration changes
+  - Detects configuration file modifications using diff
+  - Automatically copies updated configs to remote servers
+  - Creates timestamped backups of existing configurations
+  - Seamless deployment of both code and config updates
+
+- **Comprehensive Test Coverage**: 18+ new tests for genesis functionality
+  - `tests/genesis_validation_test.rs`: 5 tests for genesis validation logic
+  - `tests/config_test.rs`: 3 tests for configuration file loading
+  - Updated existing tests to handle genesis initialization
+  - Bootstrap flag testing across all node initialization tests
+
+### Changed
+- **Node Initialization**: Uses genesis configuration from config files instead of hardcoded defaults
+  - `node.rs:146`: Changed from `GenesisConfig::default()` to `config.genesis.clone().unwrap_or_default()`
+  - Bootstrap nodes create and save genesis.json manifest on first start
+  - Non-bootstrap nodes validate their genesis.json against canonical hash
+
+- **Genesis Manifest Creation**: Now uses actual config genesis instead of always creating default
+  - Fixed `node.rs:181-189` to construct manifest from loaded config
+  - Ensures bootstrap nodes use the genesis specified in their configuration
+  - Genesis hash correctly reflects the configured allocations and parameters
+
+### Fixed
+- **Configuration Loading**: Genesis configuration properly loaded from all config files
+- **Test Compatibility**: All 158 tests updated to work with genesis validation
+  - Added `config.node.bootstrap = Some(true)` to test node creation
+  - Fixed byzantine tests, c1c3 enforcement tests, node tests, and persistence tests
+  - Ensured all test scenarios properly handle genesis initialization
+
+- **Code Quality**: Resolved all clippy warnings
+  - Added `Default` implementation for `GenesisManifest`
+  - Removed redundant closures and imports
+  - Fixed field assignments to use struct literal syntax
+
+- **Version Display**: Fixed hardcoded version strings throughout the codebase
+  - Boot banner now uses `CARGO_PKG_VERSION` instead of hardcoded "0.1.5"
+  - Startup logs now display correct version from package metadata
+  - Added `--version` CLI flag for easy version checking
+  - All version references now automatically sync with Cargo.toml
+
+### Documentation
+- **GENESIS.md**: Comprehensive 300+ line guide to the genesis system
+  - Complete explanation of genesis configuration structure
+  - Canonical hash documentation and verification procedures
+  - Token allocation breakdown (300.4M ADIC mainnet, 23K testnet)
+  - Bootstrap vs non-bootstrap node differences
+  - Genesis validation process and manifest structure
+  - Configuration examples for mainnet, testnet, and validators
+  - Troubleshooting guide for common genesis issues
+
+- **BOOTSTRAP.md**: Detailed 400+ line bootstrap node setup guide
+  - Prerequisites and system requirements
+  - Step-by-step setup process
+  - Complete configuration examples
+  - Production deployment with systemd and Docker
+  - Network infrastructure setup (firewall, DNS)
+  - Verification procedures and monitoring
+  - Security considerations and best practices
+  - Maintenance schedules and update procedures
+  - Transitioning from bootstrap to regular validator
+
+- **Updated Documentation**: Version references and integration status
+  - Updated API.md with v0.1.8 version examples
+  - Updated INTEGRATION-STATUS.md to v0.1.8 status
+  - Added genesis system to implementation status
+  - Version-bumped all documentation files
+
+### Technical Details
+- **Genesis Addresses**: Deterministic address derivation for genesis identities
+  - Treasury: `0100...0000` (60M ADIC - 20%)
+  - Liquidity: `c140...ab1b` (45M ADIC - 15%)
+  - Community: `2f89...7f89` (45M ADIC - 15%)
+  - Genesis Pool: `9883...8441` (150M ADIC - 50%)
+  - g0-g3: Four genesis identities with 100K ADIC each
+
+- **Genesis Parameters**: Aligned with ADIC-DAG paper specifications
+  - p=3, d=3, ρ=(2,2,1), q=3, k=20, D*=12, Δ=5, α=1.0, β=1.0
+  - Parameters ensure network security and consensus properties
+  - Configurable through [genesis.parameters] section
+
+### Security
+- **Canonical Hash Enforcement**: Prevents network fragmentation
+  - All nodes must agree on genesis state through hash verification
+  - Non-bootstrap nodes reject mismatched genesis configurations
+  - Cryptographic commitment to initial allocations and parameters
+
 ## [0.1.7] - 2024-12-28
 
 ### Added

@@ -6,6 +6,7 @@ name = "testnet-validator"
 data_dir = "./data/testnet"
 validator = true
 keypair_path = "./data/testnet/keypair.json"
+bootstrap = false  # Set to true only for bootstrap nodes
 
 [storage]
 backend = "rocksdb"
@@ -61,3 +62,29 @@ show_fields_at = "debug"
 file_rotation_size_mb = 100
 show_boot_banner = true
 show_emoji_legend = true
+
+[genesis]
+deposit_amount = 0.1
+timestamp = "2025-01-01T00:00:00Z"
+chain_id = "adic-testnet"
+genesis_identities = ["g0", "g1", "g2", "g3"]
+
+# Test genesis allocations (smaller amounts for testnet)
+allocations = [
+    ["0100000000000000000000000000000000000000000000000000000000000000", 10_000],      # Treasury
+    ["c1403f4763367340178077be2ab3144af2b9065901232335f960a9910bb9ab1b", 1_000],       # node-1
+    ["2f89601b32149388d38652ac432307bf183eb97de87b5599cb76d256fd7a7f89", 1_000],       # node-2
+    ["98831caf9b0861ec6eba3072275efc0de1557062043d317ba5f218361e028441", 1_000],       # node-3
+    ["52ba18a771da5f8ebfb7e0eb88a229b748637c8041e0ddf06271b0511e67a5d4", 10_000],      # faucet
+]
+
+[genesis.parameters]
+p = 3
+d = 3
+rho = [2, 2, 1]
+q = 3
+k = 20
+depth_star = 12
+homology_window = 5
+alpha = 1.0
+beta = 1.0

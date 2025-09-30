@@ -167,6 +167,7 @@ The main configuration is in `testnet-config.toml`:
 [node]
 validator = true  # Run as validator
 data_dir = "./data/testnet"
+bootstrap = false  # Regular validator (not bootstrap node)
 
 [network]
 dns_seeds = ["_seeds.adicl1.com"]
@@ -178,7 +179,107 @@ max_peers = 50
 r_sum_min = 2.0  # Lower threshold for testnet
 r_min = 0.5      # Lower threshold for testnet
 deposit = 0.1    # Test ADIC deposit amount
+
+[genesis]
+chain_id = "adic-testnet"
+timestamp = "2025-01-01T00:00:00Z"
+deposit_amount = 0.1
+genesis_identities = ["g0", "g1", "g2", "g3"]
+
+# Testnet allocations (23,000 ADIC total)
+allocations = [
+    ["0100000000000000000000000000000000000000000000000000000000000000", 10_000],  # Treasury
+    ["c1403f4763367340178077be2ab3144af2b9065901232335f960a9910bb9ab1b", 1_000],   # node-1
+    ["2f89601b32149388d38652ac432307bf183eb97de87b5599cb76d256fd7a7f89", 1_000],   # node-2
+    ["98831caf9b0861ec6eba3072275efc0de1557062043d317ba5f218361e028441", 1_000],   # node-3
+    ["52ba18a771da5f8ebfb7e0eb88a229b748637c8041e0ddf06271b0511e67a5d4", 10_000],  # faucet
+]
+
+[genesis.parameters]
+p = 3
+d = 3
+rho = [2, 2, 1]
+q = 3
+k = 20
+depth_star = 12
+homology_window = 5
+alpha = 1.0
+beta = 1.0
 ```
+
+## 🔐 Genesis Configuration
+
+ADIC uses a genesis system to initialize the network state. Understanding genesis is important for validators.
+
+### What is Genesis?
+
+The genesis configuration establishes:
+- **Initial token allocations** - Distribution of test ADIC tokens
+- **Network parameters** - Consensus thresholds and protocol settings
+- **Genesis hash** - Cryptographic commitment to the initial state
+
+### Bootstrap vs Validator Nodes
+
+**Bootstrap Node** (`bootstrap = true`):
+- Creates the genesis.json manifest
+- Initializes the network state
+- **Only ONE** bootstrap node should exist per network
+- Operated by the network administrators
+
+**Validator Node** (`bootstrap = false`):
+- Validates against existing genesis.json
+- Joins an existing network
+- **This is what you run** as a testnet participant
+
+### Genesis.json File
+
+Your validator node requires a `genesis.json` file to start. This file:
+- Contains the canonical genesis configuration
+- Must match the network's genesis hash
+- Is automatically downloaded from bootstrap peers
+
+**Location**: `./data/testnet/genesis.json`
+
+The Docker setup automatically obtains this file from the testnet bootstrap nodes. If you're running manually, the node will fetch it from connected peers during the initial sync.
+
+### Testnet Token Allocation
+
+The testnet has a total supply of **23,000 test ADIC tokens**:
+
+| Account | Allocation | Purpose |
+|---------|------------|---------|
+| Treasury | 10,000 | Protocol development |
+| Node-1 | 1,000 | Test validator |
+| Node-2 | 1,000 | Test validator |
+| Node-3 | 1,000 | Test validator |
+| Faucet | 10,000 | Distribution to participants |
+
+### Getting Test Tokens
+
+Request test tokens from the faucet:
+
+```bash
+curl -X POST http://localhost:8080/wallet/faucet \
+  -H "Content-Type: application/json" \
+  -d '{
+    "address": "YOUR_ADDRESS",
+    "amount": 100.0
+  }'
+```
+
+### Genesis Validation
+
+On startup, your node will:
+1. Check for `genesis.json` in the data directory
+2. Compute the genesis hash from the configuration
+3. Verify it matches the network's canonical hash
+4. Reject connection if there's a mismatch (prevents network splits)
+
+**Testnet Genesis Hash**: Check your logs for the genesis hash verification message.
+
+### For More Details
+
+See [GENESIS.md](./GENESIS.md) and [BOOTSTRAP.md](./BOOTSTRAP.md) for comprehensive documentation on the genesis system.
 
 ## 🛠️ Troubleshooting
 
@@ -233,6 +334,41 @@ If Docker build fails:
    docker-compose -f docker-compose.testnet.yml down -v
    docker system prune -a
    docker-compose -f docker-compose.testnet.yml up -d --build
+   ```
+
+### Genesis-Related Issues
+
+#### Error: "Non-bootstrap node requires genesis.json"
+
+**Cause**: Your node cannot find the genesis.json file.
+
+**Solution**:
+1. Ensure you're connected to bootstrap peers (check DNS seeds)
+2. Wait for the node to download genesis.json from peers
+3. If manual setup, obtain genesis.json from a trusted source and place it in `./data/testnet/genesis.json`
+4. Restart the node
+
+#### Error: "Genesis hash mismatch"
+
+**Cause**: Your genesis configuration doesn't match the network's canonical genesis.
+
+**Solution**:
+1. Delete your data directory: `rm -rf ./data/testnet`
+2. Ensure your `testnet-config.toml` has the correct genesis configuration
+3. Let the node download a fresh genesis.json from bootstrap peers
+4. If the problem persists, you may have modified the genesis configuration - restore from the repository
+
+#### Genesis Not Applied
+
+**Symptom**: Node starts but economics endpoints show 0 balance for all accounts.
+
+**Solution**:
+1. Check logs for "Genesis loaded, verified" or "Applying genesis allocations" messages
+2. Verify genesis.json exists: `ls -lh ./data/testnet/genesis.json`
+3. For a fresh start: `rm -rf ./data/testnet && restart node`
+4. Check genesis initialization endpoint:
+   ```bash
+   curl http://localhost:8080/v1/economics/genesis | jq '.'
    ```
 
 ## 📚 Additional Resources

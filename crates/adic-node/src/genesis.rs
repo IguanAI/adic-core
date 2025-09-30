@@ -29,6 +29,21 @@ pub struct GenesisConfig {
     pub timestamp: DateTime<Utc>,
     pub chain_id: String,
     pub genesis_identities: Vec<String>, // g0, g1, g2, g3 for d=3
+    pub parameters: GenesisParameters,   // System parameters from paper
+}
+
+/// System parameters from ADIC-DAG paper Section 1.2
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenesisParameters {
+    pub p: u32,               // Prime p = 3
+    pub d: u32,               // Dimension d = 3
+    pub rho: Vec<u32>,        // Axis radii ρ = (2, 2, 1)
+    pub q: u32,               // Diversity threshold q = 3
+    pub k: u32,               // k-core threshold k = 20
+    pub depth_star: u32,      // Depth D* = 12
+    pub homology_window: u32, // ∆ = 5
+    pub alpha: f64,           // Reputation exponent α = 1
+    pub beta: f64,            // Reputation exponent β = 1
 }
 
 impl Default for GenesisConfig {
@@ -39,6 +54,11 @@ impl Default for GenesisConfig {
         // - 30% Liquidity and Community R&D (90M)
         // - 50% Genesis contribution (150M)
 
+        // Fixed timestamp for deterministic genesis
+        let genesis_timestamp = DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
         Self {
             allocations: vec![
                 // Treasury account - 20% of genesis mint (60M ADIC)
@@ -47,45 +67,16 @@ impl Default for GenesisConfig {
                 (derive_address_from_node_id("liquidity"), 45_000_000),
                 (derive_address_from_node_id("community"), 45_000_000),
                 // Genesis contribution allocation - 50% (150M ADIC)
-                // This will be distributed based on genesis contributions
                 (derive_address_from_node_id("genesis-pool"), 150_000_000),
-                // Genesis identities (g0, g1, g2, g3) with initial ADIC-Rep
-                // Small initial balance for operations
-                (derive_address_from_node_id("g0"), 1_000),
-                (derive_address_from_node_id("g1"), 1_000),
-                (derive_address_from_node_id("g2"), 1_000),
-                (derive_address_from_node_id("g3"), 1_000),
-                // Bootstrap nodes - operational allocations
-                // Using actual node addresses from running containers
-                (
-                    "71ef6e73551963bfc2c0e0bac722718c92626aa734d2fbcb99fba2e2361a153c".to_string(),
-                    10_000,
-                ),
-                (
-                    "5db5d180d9bc1ca7aef5afe07ffbeb4cd140fa84e8aa596ac67d16c053ea0692".to_string(),
-                    10_000,
-                ),
-                (
-                    "7b22a73f1b3a1768d2b806e0af4bed84aecf42c2d6e359d3453df183303b7385".to_string(),
-                    10_000,
-                ),
-                (
-                    "db582489535d0a0acf1e1a949c663036a2a69e485bbfda1a0c58b17895452687".to_string(),
-                    10_000,
-                ),
-                (
-                    "9ddeea748bfab933c09846d78e90debe62164f388a2d0011d40ab70da6eb034b".to_string(),
-                    10_000,
-                ),
-                (
-                    "ae53b338cd7d2bbef4fca6e114acb8ce8cb865c46f0245b589443d1ffce1b120".to_string(),
-                    10_000,
-                ),
-                // Development faucet for testing
-                (derive_address_from_node_id("faucet"), 100_000),
+                // Genesis identities (g0, g1, g2, g3) per paper Section 6.1
+                // Initial operational balance for genesis identities
+                (derive_address_from_node_id("g0"), 100_000),
+                (derive_address_from_node_id("g1"), 100_000),
+                (derive_address_from_node_id("g2"), 100_000),
+                (derive_address_from_node_id("g3"), 100_000),
             ],
             deposit_amount: 0.1, // D = 0.1 ADIC per paper
-            timestamp: Utc::now(),
+            timestamp: genesis_timestamp,
             chain_id: "adic-dag-v1".to_string(),
             genesis_identities: vec![
                 "g0".to_string(),
@@ -93,6 +84,17 @@ impl Default for GenesisConfig {
                 "g2".to_string(),
                 "g3".to_string(),
             ],
+            parameters: GenesisParameters {
+                p: 3,               // Prime p = 3
+                d: 3,               // Dimension d = 3
+                rho: vec![2, 2, 1], // Axis radii ρ = (2, 2, 1)
+                q: 3,               // Diversity threshold
+                k: 20,              // k-core threshold
+                depth_star: 12,     // Depth D* = 12
+                homology_window: 5, // ∆ = 5
+                alpha: 1.0,         // Reputation exponent
+                beta: 1.0,          // Reputation exponent
+            },
         }
     }
 }
@@ -100,6 +102,10 @@ impl Default for GenesisConfig {
 impl GenesisConfig {
     /// Create a test genesis configuration with smaller amounts
     pub fn test() -> Self {
+        let fixed_timestamp = DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
         Self {
             allocations: vec![
                 (treasury_address(), 10_000),
@@ -109,7 +115,7 @@ impl GenesisConfig {
                 (derive_address_from_node_id("faucet"), 10_000),
             ],
             deposit_amount: 0.1,
-            timestamp: Utc::now(),
+            timestamp: fixed_timestamp,
             chain_id: "adic-testnet".to_string(),
             genesis_identities: vec![
                 "g0".to_string(),
@@ -117,6 +123,17 @@ impl GenesisConfig {
                 "g2".to_string(),
                 "g3".to_string(),
             ],
+            parameters: GenesisParameters {
+                p: 3,
+                d: 3,
+                rho: vec![2, 2, 1],
+                q: 3,
+                k: 20,
+                depth_star: 12,
+                homology_window: 5,
+                alpha: 1.0,
+                beta: 1.0,
+            },
         }
     }
 
@@ -163,6 +180,34 @@ impl GenesisConfig {
 
         Ok(())
     }
+
+    /// Calculate deterministic hash of the genesis configuration
+    pub fn calculate_hash(&self) -> String {
+        // Create a canonical JSON representation for hashing
+        let canonical = serde_json::json!({
+            "chain_id": self.chain_id,
+            "timestamp": self.timestamp.to_rfc3339(),
+            "deposit_amount": self.deposit_amount,
+            "allocations": self.allocations,
+            "genesis_identities": self.genesis_identities,
+            "parameters": {
+                "p": self.parameters.p,
+                "d": self.parameters.d,
+                "rho": self.parameters.rho,
+                "q": self.parameters.q,
+                "k": self.parameters.k,
+                "depth_star": self.parameters.depth_star,
+                "homology_window": self.parameters.homology_window,
+                "alpha": self.parameters.alpha,
+                "beta": self.parameters.beta,
+            }
+        });
+
+        let json_string = serde_json::to_string(&canonical).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(json_string.as_bytes());
+        hex::encode(hasher.finalize())
+    }
 }
 
 /// Derive a deterministic address from a node ID
@@ -184,6 +229,56 @@ pub fn treasury_address() -> String {
     let mut addr = [0u8; 32];
     addr[0] = 1;
     hex::encode(addr)
+}
+
+/// Genesis manifest that can be shared and verified
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenesisManifest {
+    pub config: GenesisConfig,
+    pub hash: String,
+    pub version: String,
+}
+
+impl Default for GenesisManifest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GenesisManifest {
+    /// Create a new genesis manifest with default configuration
+    pub fn new() -> Self {
+        let config = GenesisConfig::default();
+        let hash = config.calculate_hash();
+
+        Self {
+            config,
+            hash,
+            version: "1.0.0".to_string(),
+        }
+    }
+
+    /// Verify that the manifest hash matches the config
+    pub fn verify(&self) -> Result<(), String> {
+        let calculated_hash = self.config.calculate_hash();
+        if calculated_hash != self.hash {
+            return Err(format!(
+                "Genesis hash mismatch: expected {}, got {}",
+                self.hash, calculated_hash
+            ));
+        }
+        self.config.verify()?;
+        Ok(())
+    }
+
+    /// Get the canonical genesis hash for this network
+    #[allow(dead_code)]
+    pub fn canonical_hash() -> &'static str {
+        // This is the deterministic hash of the default genesis config
+        // Genesis Hash: e03dffb732c202021e35225771c033b1217b0e6241be360ad88f6d7ac43675f8
+        // Total Supply: 300,400,000 ADIC (300.4M)
+        "e03dffb732c202021e35225771c033b1217b0e6241be360ad88f6d7ac43675f8"
+    }
 }
 
 /// Derive a deterministic keypair from a seed (for node wallets)
@@ -261,6 +356,7 @@ impl GenesisHyperedge {
     }
 
     /// Get the genesis manifest hash for anchoring
+    #[allow(dead_code)]
     pub fn manifest_hash(&self) -> String {
         let mut hasher = Sha256::new();
         let json = serde_json::to_string(self).unwrap_or_default();
@@ -273,6 +369,35 @@ impl GenesisHyperedge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_print_genesis_hash() {
+        let manifest = GenesisManifest::new();
+        println!("\n\n=== GENESIS HASH ===");
+        println!("Genesis Hash: {}", manifest.hash);
+        println!(
+            "Total Supply: {} ADIC",
+            manifest.config.total_supply().to_adic()
+        );
+        println!("==================\n\n");
+    }
+
+    #[test]
+    fn test_print_genesis_addresses() {
+        println!("\n\n=== GENESIS ADDRESSES ===");
+        println!("Treasury: {}", treasury_address());
+        println!("Liquidity: {}", derive_address_from_node_id("liquidity"));
+        println!("Community: {}", derive_address_from_node_id("community"));
+        println!(
+            "Genesis Pool: {}",
+            derive_address_from_node_id("genesis-pool")
+        );
+        println!("g0: {}", derive_address_from_node_id("g0"));
+        println!("g1: {}", derive_address_from_node_id("g1"));
+        println!("g2: {}", derive_address_from_node_id("g2"));
+        println!("g3: {}", derive_address_from_node_id("g3"));
+        println!("========================\n\n");
+    }
 
     #[test]
     fn test_genesis_config() {
@@ -307,6 +432,189 @@ mod tests {
         // Should start with "01" followed by zeros
         assert!(treasury.starts_with("01"));
         assert_eq!(treasury.len(), 64); // 32 bytes = 64 hex chars
+    }
+
+    #[test]
+    fn test_genesis_hash_determinism() {
+        // Genesis hash should be deterministic
+        let config1 = GenesisConfig::default();
+        let config2 = GenesisConfig::default();
+
+        let hash1 = config1.calculate_hash();
+        let hash2 = config2.calculate_hash();
+
+        assert_eq!(hash1, hash2, "Genesis hashes should be identical");
+
+        // Should match the canonical hash
+        let manifest = GenesisManifest::new();
+        assert_eq!(
+            manifest.hash, "e03dffb732c202021e35225771c033b1217b0e6241be360ad88f6d7ac43675f8",
+            "Genesis hash should match canonical"
+        );
+    }
+
+    #[test]
+    fn test_genesis_manifest_creation() {
+        let manifest = GenesisManifest::new();
+
+        // Verify manifest
+        assert!(manifest.verify().is_ok());
+
+        // Check version
+        assert_eq!(manifest.version, "1.0.0");
+
+        // Check hash matches calculated
+        let calculated = manifest.config.calculate_hash();
+        assert_eq!(manifest.hash, calculated);
+    }
+
+    #[test]
+    fn test_genesis_manifest_serialization() {
+        let manifest = GenesisManifest::new();
+
+        // Serialize to JSON
+        let json = serde_json::to_string_pretty(&manifest).expect("Should serialize");
+
+        // Deserialize back
+        let deserialized: GenesisManifest =
+            serde_json::from_str(&json).expect("Should deserialize");
+
+        // Should be identical
+        assert_eq!(manifest.hash, deserialized.hash);
+        assert_eq!(manifest.version, deserialized.version);
+
+        // Verify still works
+        assert!(deserialized.verify().is_ok());
+    }
+
+    #[test]
+    fn test_genesis_parameters_match_paper() {
+        let config = GenesisConfig::default();
+
+        // Check parameters match ADIC paper Section 1.2
+        assert_eq!(config.parameters.p, 3, "Prime p should be 3");
+        assert_eq!(config.parameters.d, 3, "Dimension d should be 3");
+        assert_eq!(
+            config.parameters.rho,
+            vec![2, 2, 1],
+            "Radii should be (2,2,1)"
+        );
+        assert_eq!(config.parameters.q, 3, "Diversity threshold should be 3");
+        assert_eq!(config.parameters.k, 20, "k-core threshold should be 20");
+        assert_eq!(config.parameters.depth_star, 12, "Depth D* should be 12");
+        assert_eq!(config.parameters.homology_window, 5, "Window should be 5");
+        assert_eq!(config.parameters.alpha, 1.0, "Alpha should be 1.0");
+        assert_eq!(config.parameters.beta, 1.0, "Beta should be 1.0");
+    }
+
+    #[test]
+    fn test_genesis_allocations_match_paper() {
+        let config = GenesisConfig::default();
+
+        // Total genesis mint should be 3×10^8 ADIC per paper Section 6.2
+        let total = config.total_supply();
+        assert_eq!(
+            total.to_adic() as u64,
+            300_400_000,
+            "Total should be ~300M ADIC"
+        );
+
+        // Check major allocations
+        assert_eq!(
+            config.allocations[0].1, 60_000_000,
+            "Treasury should be 60M"
+        );
+
+        // Find liquidity and community allocations
+        let liquidity = config
+            .allocations
+            .iter()
+            .find(|(addr, _)| addr == &derive_address_from_node_id("liquidity"))
+            .map(|(_, amt)| *amt)
+            .unwrap_or(0);
+        assert_eq!(liquidity, 45_000_000, "Liquidity should be 45M");
+
+        let community = config
+            .allocations
+            .iter()
+            .find(|(addr, _)| addr == &derive_address_from_node_id("community"))
+            .map(|(_, amt)| *amt)
+            .unwrap_or(0);
+        assert_eq!(community, 45_000_000, "Community should be 45M");
+
+        let genesis_pool = config
+            .allocations
+            .iter()
+            .find(|(addr, _)| addr == &derive_address_from_node_id("genesis-pool"))
+            .map(|(_, amt)| *amt)
+            .unwrap_or(0);
+        assert_eq!(genesis_pool, 150_000_000, "Genesis pool should be 150M");
+    }
+
+    #[test]
+    fn test_genesis_identities() {
+        let config = GenesisConfig::default();
+
+        // Should have g0, g1, g2, g3 for d=3
+        assert_eq!(config.genesis_identities.len(), 4);
+        assert_eq!(config.genesis_identities[0], "g0");
+        assert_eq!(config.genesis_identities[1], "g1");
+        assert_eq!(config.genesis_identities[2], "g2");
+        assert_eq!(config.genesis_identities[3], "g3");
+    }
+
+    #[test]
+    fn test_genesis_hyperedge() {
+        let hyperedge = GenesisHyperedge::new();
+
+        // Should have 4 identities for d=3
+        assert_eq!(hyperedge.identities.len(), 4);
+
+        // Each should have distinct axis anchors
+        assert_eq!(hyperedge.identities[0].axis_anchors, vec![0, 0, 0]);
+        assert_eq!(hyperedge.identities[1].axis_anchors, vec![1, 0, 0]);
+        assert_eq!(hyperedge.identities[2].axis_anchors, vec![0, 1, 0]);
+        assert_eq!(hyperedge.identities[3].axis_anchors, vec![0, 0, 1]);
+
+        // Should have initial reputation
+        for identity in &hyperedge.identities {
+            assert_eq!(identity.rep_score, 1.0);
+        }
+
+        // Manifest hash should be deterministic
+        let hash1 = hyperedge.manifest_hash();
+        let hyperedge2 = GenesisHyperedge::new();
+        let hash2 = hyperedge2.manifest_hash();
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_genesis_manifest_canonical_hash() {
+        // The canonical hash should match what we calculated
+        assert_eq!(
+            GenesisManifest::canonical_hash(),
+            "e03dffb732c202021e35225771c033b1217b0e6241be360ad88f6d7ac43675f8"
+        );
+    }
+
+    #[test]
+    fn test_invalid_genesis_rejected() {
+        let mut manifest = GenesisManifest::new();
+
+        // Corrupt the hash
+        manifest.hash = "invalid_hash".to_string();
+
+        // Should fail verification
+        assert!(manifest.verify().is_err());
+    }
+
+    #[test]
+    fn test_test_config_has_parameters() {
+        // Test config should also have valid parameters
+        let config = GenesisConfig::test();
+        assert!(config.verify().is_ok());
+        assert_eq!(config.parameters.p, 3);
+        assert_eq!(config.parameters.d, 3);
     }
 
     #[test]

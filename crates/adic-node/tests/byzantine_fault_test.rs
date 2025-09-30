@@ -8,6 +8,7 @@ use std::sync::Arc;
 /// Helper to create a test node with in-memory storage
 async fn create_test_node(_node_id: u8) -> Arc<AdicNode> {
     let mut config = NodeConfig::default();
+    config.node.bootstrap = Some(true); // Set as bootstrap node for tests
     config.consensus.q = 1; // Minimal diversity for testing
     config.consensus.rho = vec![1, 1, 1]; // Lower radii
     config.consensus.r_sum_min = 0.5; // Lower C3 threshold

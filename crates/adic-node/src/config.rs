@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 
+use crate::genesis::GenesisConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeConfig {
     pub node: NodeSettings,
@@ -14,6 +16,8 @@ pub struct NodeConfig {
     pub network: NetworkConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub genesis: Option<GenesisConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +26,8 @@ pub struct NodeSettings {
     pub keypair_path: Option<PathBuf>,
     pub validator: bool,
     pub name: String,
+    #[serde(default)]
+    pub bootstrap: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +142,7 @@ impl Default for NodeConfig {
                 keypair_path: None,
                 validator: false,
                 name: "adic-node".to_string(),
+                bootstrap: Some(false),
             },
             consensus: ConsensusConfig {
                 p: 3,
@@ -179,6 +186,7 @@ impl Default for NodeConfig {
                 auto_update: false,
             },
             logging: LoggingConfig::default(),
+            genesis: None,
         }
     }
 }
@@ -370,5 +378,52 @@ mod tests {
         env::remove_var("BOOTSTRAP_PEERS");
         env::remove_var("ADIC_P");
         env::remove_var("ADIC_K");
+    }
+
+    #[test]
+    fn test_genesis_config_parsing() {
+        use crate::genesis::GenesisConfig;
+
+        // Test config with genesis
+        let config = NodeConfig {
+            genesis: Some(GenesisConfig::default()),
+            ..Default::default()
+        };
+
+        // Serialize to TOML
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        assert!(
+            toml_str.contains("[genesis]"),
+            "TOML should contain [genesis] section"
+        );
+        assert!(
+            toml_str.contains("allocations"),
+            "TOML should contain allocations"
+        );
+        assert!(
+            toml_str.contains("chain_id"),
+            "TOML should contain chain_id"
+        );
+
+        // Deserialize back
+        let parsed: NodeConfig = toml::from_str(&toml_str).unwrap();
+        assert!(
+            parsed.genesis.is_some(),
+            "Parsed config should have genesis"
+        );
+
+        let genesis = parsed.genesis.unwrap();
+        assert_eq!(genesis.chain_id, "adic-dag-v1");
+        assert!(!genesis.allocations.is_empty());
+        assert_eq!(genesis.genesis_identities.len(), 4);
+
+        // Test config without genesis
+        let config_no_genesis = NodeConfig::default();
+        let toml_str2 = toml::to_string_pretty(&config_no_genesis).unwrap();
+        let parsed2: NodeConfig = toml::from_str(&toml_str2).unwrap();
+        assert!(
+            parsed2.genesis.is_none(),
+            "Config without genesis should parse as None"
+        );
     }
 }

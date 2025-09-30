@@ -26,6 +26,7 @@ mod wallet_registry;
 #[derive(Parser)]
 #[command(name = "adic")]
 #[command(about = "ADIC Core - P-adic DAG Consensus Node", long_about = None)]
+#[command(version)]
 struct Cli {
     /// Configuration file path
     #[arg(short, long, value_name = "FILE")]
@@ -200,7 +201,7 @@ async fn main() -> Result<()> {
 
     // Show boot banner if enabled
     if logging_config.show_boot_banner && cli.verbose == 0 && std::env::var("RUST_LOG").is_err() {
-        logging::display_boot_banner("0.1.5");
+        logging::display_boot_banner(env!("CARGO_PKG_VERSION"));
     }
 
     // Show emoji legend only for the start command
@@ -350,7 +351,7 @@ async fn main() -> Result<()> {
             }
 
             info!(
-                version = "0.1.5",
+                version = env!("CARGO_PKG_VERSION"),
                 data_dir = ?config.node.data_dir,
                 p2p_port = config.network.p2p_port,
                 quic_port = config.network.quic_port,

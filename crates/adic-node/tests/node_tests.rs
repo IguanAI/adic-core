@@ -10,6 +10,7 @@ async fn test_node_initialization() {
     let mut config = NodeConfig::default();
     // Use in-memory storage for tests
     config.storage.backend = "memory".to_string();
+    config.node.bootstrap = Some(true); // Set as bootstrap node for tests
     let node = AdicNode::new(config).await.unwrap();
 
     // Verify node ID is generated
@@ -30,6 +31,7 @@ async fn test_message_submission() {
     config.consensus.depth_star = 0; // Allow shallow messages
     config.consensus.k = 1; // Minimal core size
     config.storage.backend = "memory".to_string(); // Use in-memory storage
+    config.node.bootstrap = Some(true); // Set as bootstrap node for tests
     let node = AdicNode::new(config).await.unwrap();
 
     // First create genesis and some diverse parent messages
@@ -78,6 +80,7 @@ async fn test_node_stats() {
     config.consensus.depth_star = 0; // Allow shallow messages
     config.consensus.k = 1; // Minimal core size
     config.storage.backend = "memory".to_string(); // Use in-memory storage
+    config.node.bootstrap = Some(true); // Set as bootstrap node for tests
     let node = AdicNode::new(config).await.unwrap();
 
     // Get initial stats
@@ -150,6 +153,9 @@ async fn test_storage_operations() {
 
 #[test]
 fn test_config_serialization() {
+    use adic_node::genesis::GenesisConfig;
+
+    // Test config without genesis
     let config = NodeConfig::default();
 
     // Serialize to TOML
@@ -162,6 +168,40 @@ fn test_config_serialization() {
     let parsed: NodeConfig = toml::from_str(&toml_str).unwrap();
     assert_eq!(parsed.consensus.p, config.consensus.p);
     assert_eq!(parsed.consensus.d, config.consensus.d);
+    assert!(
+        parsed.genesis.is_none(),
+        "Default config should have no genesis"
+    );
+
+    // Test config with genesis
+    let config_with_genesis = NodeConfig {
+        genesis: Some(GenesisConfig::default()),
+        ..Default::default()
+    };
+
+    let toml_str2 = toml::to_string_pretty(&config_with_genesis).unwrap();
+    assert!(
+        toml_str2.contains("[genesis]"),
+        "TOML should include genesis section"
+    );
+    assert!(
+        toml_str2.contains("allocations"),
+        "Genesis should include allocations"
+    );
+    assert!(
+        toml_str2.contains("chain_id"),
+        "Genesis should include chain_id"
+    );
+
+    // Deserialize and verify genesis is preserved
+    let parsed2: NodeConfig = toml::from_str(&toml_str2).unwrap();
+    assert!(
+        parsed2.genesis.is_some(),
+        "Genesis should be present after deserialization"
+    );
+    let genesis = parsed2.genesis.unwrap();
+    assert_eq!(genesis.chain_id, "adic-dag-v1");
+    assert!(!genesis.allocations.is_empty());
 }
 
 #[test]
@@ -353,4 +393,54 @@ async fn create_diverse_parents(node: &AdicNode, genesis_id: MessageId) -> Vec<M
     }
 
     tip_ids
+}
+
+#[tokio::test]
+async fn test_node_uses_config_genesis() {
+    use adic_node::genesis::{GenesisConfig, GenesisManifest};
+    use tempfile::TempDir;
+
+    // Create a temporary directory for the test
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create a custom genesis config
+    let mut custom_genesis = GenesisConfig::test();
+    custom_genesis.chain_id = "test-custom-chain".to_string();
+
+    // Create node config with custom genesis
+    let mut config = NodeConfig::default();
+    config.node.data_dir = temp_dir.path().to_path_buf();
+    config.node.bootstrap = Some(true); // Set as bootstrap node
+    config.storage.backend = "memory".to_string();
+    config.network.enabled = false;
+    config.genesis = Some(custom_genesis.clone());
+
+    // Create node - it should use the config genesis
+    let node = AdicNode::new(config).await.unwrap();
+
+    // Verify the node was initialized successfully
+    assert!(!node.node_id().is_empty());
+
+    // The node should have applied the custom genesis allocations
+    // Verify the genesis.json file was created
+    let genesis_json_path = temp_dir.path().join("genesis.json");
+    assert!(
+        genesis_json_path.exists(),
+        "Bootstrap node should create genesis.json"
+    );
+
+    // Verify the genesis.json contains the custom chain_id
+    let genesis_data = std::fs::read_to_string(&genesis_json_path).unwrap();
+    let genesis_manifest: GenesisManifest = serde_json::from_str(&genesis_data).unwrap();
+    assert_eq!(
+        genesis_manifest.config.chain_id, "test-custom-chain",
+        "Genesis should use custom chain_id from config"
+    );
+
+    // Verify the node can operate normally
+    let stats = node.get_stats().await.unwrap();
+    assert_eq!(
+        stats.message_count, 0,
+        "New node should start with 0 messages"
+    );
 }
