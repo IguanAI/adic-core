@@ -87,6 +87,15 @@ else
     exit 1
 fi
 
+# Download genesis.json for testnet
+print_info "Downloading testnet genesis configuration..."
+if curl -fsSL -o genesis.json https://raw.githubusercontent.com/IguanAI/adic-core/main/genesis-testnet.json; then
+    print_status "Downloaded genesis.json"
+else
+    print_error "Failed to download genesis.json"
+    exit 1
+fi
+
 # Create .env file with defaults
 cat > .env << EOF
 # ADIC Testnet Configuration

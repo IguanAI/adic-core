@@ -13,6 +13,7 @@ services:
     volumes:
       - adic-testnet-data:/data
       - ./testnet-config.toml:/config/adic-config.toml:ro
+      - ./genesis.json:/data/testnet/genesis.json:ro
     environment:
       - RUST_LOG=${RUST_LOG:-info}
       - NODE_NAME=${NODE_NAME:-testnet-validator}
