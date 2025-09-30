@@ -2,7 +2,7 @@
   "config": {
     "deposit_amount": 0.1,
     "timestamp": "2025-01-01T00:00:00Z",
-    "chain_id": "adic-dag-v1",
+    "chain_id": "adic-testnet-v1",
     "genesis_identities": ["g0", "g1", "g2", "g3"],
     "allocations": [
       ["0100000000000000000000000000000000000000000000000000000000000000", 60000000],
@@ -27,6 +27,6 @@
       "beta": 1.0
     }
   },
-  "hash": "73d94f26bfdac4638061ebc75553bc8cd661ebfe9bbeaaf3ba668e93e5c456d7",
+  "hash": "d60d700b1b5689fcf01d6defb17c44f1640448668353faa1f3ff48576b4e03ad",
   "version": "1.0.0"
 }
