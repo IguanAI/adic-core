@@ -222,13 +222,18 @@ impl MessagePipeline {
             return MessagePriority::Critical;
         }
 
+        // Check if it has a value transfer - high priority for economic activity
+        if message.has_value_transfer() {
+            return MessagePriority::High;
+        }
+
         // Check if it's a conflict message
         if !message.meta.conflict.is_none() {
             return MessagePriority::High;
         }
 
         // Check message size for background sync
-        if message.payload.len() > 10000 {
+        if message.data.len() > 10000 {
             return MessagePriority::Low;
         }
 

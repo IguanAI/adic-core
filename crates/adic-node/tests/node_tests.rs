@@ -65,7 +65,7 @@ async fn test_message_submission() {
 
     let msg = retrieved.unwrap();
     assert_eq!(msg.id, message_id);
-    assert_eq!(msg.payload, content);
+    assert_eq!(msg.data, content);
 }
 
 #[tokio::test]

@@ -76,6 +76,7 @@ pub struct DiscoveryProtocol {
     active_discoveries: Arc<RwLock<HashSet<PeerId>>>,
     last_discovery: Arc<RwLock<Instant>>,
     peer_manager: Option<Arc<crate::peer::PeerManager>>,
+    pending_bootstrap_connections: Arc<RwLock<Vec<(PeerId, quinn::Connection)>>>,
 }
 
 impl DiscoveryProtocol {
@@ -87,7 +88,14 @@ impl DiscoveryProtocol {
             active_discoveries: Arc::new(RwLock::new(HashSet::new())),
             last_discovery: Arc::new(RwLock::new(Instant::now())),
             peer_manager: None,
+            pending_bootstrap_connections: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    /// Get and clear pending bootstrap connections that need receivers started
+    pub async fn take_pending_bootstrap_connections(&self) -> Vec<(PeerId, quinn::Connection)> {
+        let mut pending = self.pending_bootstrap_connections.write().await;
+        std::mem::take(&mut *pending)
     }
 
     pub fn set_peer_manager(&mut self, peer_manager: Arc<crate::peer::PeerManager>) {
@@ -206,6 +214,24 @@ impl DiscoveryProtocol {
 
             // Parse the multiaddr to get the socket address
             if let Some(socket_addr) = self.parse_multiaddr_to_socket(addr) {
+                // Check if we already have a connection to any peer at this address
+                let pool = transport.connection_pool();
+                let existing_connections = pool.get_all_connections().await;
+
+                // Check if we already have an active connection to this bootstrap node
+                let already_connected = existing_connections
+                    .iter()
+                    .any(|(_, conn)| conn.remote_address() == socket_addr);
+
+                if already_connected {
+                    debug!(
+                        bootstrap_addr = %addr,
+                        socket_addr = %socket_addr,
+                        "⏭️  Skipping bootstrap - already connected"
+                    );
+                    continue;
+                }
+
                 let connect_start = std::time::Instant::now();
 
                 match transport.connect_quic(socket_addr).await {
@@ -229,10 +255,11 @@ impl DiscoveryProtocol {
                                     "✅ Bootstrap handshake successful"
                                 );
 
-                                // Add to connection pool
+                                // Add to connection pool - clone the connection so we can use it later
+                                let connection_clone = connection.clone();
                                 if let Err(e) = transport
                                     .connection_pool()
-                                    .add_connection(remote_peer_id, connection)
+                                    .add_connection(remote_peer_id, connection_clone)
                                     .await
                                 {
                                     warn!(
@@ -246,6 +273,15 @@ impl DiscoveryProtocol {
                                         bootstrap_addr = %addr,
                                         peer_id = %remote_peer_id,
                                         "Bootstrap connection added to pool"
+                                    );
+
+                                    // Store connection so NetworkEngine can start a proper receiver for it
+                                    let mut pending =
+                                        self.pending_bootstrap_connections.write().await;
+                                    pending.push((remote_peer_id, connection.clone()));
+                                    info!(
+                                        "Stored bootstrap connection for receiver startup, peer_id={}",
+                                        remote_peer_id
                                     );
 
                                     // Add bootstrap peer to PeerManager if available

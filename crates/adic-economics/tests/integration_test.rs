@@ -19,16 +19,13 @@ async fn test_complete_tokenomics_lifecycle() {
     // Initialize genesis
     economics.initialize_genesis().await.unwrap();
     // Note: We check supply instead since the genesis allocator is created internally
-    assert_eq!(
-        economics.get_total_supply().await,
-        AdicAmount::GENESIS_SUPPLY
-    );
+    // Total supply includes genesis (300M) + faucet allocation (10M)
+    let expected_total =
+        AdicAmount::GENESIS_SUPPLY.saturating_add(AdicAmount::from_adic(10_000_000.0));
+    assert_eq!(economics.get_total_supply().await, expected_total);
 
-    // Verify total supply matches genesis
-    assert_eq!(
-        economics.get_total_supply().await,
-        AdicAmount::GENESIS_SUPPLY
-    );
+    // Verify total supply matches genesis + faucet
+    assert_eq!(economics.get_total_supply().await, expected_total);
 
     // Verify allocations (20% Treasury, 30% Liquidity, 50% Genesis)
     let treasury_balance = economics

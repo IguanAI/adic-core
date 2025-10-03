@@ -1,13 +1,19 @@
 use crate::config::NodeConfig;
+use crate::events::{
+    AxisData, BalanceChangeType, EventBus, FinalityType, NodeEvent, RejectionType,
+};
 use crate::genesis::{account_address_from_hex, GenesisManifest};
 use crate::update_manager;
 use crate::wallet::NodeWallet;
 use crate::wallet_registry::WalletRegistry;
-use adic_consensus::ConsensusEngine;
+use adic_consensus::{ConsensusEngine, ReputationChangeEvent};
 use adic_crypto::Keypair;
+use adic_economics::balance::{BalanceChangeEvent, BalanceChangeTypeEvent};
 use adic_economics::{AccountAddress, AdicAmount, EconomicsEngine};
 use adic_finality::{FinalityConfig, FinalityEngine};
 use adic_mrw::MrwEngine;
+use adic_network::peer::PeerEvent;
+use adic_network::sync::SyncEvent;
 use adic_network::{NetworkConfig, NetworkEngine};
 use adic_storage::store::BackendType;
 use adic_storage::{MessageIndex, StorageConfig, StorageEngine, TipManager};
@@ -34,6 +40,7 @@ pub struct AdicNode {
     pub economics: Arc<EconomicsEngine>,
     pub network: Option<Arc<RwLock<NetworkEngine>>>,
     pub update_manager: Option<Arc<update_manager::UpdateManager>>,
+    pub event_bus: Arc<EventBus>,
     index: Arc<MessageIndex>,
     tip_manager: Arc<TipManager>,
     running: Arc<RwLock<bool>>,
@@ -56,6 +63,10 @@ impl AdicNode {
             public_key = %hex::encode(wallet.public_key().as_bytes()),
             "🔐 Node wallet loaded"
         );
+
+        // Initialize event bus early for real-time event streaming
+        let event_bus = Arc::new(EventBus::new());
+        info!("📡 Event bus initialized for WebSocket/SSE streaming");
 
         // Create storage engine using configured backend
         let storage_config = StorageConfig {
@@ -103,6 +114,25 @@ impl AdicNode {
         let adic_params = config.adic_params();
         let consensus = Arc::new(ConsensusEngine::new(adic_params.clone(), storage.clone()));
 
+        // Register reputation event callback to bridge consensus events to node events
+        {
+            let event_bus_clone = event_bus.clone();
+            consensus
+                .reputation
+                .set_event_callback(Arc::new(move |reputation_event: ReputationChangeEvent| {
+                    event_bus_clone.emit(NodeEvent::ReputationChanged {
+                        validator_address: hex::encode(
+                            reputation_event.validator_pubkey.as_bytes(),
+                        ),
+                        old_reputation: reputation_event.old_reputation,
+                        new_reputation: reputation_event.new_reputation,
+                        reason: reputation_event.reason,
+                        timestamp: Utc::now(),
+                    });
+                }))
+                .await;
+        }
+
         // Create MRW engine
         let mrw = Arc::new(MrwEngine::new(adic_params.clone()));
 
@@ -121,6 +151,99 @@ impl AdicNode {
         // Create economics engine
         let economics_storage = Arc::new(adic_economics::storage::MemoryStorage::new());
         let economics = Arc::new(EconomicsEngine::new(economics_storage.clone()).await?);
+
+        // Register balance event callback to bridge economics events to node events
+        {
+            let event_bus_clone = event_bus.clone();
+            economics
+                .balances
+                .set_event_callback(Arc::new(move |balance_event: BalanceChangeEvent| {
+                    tracing::info!(
+                        address = ?balance_event.address,
+                        balance_before = %balance_event.balance_before.to_adic(),
+                        balance_after = %balance_event.balance_after.to_adic(),
+                        change_amount = %balance_event.change_amount.to_adic(),
+                        change_type = ?balance_event.change_type,
+                        "💰 Balance changed - emitting event"
+                    );
+                    event_bus_clone.emit(NodeEvent::BalanceChanged {
+                        address: hex::encode(balance_event.address.as_bytes()),
+                        balance_before: balance_event.balance_before.to_adic().to_string(),
+                        balance_after: balance_event.balance_after.to_adic().to_string(),
+                        change_amount: balance_event.change_amount.to_adic().to_string(),
+                        change_type: match balance_event.change_type {
+                            BalanceChangeTypeEvent::Credit => BalanceChangeType::Credit,
+                            BalanceChangeTypeEvent::Debit => BalanceChangeType::Debit,
+                            BalanceChangeTypeEvent::TransferIn => BalanceChangeType::TransferIn,
+                            BalanceChangeTypeEvent::TransferOut => BalanceChangeType::TransferOut,
+                        },
+                        timestamp: Utc::now(),
+                    });
+                }))
+                .await;
+        }
+
+        // Register balance transfer event callback to emit TransferRecorded events
+        {
+            let event_bus_clone = event_bus.clone();
+            economics
+                .balances
+                .set_transfer_event_callback(Arc::new(
+                    move |transfer_event: adic_economics::types::TransferEvent| {
+                        tracing::info!(
+                            from = %transfer_event.from,
+                            to = %transfer_event.to,
+                            amount = %transfer_event.amount.to_adic(),
+                            reason = ?transfer_event.reason,
+                            "💸 Transfer recorded (balances) - emitting event"
+                        );
+                        event_bus_clone.emit(NodeEvent::TransferRecorded {
+                            from_address: hex::encode(transfer_event.from.as_bytes()),
+                            to_address: hex::encode(transfer_event.to.as_bytes()),
+                            amount: transfer_event.amount.to_adic().to_string(),
+                            reason: format!("{:?}", transfer_event.reason),
+                            tx_hash: None,
+                            timestamp: chrono::DateTime::from_timestamp(
+                                transfer_event.timestamp,
+                                0,
+                            )
+                            .unwrap_or_else(Utc::now),
+                        });
+                    },
+                ))
+                .await;
+        }
+
+        // Register supply transfer event callback to emit TransferRecorded events
+        {
+            let event_bus_clone = event_bus.clone();
+            economics
+                .supply
+                .set_event_callback(Arc::new(
+                    move |transfer_event: adic_economics::types::TransferEvent| {
+                        tracing::info!(
+                            from = %transfer_event.from,
+                            to = %transfer_event.to,
+                            amount = %transfer_event.amount.to_adic(),
+                            reason = ?transfer_event.reason,
+                            "💸 Transfer recorded - emitting event"
+                        );
+                        event_bus_clone.emit(NodeEvent::TransferRecorded {
+                            from_address: hex::encode(transfer_event.from.as_bytes()),
+                            to_address: hex::encode(transfer_event.to.as_bytes()),
+                            amount: transfer_event.amount.to_adic().to_string(),
+                            reason: format!("{:?}", transfer_event.reason),
+                            tx_hash: None, // Will be generated by backend if needed
+                            timestamp: chrono::DateTime::from_timestamp(
+                                transfer_event.timestamp,
+                                0,
+                            )
+                            .unwrap_or_else(Utc::now),
+                        });
+                    },
+                ))
+                .await;
+        }
 
         // Only bootstrap nodes should create genesis
         // Other nodes will sync genesis from the network
@@ -141,7 +264,6 @@ impl AdicNode {
             let genesis_applied = genesis_marker.exists();
 
             if !genesis_applied {
-                info!("🧬 Applying genesis allocations...");
                 // Use genesis from config if provided, otherwise use default
                 let genesis_config = config.genesis.clone().unwrap_or_default();
 
@@ -152,7 +274,18 @@ impl AdicNode {
 
                 // Calculate genesis hash for consistency
                 let genesis_hash = genesis_config.calculate_hash();
-                info!(genesis_hash = %genesis_hash, "Genesis hash calculated");
+
+                // Verify against canonical hash for mainnet
+                if genesis_config.chain_id == "adic-dag-v1" {
+                    let canonical_hash = GenesisManifest::canonical_hash();
+                    if genesis_hash != canonical_hash {
+                        return Err(anyhow::anyhow!(
+                            "Genesis hash mismatch for mainnet (adic-dag-v1). Expected canonical hash {}, got {}",
+                            canonical_hash,
+                            genesis_hash
+                        ));
+                    }
+                }
 
                 // Apply allocations
                 let balance_manager = &economics.balances;
@@ -167,9 +300,9 @@ impl AdicNode {
                     })?;
 
                     debug!(
-                        "Genesis allocation: {} ADIC to {}",
-                        amount_adic,
-                        &address_hex[..8.min(address_hex.len())]
+                        address = &address_hex[..16.min(address_hex.len())],
+                        amount_adic = *amount_adic,
+                        "Genesis allocation credited"
                     );
                 }
 
@@ -199,6 +332,22 @@ impl AdicNode {
                     allocation_count = genesis_config.allocations.len(),
                     "✅ Genesis manifest created and applied"
                 );
+
+                // Emit economics updated event after genesis
+                let total_supply = economics.get_total_supply().await;
+                let circulating_supply = economics.get_circulating_supply().await;
+                let treasury_balance = economics
+                    .treasury
+                    .get_treasury_balance()
+                    .await
+                    .unwrap_or(AdicAmount::ZERO);
+
+                event_bus.emit(NodeEvent::EconomicsUpdated {
+                    total_supply: total_supply.to_adic().to_string(),
+                    circulating_supply: circulating_supply.to_adic().to_string(),
+                    treasury_balance: treasury_balance.to_adic().to_string(),
+                    timestamp: Utc::now(),
+                });
             } else {
                 info!(
                     genesis_applied = true,
@@ -228,21 +377,31 @@ impl AdicNode {
                 .verify()
                 .map_err(|e| anyhow::anyhow!("Invalid genesis manifest: {}", e))?;
 
-            // Validate against canonical hash for network security
-            let canonical = GenesisManifest::canonical_hash();
-            if genesis_manifest.hash != canonical {
-                return Err(anyhow::anyhow!(
-                    "Genesis hash mismatch! Expected canonical hash {} but got {}. This node cannot join the network with a different genesis.",
-                    canonical,
-                    genesis_manifest.hash
-                ));
+            // Verify against canonical hash for mainnet
+            if genesis_manifest.config.chain_id == "adic-dag-v1" {
+                let canonical_hash = GenesisManifest::canonical_hash();
+                if genesis_manifest.hash != canonical_hash {
+                    return Err(anyhow::anyhow!(
+                        "Genesis hash mismatch for mainnet (adic-dag-v1). Expected canonical hash {}, got {}",
+                        canonical_hash,
+                        genesis_manifest.hash
+                    ));
+                }
             }
 
             info!(
                 genesis_hash = %genesis_manifest.hash,
-                canonical_hash = %canonical,
+                chain_id = %genesis_manifest.config.chain_id,
                 "✅ Genesis loaded, verified, and matches canonical hash"
             );
+
+            // Emit genesis loaded event
+            event_bus.emit(NodeEvent::GenesisLoaded {
+                chain_id: genesis_manifest.config.chain_id.clone(),
+                genesis_hash: genesis_manifest.hash.clone(),
+                total_supply: genesis_manifest.config.total_supply().to_adic().to_string(),
+                timestamp: Utc::now(),
+            });
 
             // Initialize economics with genesis state
             economics
@@ -265,6 +424,22 @@ impl AdicNode {
             }
 
             info!("✅ Genesis state applied from manifest");
+
+            // Emit economics updated event after genesis
+            let total_supply = economics.get_total_supply().await;
+            let circulating_supply = economics.get_circulating_supply().await;
+            let treasury_balance = economics
+                .treasury
+                .get_treasury_balance()
+                .await
+                .unwrap_or(AdicAmount::ZERO);
+
+            event_bus.emit(NodeEvent::EconomicsUpdated {
+                total_supply: total_supply.to_adic().to_string(),
+                circulating_supply: circulating_supply.to_adic().to_string(),
+                treasury_balance: treasury_balance.to_adic().to_string(),
+                timestamp: Utc::now(),
+            });
         }
 
         // Log node wallet balance
@@ -356,6 +531,117 @@ impl AdicNode {
             // Initialize update manager if network is available
             let network_arc = Arc::new(RwLock::new(network));
 
+            // Bridge P2P peer events to node events
+            {
+                let event_bus_clone = event_bus.clone();
+                let network_clone = network_arc.clone();
+                tokio::spawn(async move {
+                    let net = network_clone.read().await;
+                    let peer_stream = net.peer_manager().event_stream();
+                    drop(net); // Release the read lock
+
+                    loop {
+                        let event_opt = {
+                            let mut stream = peer_stream.write().await;
+                            stream.recv().await
+                        };
+
+                        match event_opt {
+                            Some(peer_event) => {
+                                match peer_event {
+                                    PeerEvent::PeerConnected(peer_id) => {
+                                        // Get peer info to extract address
+                                        let address = {
+                                            let net = network_clone.read().await;
+                                            if let Some(peer_info) =
+                                                net.peer_manager().get_peer(&peer_id).await
+                                            {
+                                                peer_info
+                                                    .addresses
+                                                    .first()
+                                                    .map(|addr| addr.to_string())
+                                                    .unwrap_or_else(|| "unknown".to_string())
+                                            } else {
+                                                "unknown".to_string()
+                                            }
+                                        };
+
+                                        event_bus_clone.emit(NodeEvent::PeerConnected {
+                                            peer_id: peer_id.to_string(),
+                                            address,
+                                            timestamp: Utc::now(),
+                                        });
+                                    }
+                                    PeerEvent::PeerDisconnected(peer_id) => {
+                                        event_bus_clone.emit(NodeEvent::PeerDisconnected {
+                                            peer_id: peer_id.to_string(),
+                                            reason: None,
+                                            timestamp: Utc::now(),
+                                        });
+                                    }
+                                    _ => {} // Ignore other peer events for now
+                                }
+                            }
+                            None => break, // Channel closed
+                        }
+                    }
+                });
+            }
+
+            // Bridge sync events to node events
+            {
+                let event_bus_clone = event_bus.clone();
+                let network_clone = network_arc.clone();
+                tokio::spawn(async move {
+                    let net = network_clone.read().await;
+                    let sync_stream = net.state_sync().event_stream();
+                    drop(net); // Release the read lock
+
+                    loop {
+                        let event_opt = {
+                            let mut stream = sync_stream.write().await;
+                            stream.recv().await
+                        };
+
+                        match event_opt {
+                            Some(sync_event) => {
+                                match sync_event {
+                                    SyncEvent::SyncStarted(peer_id, target_height) => {
+                                        event_bus_clone.emit(NodeEvent::SyncStarted {
+                                            peer_id: peer_id.to_string(),
+                                            target_height,
+                                            timestamp: Utc::now(),
+                                        });
+                                    }
+                                    SyncEvent::SyncProgress(peer_id, synced_messages, progress) => {
+                                        event_bus_clone.emit(NodeEvent::SyncProgress {
+                                            peer_id: peer_id.to_string(),
+                                            synced_messages,
+                                            progress_percent: progress * 100.0,
+                                            timestamp: Utc::now(),
+                                        });
+                                    }
+                                    SyncEvent::SyncCompleted(
+                                        peer_id,
+                                        synced_messages,
+                                        duration_ms,
+                                    ) => {
+                                        event_bus_clone.emit(NodeEvent::SyncCompleted {
+                                            peer_id: peer_id.to_string(),
+                                            synced_messages,
+                                            duration_ms,
+                                            timestamp: Utc::now(),
+                                        });
+                                    }
+                                    _ => {} // Ignore other sync events for now
+                                }
+                            }
+                            None => break, // Channel closed
+                        }
+                    }
+                });
+            }
+
             let update_manager = if config.network.enabled {
                 let network_clone = {
                     let net = network_arc.read().await;
@@ -393,7 +679,7 @@ impl AdicNode {
             (None, None)
         };
 
-        Ok(Self {
+        let node = Self {
             config,
             wallet,
             wallet_registry,
@@ -405,10 +691,20 @@ impl AdicNode {
             economics,
             network,
             update_manager,
+            event_bus,
             index,
             tip_manager,
             running: Arc::new(RwLock::new(false)),
-        })
+        };
+
+        // Emit node started event
+        node.event_bus.emit(NodeEvent::NodeStarted {
+            node_id: node.node_id(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            timestamp: Utc::now(),
+        });
+
+        Ok(node)
     }
 
     pub fn node_id(&self) -> String {
@@ -428,6 +724,11 @@ impl AdicNode {
         self.wallet.address()
     }
 
+    /// Get access to the event bus for real-time notifications
+    pub fn event_bus(&self) -> Arc<EventBus> {
+        Arc::clone(&self.event_bus)
+    }
+
     pub fn wallet(&self) -> &NodeWallet {
         &self.wallet
     }
@@ -442,7 +743,6 @@ impl AdicNode {
 
         // Start network engine if enabled
         if let Some(ref network) = self.network {
-            info!("Starting P2P network engine...");
             network.read().await.start().await?;
 
             // Connect to bootstrap peers
@@ -485,7 +785,6 @@ impl AdicNode {
 
         // Start update manager if enabled
         if let Some(ref update_manager) = self.update_manager {
-            info!("Starting update manager...");
             if let Err(e) = update_manager.start().await {
                 warn!("Failed to start update manager: {}", e);
             }
@@ -518,6 +817,16 @@ impl AdicNode {
                     .await; // 1 day old conflicts
             }
 
+            // Emit energy metrics periodically
+            if self.should_emit_energy_metrics() {
+                self.emit_energy_event().await;
+            }
+
+            // Emit admissibility metrics periodically
+            if self.should_emit_admissibility_metrics() {
+                self.emit_admissibility_event().await;
+            }
+
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             // - Check for new messages
             // - Run consensus
@@ -536,8 +845,20 @@ impl AdicNode {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn submit_message(&self, content: Vec<u8>) -> Result<MessageId> {
-        debug!("Submitting new message");
+        self.submit_message_with_transfer(content, None).await
+    }
+
+    pub async fn submit_message_with_transfer(
+        &self,
+        content: Vec<u8>,
+        transfer: Option<adic_types::ValueTransfer>,
+    ) -> Result<MessageId> {
+        debug!(
+            "Submitting new message with transfer: {}",
+            transfer.is_some()
+        );
 
         // 1. Get tips first to inform feature generation
         let tips = self.tip_manager.get_tips().await;
@@ -616,14 +937,33 @@ impl AdicNode {
             )
             .await?;
 
-        // 3. Create the message
-        let mut message = AdicMessage::new(
-            parents.clone(),
-            features,
-            AdicMeta::new(Utc::now()),
-            *self.keypair.public_key(),
-            content,
-        );
+        // 3. Validate transfer if provided (before escrowing deposit)
+        if let Some(ref t) = transfer {
+            self.economics
+                .balances
+                .validate_transfer(&t.from, &t.to, t.amount, t.nonce)
+                .await?;
+        }
+
+        // 4. Create the message
+        let mut message = if let Some(t) = transfer {
+            AdicMessage::new_with_transfer(
+                parents.clone(),
+                features,
+                AdicMeta::new(Utc::now()),
+                *self.keypair.public_key(),
+                t,
+                content,
+            )
+        } else {
+            AdicMessage::new(
+                parents.clone(),
+                features,
+                AdicMeta::new(Utc::now()),
+                *self.keypair.public_key(),
+                content,
+            )
+        };
 
         // Sign the message before validation
         let signature = self.keypair.sign(&message.to_bytes());
@@ -631,10 +971,19 @@ impl AdicNode {
 
         // 4. Escrow deposit
         let proposer_pk = *self.keypair.public_key();
+        let deposit_amount = self.consensus.deposits.get_deposit_amount();
         self.consensus
             .deposits
             .escrow(message.id, proposer_pk)
             .await?;
+
+        // Emit deposit escrowed event
+        self.event_bus.emit(NodeEvent::DepositEscrowed {
+            message_id: hex::encode(message.id.as_bytes()),
+            validator_address: hex::encode(proposer_pk.as_bytes()),
+            amount: deposit_amount.to_adic().to_string(),
+            timestamp: Utc::now(),
+        });
 
         // 5. Perform C1-C3 admissibility checks BEFORE validation
         // This is critical for consensus security
@@ -680,10 +1029,10 @@ impl AdicNode {
             }
 
             // Check C1-C3 admissibility
-            warn!(
-                "DEBUG: C1-C3 check: {} parents with reputations: {:?}",
-                parent_reputations.len(),
-                parent_reputations
+            debug!(
+                parent_count = parent_reputations.len(),
+                reputations = ?parent_reputations,
+                "C1-C3 admissibility check"
             );
             let admissibility_result = self
                 .consensus
@@ -696,11 +1045,30 @@ impl AdicNode {
                     "Message failed C1-C3 admissibility: {}",
                     admissibility_result.details
                 );
+
                 // Slash the deposit for failing admissibility
                 self.consensus
                     .deposits
                     .slash(&message.id, &admissibility_result.details)
                     .await?;
+
+                // Emit deposit slashed event
+                self.event_bus.emit(NodeEvent::DepositSlashed {
+                    message_id: hex::encode(message.id.as_bytes()),
+                    validator_address: hex::encode(proposer_pk.as_bytes()),
+                    amount: deposit_amount.to_adic().to_string(),
+                    reason: admissibility_result.details.clone(),
+                    timestamp: Utc::now(),
+                });
+
+                // Emit message rejected event
+                self.event_bus.emit(NodeEvent::MessageRejected {
+                    message_id: hex::encode(message.id.as_bytes()),
+                    reason: admissibility_result.details.clone(),
+                    rejection_type: RejectionType::AdmissibilityFailed,
+                    timestamp: Utc::now(),
+                });
+
                 return Err(anyhow::anyhow!(
                     "C1-C3 admissibility failed: {}",
                     admissibility_result.details
@@ -720,6 +1088,24 @@ impl AdicNode {
                 "Message failed validation and was slashed: {:?}",
                 validation_result.errors
             );
+
+            // Emit deposit slashed event (deposit was already slashed by validate_and_slash)
+            self.event_bus.emit(NodeEvent::DepositSlashed {
+                message_id: hex::encode(message.id.as_bytes()),
+                validator_address: hex::encode(proposer_pk.as_bytes()),
+                amount: deposit_amount.to_adic().to_string(),
+                reason: format!("{:?}", validation_result.errors),
+                timestamp: Utc::now(),
+            });
+
+            // Emit message rejected event
+            self.event_bus.emit(NodeEvent::MessageRejected {
+                message_id: hex::encode(message.id.as_bytes()),
+                reason: format!("{:?}", validation_result.errors),
+                rejection_type: RejectionType::ValidationFailed,
+                timestamp: Utc::now(),
+            });
+
             return Err(anyhow::anyhow!(
                 "Message failed validation: {:?}",
                 validation_result.errors
@@ -747,6 +1133,24 @@ impl AdicNode {
         for parent_id in &parents {
             self.tip_manager.remove_tip(parent_id).await;
         }
+
+        // Emit tips updated event for real-time monitoring
+        let tips = self.tip_manager.get_tips().await;
+        self.event_bus.emit(NodeEvent::TipsUpdated {
+            tips: tips.iter().map(|id| hex::encode(id.as_bytes())).collect(),
+            count: tips.len(),
+            timestamp: Utc::now(),
+        });
+
+        // Emit diversity event immediately when message is added
+        self.emit_diversity_event(&tips).await;
+
+        // Emit message added event
+        self.event_bus.emit(NodeEvent::MessageAdded {
+            message_id: hex::encode(message.id.as_bytes()),
+            depth: self.index.get_depth(&message.id).await.unwrap_or(0) as u64,
+            timestamp: Utc::now(),
+        });
 
         // Add to finality engine
         let mut ball_ids = std::collections::HashMap::new();
@@ -778,15 +1182,28 @@ impl AdicNode {
         Ok(message.id)
     }
 
+    #[allow(dead_code)]
     pub async fn submit_message_with_parents(
         &self,
         content: Vec<u8>,
         parents: Vec<MessageId>,
         features_opt: Option<crate::api::SubmitFeatures>,
     ) -> Result<MessageId> {
+        self.submit_message_with_parents_and_transfer(content, parents, features_opt, None)
+            .await
+    }
+
+    pub async fn submit_message_with_parents_and_transfer(
+        &self,
+        content: Vec<u8>,
+        parents: Vec<MessageId>,
+        features_opt: Option<crate::api::SubmitFeatures>,
+        transfer: Option<adic_types::ValueTransfer>,
+    ) -> Result<MessageId> {
         debug!(
-            "Submitting message with explicit parents: {} parents",
-            parents.len()
+            "Submitting message with explicit parents: {} parents, transfer: {}",
+            parents.len(),
+            transfer.is_some()
         );
 
         // Create features - either from provided data or generate default
@@ -940,14 +1357,33 @@ impl AdicNode {
             }
         };
 
+        // Validate transfer if provided (before escrowing deposit)
+        if let Some(ref t) = transfer {
+            self.economics
+                .balances
+                .validate_transfer(&t.from, &t.to, t.amount, t.nonce)
+                .await?;
+        }
+
         // Create the message
-        let mut message = AdicMessage::new(
-            parents.clone(),
-            features,
-            AdicMeta::new(Utc::now()),
-            *self.keypair.public_key(),
-            content,
-        );
+        let mut message = if let Some(t) = transfer {
+            AdicMessage::new_with_transfer(
+                parents.clone(),
+                features,
+                AdicMeta::new(Utc::now()),
+                *self.keypair.public_key(),
+                t,
+                content,
+            )
+        } else {
+            AdicMessage::new(
+                parents.clone(),
+                features,
+                AdicMeta::new(Utc::now()),
+                *self.keypair.public_key(),
+                content,
+            )
+        };
 
         // Sign the message
         let signature = self.keypair.sign(&message.to_bytes());
@@ -955,17 +1391,25 @@ impl AdicNode {
 
         // Escrow deposit
         let proposer_pk = *self.keypair.public_key();
+        let deposit_amount = self.consensus.deposits.get_deposit_amount();
         self.consensus
             .deposits
             .escrow(message.id, proposer_pk)
             .await?;
 
+        // Emit deposit escrowed event
+        self.event_bus.emit(NodeEvent::DepositEscrowed {
+            message_id: hex::encode(message.id.as_bytes()),
+            validator_address: hex::encode(proposer_pk.as_bytes()),
+            amount: deposit_amount.to_adic().to_string(),
+            timestamp: Utc::now(),
+        });
+
         // IMPORTANT: Only perform C1-C3 checks if this is NOT a genesis message
         if !parents.is_empty() {
             // Debug: Log the generated features for analysis
-            warn!(
-                "DEBUG: Generated features for message: {:?}",
-                message
+            debug!(
+                features = ?message
                     .features
                     .phi
                     .iter()
@@ -974,32 +1418,32 @@ impl AdicNode {
                         ap.axis.0,
                         &ap.qp_digits.digits[..3.min(ap.qp_digits.digits.len())]
                     ))
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>(),
+                "Generated message features"
             );
 
             // Non-genesis messages must pass C1-C3
             let mut parent_features = Vec::new();
             let mut parent_reputations = Vec::new();
 
-            warn!(
-                "DEBUG: Processing {} parents for C1-C3 check: {:?}",
-                parents.len(),
-                parents
+            debug!(
+                parent_count = parents.len(),
+                parents = ?parents
                     .iter()
                     .map(|p| hex::encode(p.as_bytes()))
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>(),
+                "Processing parents for C1-C3 check"
             );
 
             for parent_id in &parents {
-                warn!(
-                    "DEBUG: Looking up parent message: {}",
-                    hex::encode(parent_id.as_bytes())
+                debug!(
+                    parent_id = %hex::encode(parent_id.as_bytes()),
+                    "Looking up parent message"
                 );
                 match self.storage.get_message(parent_id).await {
                     Ok(Some(parent)) => {
-                        warn!(
-                            "DEBUG: Parent features: {:?}",
-                            parent
+                        debug!(
+                            parent_features = ?parent
                                 .features
                                 .phi
                                 .iter()
@@ -1008,7 +1452,8 @@ impl AdicNode {
                                     ap.axis.0,
                                     &ap.qp_digits.digits[..3.min(ap.qp_digits.digits.len())]
                                 ))
-                                .collect::<Vec<_>>()
+                                .collect::<Vec<_>>(),
+                            "Parent message features"
                         );
 
                         let mut features = Vec::new();
@@ -1046,10 +1491,10 @@ impl AdicNode {
                 }
             }
 
-            warn!(
-                "DEBUG: C1-C3 check (submit_message_with_parents): {} parents with reputations: {:?}",
-                parent_reputations.len(),
-                parent_reputations
+            debug!(
+                parent_count = parent_reputations.len(),
+                reputations = ?parent_reputations,
+                "C1-C3 admissibility check (submit_message_with_parents)"
             );
             let admissibility_result = self.consensus.admissibility().check_message(
                 &message,
@@ -1066,6 +1511,24 @@ impl AdicNode {
                     .deposits
                     .slash(&message.id, &admissibility_result.details)
                     .await?;
+
+                // Emit deposit slashed event
+                self.event_bus.emit(NodeEvent::DepositSlashed {
+                    message_id: hex::encode(message.id.as_bytes()),
+                    validator_address: hex::encode(proposer_pk.as_bytes()),
+                    amount: deposit_amount.to_adic().to_string(),
+                    reason: admissibility_result.details.clone(),
+                    timestamp: Utc::now(),
+                });
+
+                // Emit message rejected event
+                self.event_bus.emit(NodeEvent::MessageRejected {
+                    message_id: hex::encode(message.id.as_bytes()),
+                    reason: admissibility_result.details.clone(),
+                    rejection_type: RejectionType::AdmissibilityFailed,
+                    timestamp: Utc::now(),
+                });
+
                 return Err(anyhow::anyhow!(
                     "C1-C3 admissibility failed: {}",
                     admissibility_result.details
@@ -1087,6 +1550,24 @@ impl AdicNode {
                 "Message failed validation and was slashed: {:?}",
                 validation_result.errors
             );
+
+            // Emit deposit slashed event (deposit was already slashed by validate_and_slash)
+            self.event_bus.emit(NodeEvent::DepositSlashed {
+                message_id: hex::encode(message.id.as_bytes()),
+                validator_address: hex::encode(proposer_pk.as_bytes()),
+                amount: deposit_amount.to_adic().to_string(),
+                reason: format!("{:?}", validation_result.errors),
+                timestamp: Utc::now(),
+            });
+
+            // Emit message rejected event
+            self.event_bus.emit(NodeEvent::MessageRejected {
+                message_id: hex::encode(message.id.as_bytes()),
+                reason: format!("{:?}", validation_result.errors),
+                rejection_type: RejectionType::ValidationFailed,
+                timestamp: Utc::now(),
+            });
+
             return Err(anyhow::anyhow!(
                 "Message failed validation: {:?}",
                 validation_result.errors
@@ -1184,8 +1665,8 @@ impl AdicNode {
 
             for msg in messages {
                 debug!(
-                    "Processing message from network: {}",
-                    hex::encode(msg.id.as_bytes())
+                    message_id = %hex::encode(msg.id.as_bytes()),
+                    "Processing message from network"
                 );
 
                 // Validate the message
@@ -1231,9 +1712,74 @@ impl AdicNode {
 
     async fn check_finality(&self) -> Result<()> {
         let finalized = self.finality.check_finality().await?;
+        let has_finalized = !finalized.is_empty();
 
         for msg_id in finalized {
             debug!("Message finalized: {}", hex::encode(msg_id.as_bytes()));
+
+            // Determine finality type from artifact
+            use adic_finality::FinalityGate;
+
+            let finality_type = if let Some(artifact) = self.finality.get_artifact(&msg_id).await {
+                match artifact.gate {
+                    FinalityGate::F1KCore => FinalityType::KCore,
+                    FinalityGate::F2PersistentHomology => FinalityType::Homology,
+                    FinalityGate::SSF => FinalityType::KCore,
+                }
+            } else {
+                // If no artifact found, default to KCore as that's what check_finality uses
+                FinalityType::KCore
+            };
+
+            // Emit finality event
+            self.event_bus.emit(NodeEvent::MessageFinalized {
+                message_id: hex::encode(msg_id.as_bytes()),
+                finality_type,
+                timestamp: Utc::now(),
+            });
+
+            // Execute transfer if present (only on finality for safety)
+            if let Ok(Some(message)) = self.storage.get_message(&msg_id).await {
+                if let Some(transfer) = message.get_transfer() {
+                    info!(
+                        message_id = %hex::encode(msg_id.as_bytes()),
+                        from = %hex::encode(&transfer.from),
+                        to = %hex::encode(&transfer.to),
+                        amount = transfer.amount,
+                        "💰 Executing finalized transfer"
+                    );
+
+                    match self
+                        .economics
+                        .balances
+                        .process_message_transfer(
+                            &hex::encode(msg_id.as_bytes()),
+                            &transfer.from,
+                            &transfer.to,
+                            transfer.amount,
+                            transfer.nonce,
+                        )
+                        .await
+                    {
+                        Ok(tx_hash) => {
+                            debug!(
+                                message_id = %hex::encode(msg_id.as_bytes()),
+                                tx_hash = %tx_hash,
+                                "✅ Transfer executed successfully"
+                            );
+                        }
+                        Err(e) => {
+                            // Log error but don't fail finality - the message is already finalized
+                            // This could happen if the sender's balance was already spent elsewhere
+                            tracing::error!(
+                                message_id = %hex::encode(msg_id.as_bytes()),
+                                error = %e,
+                                "❌ Failed to execute transfer from finalized message"
+                            );
+                        }
+                    }
+                }
+            }
 
             // Update tip manager - remove finalized messages from tips
             if let Ok(tips) = self.storage.get_tips().await {
@@ -1241,6 +1787,11 @@ impl AdicNode {
                     self.tip_manager.remove_tip(&msg_id).await;
                 }
             }
+        }
+
+        // Emit k-core metrics after finality checks (throttled, or immediately if messages were finalized)
+        if has_finalized || self.should_emit_kcore_metrics() {
+            self.emit_kcore_event().await;
         }
 
         Ok(())
@@ -1258,8 +1809,22 @@ impl AdicNode {
             .map_err(|e| anyhow::anyhow!(e))?;
 
         // Add all tips from storage to TipManager
-        for tip in tips {
+        for tip in tips.clone() {
             self.tip_manager.add_tip(tip, 1.0).await;
+        }
+
+        // Emit tips updated event (throttled)
+        if self.should_emit_tips_metrics() {
+            self.event_bus.emit(NodeEvent::TipsUpdated {
+                tips: tips.iter().map(|id| hex::encode(id.as_bytes())).collect(),
+                count: tips.len(),
+                timestamp: Utc::now(),
+            });
+
+            // Calculate and emit diversity metrics when tips are emitted
+            if self.should_emit_diversity_metrics() {
+                self.emit_diversity_event(&tips).await;
+            }
         }
 
         Ok(())
@@ -1269,6 +1834,84 @@ impl AdicNode {
     #[allow(dead_code)]
     pub async fn sync_tips_from_storage(&self) -> Result<()> {
         self.update_tips().await
+    }
+
+    /// Emit diversity metrics event based on current tips
+    async fn emit_diversity_event(&self, tips: &[MessageId]) {
+        use adic_math::ball_id;
+        use std::collections::HashSet;
+
+        let params = self.consensus.params();
+        let mut axes_data = Vec::new();
+
+        // Calculate diversity for each axis
+        for (axis_idx, &radius) in params.rho.iter().enumerate() {
+            let mut distinct_balls = HashSet::new();
+
+            for tip_id in tips {
+                if let Ok(Some(msg)) = self.storage.get_message(tip_id).await {
+                    if let Some(axis_phi) =
+                        msg.features.get_axis(adic_types::AxisId(axis_idx as u32))
+                    {
+                        let ball = ball_id(&axis_phi.qp_digits, radius as usize);
+                        distinct_balls.insert(ball);
+                    }
+                }
+            }
+
+            let meets_requirement = distinct_balls.len() >= params.q as usize;
+            axes_data.push(AxisData {
+                axis: axis_idx as u32,
+                radius,
+                distinct_balls: distinct_balls.len(),
+                required_diversity: params.q as usize,
+                meets_requirement,
+            });
+        }
+
+        // Calculate overall diversity score
+        let compliant_axes = axes_data.iter().filter(|a| a.meets_requirement).count();
+        let diversity_score = if !axes_data.is_empty() {
+            (compliant_axes as f64) / (axes_data.len() as f64)
+        } else {
+            0.0
+        };
+
+        self.event_bus.emit(NodeEvent::DiversityUpdated {
+            diversity_score,
+            axes: axes_data,
+            total_tips: tips.len(),
+            timestamp: Utc::now(),
+        });
+    }
+
+    /// Emit k-core finality metrics event
+    async fn emit_kcore_event(&self) {
+        let finality_stats = self.finality.get_stats().await;
+        let params = self.consensus.params();
+
+        self.event_bus.emit(NodeEvent::KCoreUpdated {
+            finalized_count: finality_stats.finalized_count as u32,
+            pending_count: finality_stats.pending_count as u32,
+            current_k_value: Some(params.k),
+            timestamp: Utc::now(),
+        });
+    }
+
+    /// Emit energy conflict metrics event
+    pub async fn emit_energy_event(&self) {
+        let metrics = self.consensus.energy_tracker.get_metrics().await;
+        let active_conflicts = metrics
+            .total_conflicts
+            .saturating_sub(metrics.resolved_conflicts);
+
+        self.event_bus.emit(NodeEvent::EnergyUpdated {
+            total_conflicts: metrics.total_conflicts as u32,
+            resolved_conflicts: metrics.resolved_conflicts as u32,
+            active_conflicts: active_conflicts as u32,
+            total_energy: metrics.total_energy,
+            timestamp: Utc::now(),
+        });
     }
 
     fn should_apply_reputation_decay(&self) -> bool {
@@ -1302,6 +1945,164 @@ impl AdicNode {
             false
         }
     }
+
+    fn should_emit_energy_metrics(&self) -> bool {
+        // Emit energy metrics every 5 seconds
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_EMIT: AtomicU64 = AtomicU64::new(0);
+
+        let now = chrono::Utc::now().timestamp() as u64;
+        let last = LAST_EMIT.load(Ordering::Relaxed);
+
+        if now - last > 5 {
+            LAST_EMIT.store(now, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn should_emit_admissibility_metrics(&self) -> bool {
+        // Emit admissibility metrics every 30 seconds
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_EMIT: AtomicU64 = AtomicU64::new(0);
+
+        let now = chrono::Utc::now().timestamp() as u64;
+        let last = LAST_EMIT.load(Ordering::Relaxed);
+
+        if now - last > 30 {
+            LAST_EMIT.store(now, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn should_emit_tips_metrics(&self) -> bool {
+        // Emit tips metrics every 2 seconds
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_EMIT: AtomicU64 = AtomicU64::new(0);
+
+        let now = chrono::Utc::now().timestamp() as u64;
+        let last = LAST_EMIT.load(Ordering::Relaxed);
+
+        if now - last > 2 {
+            LAST_EMIT.store(now, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn should_emit_kcore_metrics(&self) -> bool {
+        // Emit k-core metrics every 5 seconds
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_EMIT: AtomicU64 = AtomicU64::new(0);
+
+        let now = chrono::Utc::now().timestamp() as u64;
+        let last = LAST_EMIT.load(Ordering::Relaxed);
+
+        if now - last > 5 {
+            LAST_EMIT.store(now, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn should_emit_diversity_metrics(&self) -> bool {
+        // Emit diversity metrics every 5 seconds
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_EMIT: AtomicU64 = AtomicU64::new(0);
+
+        let now = chrono::Utc::now().timestamp() as u64;
+        let last = LAST_EMIT.load(Ordering::Relaxed);
+
+        if now - last > 5 {
+            LAST_EMIT.store(now, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Emit admissibility compliance metrics event
+    async fn emit_admissibility_event(&self) {
+        // Sample recent tips for admissibility analysis
+        let tips = match self.storage.get_tips().await {
+            Ok(tips) => tips,
+            Err(_) => return,
+        };
+
+        let mut total_checks = 0;
+        let mut c1_passes = 0;
+        let mut c2_passes = 0;
+        let mut c3_passes = 0;
+        let mut fully_admissible = 0;
+
+        // Sample up to 50 tips for performance
+        for tip_id in tips.iter().take(50) {
+            if let Ok(Some(msg)) = self.storage.get_message(tip_id).await {
+                let mut parent_features = Vec::new();
+                let mut parent_reputations = Vec::new();
+
+                for parent_id in &msg.parents {
+                    if let Ok(Some(parent)) = self.storage.get_message(parent_id).await {
+                        let features: Vec<QpDigits> = parent
+                            .features
+                            .phi
+                            .iter()
+                            .map(|axis_phi| axis_phi.qp_digits.clone())
+                            .collect();
+                        parent_features.push(features);
+
+                        let rep = self
+                            .consensus
+                            .reputation
+                            .get_reputation(&parent.proposer_pk)
+                            .await;
+                        parent_reputations.push(rep);
+                    }
+                }
+
+                if let Ok(result) = self.consensus.admissibility().check_message(
+                    &msg,
+                    &parent_features,
+                    &parent_reputations,
+                ) {
+                    total_checks += 1;
+                    if result.score_passed {
+                        c1_passes += 1;
+                    }
+                    if result.c2_passed {
+                        c2_passes += 1;
+                    }
+                    if result.c3_passed {
+                        c3_passes += 1;
+                    }
+                    if result.is_admissible {
+                        fully_admissible += 1;
+                    }
+                }
+            }
+        }
+
+        if total_checks > 0 {
+            let c1_rate = (c1_passes as f64) / (total_checks as f64);
+            let c2_rate = (c2_passes as f64) / (total_checks as f64);
+            let c3_rate = (c3_passes as f64) / (total_checks as f64);
+            let overall_rate = (fully_admissible as f64) / (total_checks as f64);
+
+            self.event_bus.emit(NodeEvent::AdmissibilityUpdated {
+                c1_rate,
+                c2_rate,
+                c3_rate,
+                overall_rate,
+                sample_size: total_checks,
+                timestamp: Utc::now(),
+            });
+        }
+    }
 }
 
 impl Clone for AdicNode {
@@ -1311,6 +2112,7 @@ impl Clone for AdicNode {
             wallet: Arc::clone(&self.wallet),
             wallet_registry: Arc::clone(&self.wallet_registry),
             keypair: self.keypair.clone(),
+            event_bus: Arc::clone(&self.event_bus),
             consensus: Arc::clone(&self.consensus),
             mrw: Arc::clone(&self.mrw),
             storage: Arc::clone(&self.storage),

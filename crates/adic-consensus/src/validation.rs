@@ -69,6 +69,7 @@ impl MessageValidator {
         self.validate_parents(message, &mut result);
         self.validate_payload(message, &mut result);
         self.validate_features(message, &mut result);
+        self.validate_transfer(message, &mut result);
 
         info!(
             message_id = %message.id,
@@ -77,8 +78,9 @@ impl MessageValidator {
             error_count = result.errors.len(),
             warning_count = result.warnings.len(),
             parents_count = message.parents.len(),
-            payload_size = message.payload.len(),
+            payload_size = message.data.len(),
             features_count = message.features.dimension(),
+            has_transfer = message.has_value_transfer(),
             errors = ?result.errors,
             warnings = ?result.warnings,
             "🔍 Message validated"
@@ -159,15 +161,15 @@ impl MessageValidator {
     }
 
     fn validate_payload(&self, message: &AdicMessage, result: &mut ValidationResult) {
-        if message.payload.len() > self.max_payload_size {
+        if message.data.len() > self.max_payload_size {
             result.add_error(format!(
                 "Payload size {} exceeds maximum {}",
-                message.payload.len(),
+                message.data.len(),
                 self.max_payload_size
             ));
         }
 
-        if message.payload.is_empty() {
+        if message.data.is_empty() {
             result.add_warning("Message has empty payload".to_string());
         }
     }
@@ -186,6 +188,49 @@ impl MessageValidator {
             if phi.qp_digits.digits.is_empty() {
                 result.add_error(format!("Axis {} has empty digits", phi.axis.0));
             }
+        }
+    }
+
+    fn validate_transfer(&self, message: &AdicMessage, result: &mut ValidationResult) {
+        // If there's no transfer, nothing to validate
+        if let Some(transfer) = message.get_transfer() {
+            // Use the built-in validation from ValueTransfer
+            if !transfer.is_valid() {
+                result.add_error("Invalid value transfer".to_string());
+
+                // Provide more specific errors for debugging
+                if transfer.amount == 0 {
+                    result.add_error("Transfer amount must be greater than zero".to_string());
+                }
+
+                if transfer.from == transfer.to {
+                    result.add_error("Transfer sender and recipient must be different".to_string());
+                }
+
+                if transfer.from.len() != 32 {
+                    result.add_error(format!(
+                        "Transfer sender address must be 32 bytes, got {}",
+                        transfer.from.len()
+                    ));
+                }
+
+                if transfer.to.len() != 32 {
+                    result.add_error(format!(
+                        "Transfer recipient address must be 32 bytes, got {}",
+                        transfer.to.len()
+                    ));
+                }
+            }
+
+            // Warn about zero nonce (potential security issue)
+            if transfer.nonce == 0 {
+                result.add_warning(
+                    "Transfer has zero nonce, potential replay vulnerability".to_string(),
+                );
+            }
+
+            // Note: Balance checks and signature verification against the 'from' address
+            // will be performed by the economics engine, not here
         }
     }
 
@@ -282,5 +327,126 @@ mod tests {
 
         let empty_ancestors = HashSet::new();
         assert!(validator.validate_acyclicity(&message, &empty_ancestors));
+    }
+
+    #[test]
+    fn test_validate_message_with_valid_transfer() {
+        use adic_types::ValueTransfer;
+
+        let validator = MessageValidator::new();
+        let mut message = create_valid_message();
+
+        let from = vec![1u8; 32];
+        let to = vec![2u8; 32];
+        let transfer = ValueTransfer::new(from, to, 1000, 1);
+
+        message.transfer = Some(transfer);
+        message.signature = Signature::new(vec![1; 64]);
+
+        let result = validator.validate_message(&message);
+
+        // Should not have transfer-related errors (may have signature errors)
+        assert!(!result
+            .errors
+            .iter()
+            .any(|e| e.contains("Transfer") || e.contains("transfer")));
+    }
+
+    #[test]
+    fn test_validate_message_without_transfer() {
+        let validator = MessageValidator::new();
+        let mut message = create_valid_message();
+        message.signature = Signature::new(vec![1; 64]);
+
+        let result = validator.validate_message(&message);
+
+        // Should validate normally without transfer
+        // No transfer-related errors expected
+        assert!(!result
+            .errors
+            .iter()
+            .any(|e| e.contains("Transfer") || e.contains("transfer")));
+    }
+
+    #[test]
+    fn test_validate_transfer_zero_amount() {
+        use adic_types::ValueTransfer;
+
+        let validator = MessageValidator::new();
+        let mut message = create_valid_message();
+
+        let from = vec![1u8; 32];
+        let to = vec![2u8; 32];
+        let transfer = ValueTransfer::new(from, to, 0, 1); // Zero amount
+
+        message.transfer = Some(transfer);
+        message.signature = Signature::new(vec![1; 64]);
+
+        let result = validator.validate_message(&message);
+
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.contains("amount")));
+    }
+
+    #[test]
+    fn test_validate_transfer_same_addresses() {
+        use adic_types::ValueTransfer;
+
+        let validator = MessageValidator::new();
+        let mut message = create_valid_message();
+
+        let addr = vec![1u8; 32];
+        let transfer = ValueTransfer::new(addr.clone(), addr, 1000, 1); // Same address
+
+        message.transfer = Some(transfer);
+        message.signature = Signature::new(vec![1; 64]);
+
+        let result = validator.validate_message(&message);
+
+        assert!(!result.is_valid);
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.contains("sender and recipient")));
+    }
+
+    #[test]
+    fn test_validate_transfer_invalid_address_length() {
+        use adic_types::ValueTransfer;
+
+        let validator = MessageValidator::new();
+        let mut message = create_valid_message();
+
+        let from = vec![1u8; 16]; // Wrong length
+        let to = vec![2u8; 32];
+        let transfer = ValueTransfer::new(from, to, 1000, 1);
+
+        message.transfer = Some(transfer);
+        message.signature = Signature::new(vec![1; 64]);
+
+        let result = validator.validate_message(&message);
+
+        assert!(!result.is_valid);
+        assert!(result.errors.iter().any(|e| e.contains("32 bytes")));
+    }
+
+    #[test]
+    fn test_validate_transfer_zero_nonce_warning() {
+        use adic_types::ValueTransfer;
+
+        let validator = MessageValidator::new();
+        let mut message = create_valid_message();
+
+        let from = vec![1u8; 32];
+        let to = vec![2u8; 32];
+        let transfer = ValueTransfer::new(from, to, 1000, 0); // Zero nonce
+
+        message.transfer = Some(transfer);
+        message.signature = Signature::new(vec![1; 64]);
+
+        let result = validator.validate_message(&message);
+
+        // Should have a warning about zero nonce
+        assert!(result.warnings.iter().any(|w| w.contains("nonce")));
     }
 }

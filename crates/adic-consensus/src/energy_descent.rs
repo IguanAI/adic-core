@@ -61,12 +61,48 @@ impl ConflictEnergy {
         for descendant_id in descendants {
             if let Ok(Some(descendant_msg)) = storage.get_message(&descendant_id).await {
                 let rep = reputation.get_reputation(&descendant_msg.proposer_pk).await;
-                let depth = 0; // TODO: Get depth from storage index
+                let depth = self.calculate_depth(&descendant_id, storage).await;
                 total_support += rep / (1.0 + depth as f64);
             }
         }
 
         total_support
+    }
+
+    /// Calculate message depth by traversing parents to genesis
+    async fn calculate_depth(&self, message_id: &MessageId, storage: &StorageEngine) -> u32 {
+        let mut depth = 0;
+        let mut current_id = *message_id;
+        let mut visited = std::collections::HashSet::new();
+
+        loop {
+            // Prevent infinite loops
+            if !visited.insert(current_id) {
+                break;
+            }
+
+            // Get parents
+            let parents = match storage.get_parents(&current_id).await {
+                Ok(parents) => parents,
+                Err(_) => break,
+            };
+
+            // Genesis messages have no parents
+            if parents.is_empty() {
+                break;
+            }
+
+            // Move to first parent and increment depth
+            depth += 1;
+            current_id = parents[0];
+
+            // Safety limit to prevent excessive traversal
+            if depth > 10000 {
+                break;
+            }
+        }
+
+        depth
     }
 
     async fn get_descendants(

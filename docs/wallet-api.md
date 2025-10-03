@@ -6,7 +6,7 @@ The ADIC Core wallet system supports both node-managed wallets and external wall
 ## Wallet Registry Endpoints
 
 ### Register External Wallet
-**POST** `/wallet/register`
+**POST** `/v1/wallets/registry`
 
 Registers an external wallet's public key for a given address.
 
@@ -35,7 +35,7 @@ Registers an external wallet's public key for a given address.
 ```
 
 ### Get Wallet Public Key
-**GET** `/wallet/public_key/:address`
+**GET** `/v1/wallets/registry/:address/public_key`
 
 Retrieves the registered public key for a wallet address.
 
@@ -58,7 +58,7 @@ Retrieves the registered public key for a wallet address.
 ```
 
 ### List Registered Wallets
-**GET** `/wallet/registered`
+**GET** `/v1/wallets/registry`
 
 Lists all registered external wallets.
 
@@ -84,7 +84,7 @@ Lists all registered external wallets.
 ```
 
 ### Check Wallet Registration
-**GET** `/wallet/check/:address`
+**GET** `/v1/wallets/registry/:address`
 
 Check if a wallet address is registered.
 
@@ -98,7 +98,7 @@ Check if a wallet address is registered.
 ```
 
 ### Get Wallet Info
-**GET** `/wallet/info/:address`
+**GET** `/v1/wallets/:address`
 
 Get detailed information about a registered wallet.
 
@@ -120,7 +120,7 @@ Get detailed information about a registered wallet.
 - **404 Not Found**: Wallet not in registry
 
 ### Unregister Wallet
-**DELETE** `/wallet/unregister/:address`
+**DELETE** `/v1/wallets/registry/:address`
 
 Remove a wallet from the registry.
 
@@ -134,7 +134,7 @@ Remove a wallet from the registry.
 ```
 
 ### Registry Statistics
-**GET** `/wallet/registry/stats`
+**GET** `/v1/wallets/registry/stats`
 
 Get statistics about the wallet registry.
 
@@ -155,7 +155,7 @@ Get statistics about the wallet registry.
 ```
 
 ### Export Node Wallet
-**POST** `/wallet/export`
+**POST** `/v1/wallets/self/export`
 
 Export the node's wallet as encrypted JSON.
 
@@ -177,7 +177,7 @@ Export the node's wallet as encrypted JSON.
 ```
 
 ### Import Wallet (Validation)
-**POST** `/wallet/import`
+**POST** `/v1/wallets/self/import`
 
 Validate an imported wallet JSON (doesn't replace node wallet).
 
@@ -203,7 +203,7 @@ Validate an imported wallet JSON (doesn't replace node wallet).
 ## Transfer with External Wallets
 
 ### Transfer Endpoint (Updated)
-**POST** `/wallet/transfer`
+**POST** `/v1/wallets/transfer`
 
 The transfer endpoint now supports both node wallets and registered external wallets.
 
@@ -280,7 +280,7 @@ const addressBytes = hexToBytes(addressHex);
 const signature = ed25519.sign(addressBytes, privateKey);
 
 // Register wallet
-const response = await fetch('http://localhost:8080/wallet/register', {
+const response = await fetch('http://localhost:8080/v1/wallets/registry', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
@@ -306,7 +306,7 @@ const transferData = Buffer.concat([
 const signature = ed25519.sign(transferData, privateKey);
 
 // Submit transfer
-const response = await fetch('http://localhost:8080/wallet/transfer', {
+const response = await fetch('http://localhost:8080/v1/wallets/transfer', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({

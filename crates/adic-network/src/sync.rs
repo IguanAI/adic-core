@@ -86,11 +86,11 @@ pub struct StateSync {
 
 #[derive(Debug, Clone)]
 pub enum SyncEvent {
-    SyncStarted(PeerId, u64),  // peer, target height
-    SyncProgress(f64),         // 0.0 to 1.0
-    CheckpointVerified(u64),   // height
-    MessagesDownloaded(usize), // count
-    SyncCompleted,
+    SyncStarted(PeerId, u64),          // peer, target height
+    SyncProgress(PeerId, usize, f64),  // peer, synced_messages, progress (0.0 to 1.0)
+    CheckpointVerified(u64),           // height
+    MessagesDownloaded(usize),         // count
+    SyncCompleted(PeerId, usize, u64), // peer, synced_messages, duration_ms
     SyncFailed(String),
 }
 
@@ -142,18 +142,53 @@ impl StateSync {
         let state_clone = self.state.clone();
         let _storage_clone = self.storage.clone();
         let event_sender = self.event_sender.clone();
+        let peer_clone = peer;
 
         tokio::spawn(async move {
             // In real implementation, download checkpoints and verify
 
-            // Simulate sync completion
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            // Simulate sync with progress updates
+            let steps = 10;
+            for i in 1..=steps {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let progress = i as f64 / steps as f64;
 
-            let mut state = state_clone.write().await;
-            state.is_syncing = false;
-            state.local_height = target_height;
+                // Update state progress
+                let synced_messages = {
+                    let mut state = state_clone.write().await;
+                    state.local_height = local_height_before
+                        + ((target_height - local_height_before) as f64 * progress) as u64;
+                    state.synced_messages = (progress * 1000.0) as usize; // Simulate message count
+                    state.synced_messages
+                };
 
-            event_sender.send(SyncEvent::SyncCompleted).ok();
+                event_sender
+                    .send(SyncEvent::SyncProgress(
+                        peer_clone,
+                        synced_messages,
+                        progress,
+                    ))
+                    .ok();
+            }
+
+            let duration_ms = {
+                let mut state = state_clone.write().await;
+                state.is_syncing = false;
+                state.local_height = target_height;
+                state
+                    .sync_start_time
+                    .map(|start| start.elapsed().as_millis() as u64)
+                    .unwrap_or(0)
+            };
+
+            let synced_messages = state_clone.read().await.synced_messages;
+            event_sender
+                .send(SyncEvent::SyncCompleted(
+                    peer_clone,
+                    synced_messages,
+                    duration_ms,
+                ))
+                .ok();
         });
 
         Ok(())
@@ -356,8 +391,17 @@ impl StateSync {
         state.synced_messages += checkpoint.finalized_messages.len();
 
         let progress = state.progress();
+        let synced_messages = state.synced_messages;
+
+        // Emit progress event with placeholder peer_id
+        // In real implementation, peer_id would be tracked per sync session
+        let placeholder_peer = PeerId::random();
         self.event_sender
-            .send(SyncEvent::SyncProgress(progress))
+            .send(SyncEvent::SyncProgress(
+                placeholder_peer,
+                synced_messages,
+                progress,
+            ))
             .ok();
 
         info!(

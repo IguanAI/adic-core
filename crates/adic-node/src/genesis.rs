@@ -112,7 +112,6 @@ impl GenesisConfig {
                 (derive_address_from_node_id("node-1"), 1_000),
                 (derive_address_from_node_id("node-2"), 1_000),
                 (derive_address_from_node_id("node-3"), 1_000),
-                (derive_address_from_node_id("faucet"), 10_000),
             ],
             deposit_amount: 0.1,
             timestamp: fixed_timestamp,
@@ -274,9 +273,8 @@ impl GenesisManifest {
     /// Get the canonical genesis hash for this network
     #[allow(dead_code)]
     pub fn canonical_hash() -> &'static str {
-        // This is the deterministic hash of the default genesis config
-        // Genesis Hash: e03dffb732c202021e35225771c033b1217b0e6241be360ad88f6d7ac43675f8
-        // Total Supply: 300,400,000 ADIC (300.4M)
+        // This is the deterministic hash of the default genesis config (300.4M ADIC)
+        // Note: Economics layer adds additional 10M faucet via minting (not in genesis config)
         "e03dffb732c202021e35225771c033b1217b0e6241be360ad88f6d7ac43675f8"
     }
 }
@@ -606,6 +604,31 @@ mod tests {
 
         // Should fail verification
         assert!(manifest.verify().is_err());
+    }
+
+    #[test]
+    fn test_load_testnet_genesis() {
+        let paths = vec![
+            "genesis-testnet.json",
+            "../../genesis-testnet.json",
+            "../../../genesis-testnet.json",
+        ];
+
+        for path in paths {
+            if let Ok(json) = std::fs::read_to_string(path) {
+                if let Ok(manifest) = serde_json::from_str::<GenesisManifest>(&json) {
+                    let calculated = manifest.config.calculate_hash();
+                    println!("\n=== TESTNET GENESIS ===");
+                    println!("Path: {}", path);
+                    println!("Hash in file: {}", manifest.hash);
+                    println!("Calculated hash: {}", calculated);
+                    println!("Match: {}", manifest.hash == calculated);
+                    println!("=======================\n");
+                    return;
+                }
+            }
+        }
+        println!("\n=== Could not find genesis-testnet.json ===\n");
     }
 
     #[test]

@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "adic-bench"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adic-consensus",
  "adic-crypto",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "adic-consensus"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adic-crypto",
  "adic-economics",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "adic-crypto"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adic-consensus",
  "adic-math",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "adic-economics"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adic-storage",
  "adic-types",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "adic-finality"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adic-consensus",
  "adic-crypto",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "adic-math"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adic-types",
  "num-bigint",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "adic-mrw"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adic-consensus",
  "adic-math",
@@ -153,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "adic-network"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adic-consensus",
  "adic-crypto",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "adic-node"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adic-consensus",
  "adic-crypto",
@@ -215,6 +215,7 @@ dependencies = [
  "console",
  "dotenvy",
  "ed25519-dalek",
+ "futures-util",
  "headers",
  "hex",
  "indicatif",
@@ -231,6 +232,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
  "toml",
  "tower",
  "tower-http",
@@ -240,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "adic-storage"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "adic-crypto",
  "adic-types",
@@ -261,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "adic-types"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "bincode",
  "blake3",
@@ -609,6 +611,7 @@ checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
 dependencies = [
  "async-trait",
  "axum-core",
+ "base64 0.22.1",
  "bytes",
  "futures-util",
  "http 1.3.1",
@@ -627,8 +630,10 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
+ "sha1",
  "sync_wrapper",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-layer",
  "tower-service",
@@ -5007,6 +5012,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -5020,6 +5026,18 @@ dependencies = [
  "futures-core",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edc5f74e248dc973e0dbb7b74c7e0d6fcc301c694ff50049504004ef4d0cdcd9"
+dependencies = [
+ "futures-util",
+ "log",
+ "tokio",
+ "tungstenite",
 ]
 
 [[package]]
@@ -5202,6 +5220,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "tungstenite"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18e5b8366ee7a95b16d32197d0b2604b43a0be89dc5fac9f8e96ccafbaedda8a"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "data-encoding",
+ "http 1.3.1",
+ "httparse",
+ "log",
+ "rand 0.8.5",
+ "sha1",
+ "thiserror 1.0.69",
+ "utf-8",
+]
+
+[[package]]
 name = "typenum"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5294,6 +5330,12 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
+
+[[package]]
+name = "utf-8"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
 
 [[package]]
 name = "utf8_iter"

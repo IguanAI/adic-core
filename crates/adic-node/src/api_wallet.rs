@@ -293,15 +293,7 @@ pub async fn transfer(node: Arc<AdicNode>, req: TransferRequest) -> Response {
         .transfer(from_address, to_address, amount)
         .await
     {
-        Ok(()) => {
-            // Generate transaction hash
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            use std::hash::{Hash, Hasher};
-            req.from.hash(&mut hasher);
-            req.to.hash(&mut hasher);
-            req.amount.to_bits().hash(&mut hasher);
-            let tx_hash = format!("{:016x}", hasher.finish());
-
+        Ok(tx_hash) => {
             let response = TransferResponse {
                 tx_hash,
                 status: "success".to_string(),
@@ -349,11 +341,9 @@ pub async fn request_faucet(node: Arc<AdicNode>, req: FaucetRequest) -> Response
         }
     };
 
-    // Get faucet address
-    let faucet_address = crate::genesis::account_address_from_hex(
-        &crate::genesis::derive_address_from_node_id("faucet"),
-    )
-    .unwrap();
+    // Use the node's own wallet as the faucet address
+    // This ensures only this node (with the private key) can distribute faucet funds
+    let faucet_address = node.wallet_address();
 
     let amount = AdicAmount::from_adic(100.0); // 100 ADIC per request
 
@@ -361,13 +351,15 @@ pub async fn request_faucet(node: Arc<AdicNode>, req: FaucetRequest) -> Response
     match node
         .economics
         .balances
-        .transfer(faucet_address, address, amount)
+        .transfer_with_reason(
+            faucet_address,
+            address,
+            amount,
+            adic_economics::types::TransferReason::Faucet,
+        )
         .await
     {
-        Ok(()) => {
-            // Generate transaction hash
-            let tx_hash = format!("{:016x}", rand::random::<u64>());
-
+        Ok(tx_hash) => {
             let response = FaucetResponse {
                 amount: amount.to_adic(),
                 tx_hash,

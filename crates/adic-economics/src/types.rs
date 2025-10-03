@@ -183,4 +183,7 @@ pub enum TransferReason {
     DepositSlash,
     TreasuryTransfer,
     PoUWReward,
+    Standard,        // Generic user-to-user transfers
+    Faucet,          // Faucet distributions
+    MessageTransfer, // Transfers embedded in messages
 }

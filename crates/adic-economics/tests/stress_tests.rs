@@ -214,12 +214,12 @@ async fn stress_test_emission_processing() {
         elapsed / validators.len() as u32
     );
 
-    // Verify supply increased correctly
+    // Verify supply increased correctly (genesis + faucet + emitted)
     let final_supply = economics.get_total_supply().await;
-    assert_eq!(
-        final_supply,
-        AdicAmount::GENESIS_SUPPLY.saturating_add(total_emitted)
-    );
+    let expected_supply = AdicAmount::GENESIS_SUPPLY
+        .saturating_add(AdicAmount::from_adic(10_000_000.0)) // faucet
+        .saturating_add(total_emitted);
+    assert_eq!(final_supply, expected_supply);
 
     println!("✓ Emission processing stress test completed");
 }

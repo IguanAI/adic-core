@@ -45,6 +45,7 @@ impl From<TransportError> for AdicError {
 
 /// Unified network message type that can carry both regular messages and discovery messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum NetworkMessage {
     /// Regular ADIC message for consensus/data
     AdicMessage(AdicMessage),

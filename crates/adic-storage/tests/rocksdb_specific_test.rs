@@ -359,7 +359,7 @@ mod rocksdb_tests {
         for i in 0..100 {
             let mut msg = create_test_message(i, vec![]);
             // Add large payload
-            msg.payload = vec![0xFF; 10_000]; // 10KB per message
+            msg.data = vec![0xFF; 10_000]; // 10KB per message
             storage.store_message(&msg).await.unwrap();
 
             if i % 10 == 0 {

@@ -30,6 +30,8 @@ pub trait EconomicsStorage: Send + Sync {
     async fn set_balance(&self, address: AccountAddress, balance: AdicAmount) -> Result<()>;
     async fn get_locked_balance(&self, address: AccountAddress) -> Result<AdicAmount>;
     async fn set_locked_balance(&self, address: AccountAddress, locked: AdicAmount) -> Result<()>;
+    async fn get_nonce(&self, address: AccountAddress) -> Result<u64>;
+    async fn set_nonce(&self, address: AccountAddress, nonce: u64) -> Result<()>;
     async fn get_all_accounts(&self) -> Result<Vec<AccountAddress>>;
 
     async fn begin_transaction(&self) -> Result<()>;
@@ -50,11 +52,19 @@ pub trait EconomicsStorage: Send + Sync {
         limit: usize,
         cursor: Option<String>, // Cursor format: "timestamp:tx_hash"
     ) -> Result<(Vec<TransactionRecord>, Option<String>)>;
+
+    // Get all transactions (not filtered by address) - for blockchain explorer
+    async fn get_all_transactions_paginated(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<TransactionRecord>, usize)>; // Returns (transactions, total_count)
 }
 
 pub struct MemoryStorage {
     balances: Arc<RwLock<BalanceMap>>,
     locked_balances: Arc<RwLock<BalanceMap>>,
+    nonces: Arc<RwLock<HashMap<AccountAddress, u64>>>,
     transaction_backup: Arc<RwLock<TransactionBackup>>,
     transaction_history: Arc<RwLock<Vec<TransactionRecord>>>,
 }
@@ -70,6 +80,7 @@ impl MemoryStorage {
         Self {
             balances: Arc::new(RwLock::new(HashMap::new())),
             locked_balances: Arc::new(RwLock::new(HashMap::new())),
+            nonces: Arc::new(RwLock::new(HashMap::new())),
             transaction_backup: Arc::new(RwLock::new(None)),
             transaction_history: Arc::new(RwLock::new(Vec::new())),
         }
@@ -130,6 +141,33 @@ impl EconomicsStorage for MemoryStorage {
                 locked_after = locked.to_adic(),
                 storage_type = "memory",
                 "🔒 Locked balance stored"
+            );
+        }
+        Ok(())
+    }
+
+    async fn get_nonce(&self, address: AccountAddress) -> Result<u64> {
+        let nonces = self.nonces.read().await;
+        Ok(nonces.get(&address).copied().unwrap_or(0))
+    }
+
+    async fn set_nonce(&self, address: AccountAddress, nonce: u64) -> Result<()> {
+        let mut nonces = self.nonces.write().await;
+        let old_nonce = nonces.get(&address).copied().unwrap_or(0);
+
+        if nonce == 0 {
+            nonces.remove(&address);
+        } else {
+            nonces.insert(address, nonce);
+        }
+
+        if old_nonce != nonce {
+            debug!(
+                address = %address,
+                nonce_before = old_nonce,
+                nonce_after = nonce,
+                storage_type = "memory",
+                "🔢 Nonce updated"
             );
         }
         Ok(())
@@ -358,6 +396,44 @@ impl EconomicsStorage for MemoryStorage {
 
         Ok((filtered, next_cursor))
     }
+
+    async fn get_all_transactions_paginated(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<TransactionRecord>, usize)> {
+        let start_time = Instant::now();
+
+        info!(
+            operation = "all_tx_paginated",
+            page_size = limit,
+            offset = offset,
+            "🔍 Starting paginated all transactions query"
+        );
+
+        let history = self.transaction_history.read().await;
+        let total_count = history.len();
+
+        // Sort by timestamp descending (newest first)
+        let mut all_txs: Vec<_> = history.iter().cloned().collect();
+        all_txs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+        // Apply pagination
+        let transactions: Vec<TransactionRecord> =
+            all_txs.into_iter().skip(offset).take(limit).collect();
+
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+
+        info!(
+            operation = "all_tx_paginated",
+            result_count = transactions.len(),
+            total_count = total_count,
+            duration_ms = duration_ms,
+            "✅ Completed paginated all transactions query"
+        );
+
+        Ok((transactions, total_count))
+    }
 }
 
 #[cfg(feature = "rocksdb")]
@@ -365,6 +441,7 @@ pub struct RocksDbStorage {
     db: Arc<rocksdb::DB>,
     cf_balances: String,
     cf_locked: String,
+    cf_nonces: String,
     _cf_supply: String,
     _cf_emissions: String,
     _cf_treasury: String,
@@ -398,6 +475,7 @@ impl RocksDbStorage {
         let cf_names = vec![
             "balances",
             "locked_balances",
+            "nonces",
             "supply_metrics",
             "emission_schedule",
             "treasury_proposals",
@@ -409,6 +487,7 @@ impl RocksDbStorage {
             db: Arc::new(db),
             cf_balances: "balances".to_string(),
             cf_locked: "locked_balances".to_string(),
+            cf_nonces: "nonces".to_string(),
             _cf_supply: "supply_metrics".to_string(),
             _cf_emissions: "emission_schedule".to_string(),
             _cf_treasury: "treasury_proposals".to_string(),
@@ -475,6 +554,37 @@ impl EconomicsStorage for RocksDbStorage {
             self.db.delete_cf(cf, address.as_bytes())?;
         } else {
             let value = locked.to_base_units().to_le_bytes();
+            self.db.put_cf(cf, address.as_bytes(), value)?;
+        }
+
+        Ok(())
+    }
+
+    async fn get_nonce(&self, address: AccountAddress) -> Result<u64> {
+        let cf = self
+            .db
+            .cf_handle(&self.cf_nonces)
+            .ok_or_else(|| anyhow::anyhow!("Column family not found"))?;
+
+        match self.db.get_cf(cf, address.as_bytes())? {
+            Some(bytes) => {
+                let nonce = u64::from_le_bytes(bytes.as_slice().try_into()?);
+                Ok(nonce)
+            }
+            None => Ok(0),
+        }
+    }
+
+    async fn set_nonce(&self, address: AccountAddress, nonce: u64) -> Result<()> {
+        let cf = self
+            .db
+            .cf_handle(&self.cf_nonces)
+            .ok_or_else(|| anyhow::anyhow!("Column family not found"))?;
+
+        if nonce == 0 {
+            self.db.delete_cf(cf, address.as_bytes())?;
+        } else {
+            let value = nonce.to_le_bytes();
             self.db.put_cf(cf, address.as_bytes(), value)?;
         }
 
@@ -737,6 +847,49 @@ impl EconomicsStorage for RocksDbStorage {
         };
 
         Ok((transactions, next_cursor))
+    }
+
+    async fn get_all_transactions_paginated(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<TransactionRecord>, usize)> {
+        let mut transactions = Vec::new();
+        let mut total_count = 0;
+
+        // Iterate through all transactions using the tx: prefix
+        let tx_prefix = "tx:";
+        let iter = self.db.iterator(rocksdb::IteratorMode::From(
+            tx_prefix.as_bytes(),
+            rocksdb::Direction::Forward,
+        ));
+
+        // Collect all transactions
+        let mut all_txs = Vec::new();
+        for item in iter {
+            let (key, value) = item?;
+            let key_str = String::from_utf8_lossy(&key);
+
+            // Check if key still matches our prefix
+            if !key_str.starts_with(tx_prefix) {
+                break;
+            }
+
+            // Parse transaction
+            if let Ok(tx) = serde_json::from_slice::<TransactionRecord>(&value) {
+                all_txs.push(tx);
+            }
+        }
+
+        total_count = all_txs.len();
+
+        // Sort by timestamp (newest first)
+        all_txs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+        // Apply pagination
+        transactions = all_txs.into_iter().skip(offset).take(limit).collect();
+
+        Ok((transactions, total_count))
     }
 }
 

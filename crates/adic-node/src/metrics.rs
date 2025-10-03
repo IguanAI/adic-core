@@ -37,6 +37,13 @@ pub struct Metrics {
     // DAG State Metrics
     pub current_tips: IntGauge,
     pub dag_messages: IntGauge,
+
+    // Event Streaming Metrics
+    pub events_emitted_total: IntCounter,
+    pub websocket_connections: IntGauge,
+    pub sse_connections: IntGauge,
+    pub websocket_messages_sent: IntCounter,
+    pub sse_messages_sent: IntCounter,
 }
 
 impl Default for Metrics {
@@ -114,6 +121,23 @@ impl Metrics {
         let current_tips = IntGauge::new("adic_current_tips", "Current tips").unwrap();
         let dag_messages = IntGauge::new("adic_dag_messages", "Total DAG messages").unwrap();
 
+        let events_emitted_total = IntCounter::new(
+            "adic_events_emitted_total",
+            "Total events emitted to subscribers",
+        )
+        .unwrap();
+        let websocket_connections =
+            IntGauge::new("adic_websocket_connections", "Active WebSocket connections").unwrap();
+        let sse_connections =
+            IntGauge::new("adic_sse_connections", "Active SSE connections").unwrap();
+        let websocket_messages_sent = IntCounter::new(
+            "adic_websocket_messages_sent_total",
+            "Total WebSocket messages sent",
+        )
+        .unwrap();
+        let sse_messages_sent =
+            IntCounter::new("adic_sse_messages_sent_total", "Total SSE messages sent").unwrap();
+
         registry
             .register(Box::new(messages_submitted.clone()))
             .unwrap();
@@ -166,6 +190,21 @@ impl Metrics {
             .unwrap();
         registry.register(Box::new(current_tips.clone())).unwrap();
         registry.register(Box::new(dag_messages.clone())).unwrap();
+        registry
+            .register(Box::new(events_emitted_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(websocket_connections.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(sse_connections.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(websocket_messages_sent.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(sse_messages_sent.clone()))
+            .unwrap();
 
         Self {
             registry,
@@ -189,6 +228,11 @@ impl Metrics {
             signature_failures,
             current_tips,
             dag_messages,
+            events_emitted_total,
+            websocket_connections,
+            sse_connections,
+            websocket_messages_sent,
+            sse_messages_sent,
         }
     }
 

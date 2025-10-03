@@ -1,3 +1,5 @@
+use crate::api_sse;
+use crate::api_ws;
 use crate::auth::{auth_middleware, rate_limit_middleware, AuthUser};
 use crate::economics_api::{economics_routes, EconomicsApiState};
 use crate::metrics;
@@ -36,6 +38,16 @@ struct SubmitMessageRequest {
     signature: Option<String>, // Hex-encoded signature
     #[serde(skip_serializing_if = "Option::is_none")]
     proposer_pk: Option<String>, // Hex-encoded public key
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transfer: Option<SubmitTransfer>, // Optional value transfer
+}
+
+#[derive(Serialize, Deserialize)]
+struct SubmitTransfer {
+    from: String, // Hex-encoded sender address (32 bytes)
+    to: String,   // Hex-encoded recipient address (32 bytes)
+    amount: u64,  // Amount in base units
+    nonce: u64,   // Nonce for replay protection
 }
 
 #[derive(Serialize, Deserialize)]
@@ -86,6 +98,158 @@ struct TracesQuery {
     limit: Option<usize>,
 }
 
+#[derive(Serialize)]
+struct StreamingHealthResponse {
+    status: String,
+    event_streaming: EventStreamingStatus,
+    metrics: StreamingMetrics,
+}
+
+#[derive(Serialize)]
+struct EventStreamingStatus {
+    enabled: bool,
+    websocket_enabled: bool,
+    sse_enabled: bool,
+}
+
+#[derive(Serialize)]
+struct StreamingMetrics {
+    events_emitted_total: u64,
+    websocket_connections: i64,
+    sse_connections: i64,
+    websocket_messages_sent: u64,
+    sse_messages_sent: u64,
+}
+
+// Route builder functions - these create modular routers that will be nested under /v1
+
+fn core_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/health", get(health))
+        .route("/health/streaming", get(get_streaming_health))
+        .route("/status", get(get_status))
+        .route("/metrics", get(get_metrics))
+}
+
+fn message_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/messages", post(submit_message))
+        .route("/messages/:id", get(get_message))
+        .route("/messages/bulk", get(get_messages_bulk))
+        .route("/messages/range", get(get_messages_range))
+        .route("/messages/since/:id", get(get_messages_since))
+        .route("/tips", get(get_tips))
+        .route("/balls/:axis/:radius", get(get_ball_messages))
+}
+
+fn wallet_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        // Node's own wallet
+        .route("/wallets/self", get(wallet_info_handler))
+        .route("/wallets/self/sign", post(sign_handler))
+        .route("/wallets/self/export", post(export_wallet_handler))
+        .route("/wallets/self/import", post(import_wallet_handler))
+        // Any wallet
+        .route("/wallets/:address", get(get_wallet_info_handler))
+        .route("/wallets/:address/balance", get(balance_handler))
+        .route("/wallets/:address/transactions", get(transactions_handler))
+        .route("/wallets/transactions", get(all_transactions_handler))
+        .route("/wallets/transfer", post(transfer_handler))
+        .route("/wallets/faucet", post(faucet_handler))
+        // Registry
+        .route("/wallets/registry", get(list_registered_wallets_handler))
+        .route("/wallets/registry", post(register_wallet_handler))
+        .route(
+            "/wallets/registry/stats",
+            get(wallet_registry_stats_handler),
+        )
+        .route(
+            "/wallets/registry/:address",
+            get(check_wallet_registration_handler),
+        )
+        .route(
+            "/wallets/registry/:address",
+            delete(unregister_wallet_handler),
+        )
+        .route(
+            "/wallets/registry/:address/public_key",
+            get(get_wallet_public_key_handler),
+        )
+}
+
+fn network_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/network/peers", get(get_peers))
+        .route("/network/status", get(get_network_status))
+}
+
+fn consensus_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/finality/:id", get(get_finality_artifact))
+        .route("/finality/kcore/metrics", get(get_kcore_metrics))
+        .route("/conflicts", get(get_all_conflicts))
+        .route("/conflicts/:id", get(get_conflict_details))
+        .route("/mrw/traces", get(get_mrw_traces))
+        .route("/mrw/trace/:id", get(get_mrw_trace))
+        .route("/reputation", get(get_all_reputations))
+        .route("/reputation/:pubkey", get(get_reputation))
+}
+
+fn statistics_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/statistics", get(get_detailed_statistics))
+        .route("/diversity", get(get_diversity_stats))
+        .route("/energy", get(get_active_energy_conflicts))
+        .route("/admissibility", get(get_admissibility_rates))
+}
+
+fn security_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/proofs/membership", post(generate_membership_proof))
+        .route("/proofs/verify", post(verify_proof))
+        .route("/security/score/:id", get(get_security_score))
+}
+
+fn update_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/updates/status", get(get_update_status))
+        .route("/updates/check", post(trigger_update_check))
+        .route("/updates/apply", post(trigger_update_apply))
+        .route("/updates/progress", get(get_update_progress))
+        .route("/updates/swarm", get(get_update_swarm_stats))
+}
+
+fn streaming_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/ws/events",
+            get(|ws, query, State(state): State<Arc<AppState>>| {
+                api_ws::websocket_handler(
+                    ws,
+                    query,
+                    State(state.node.event_bus()),
+                    State(state.metrics.clone()),
+                )
+            }),
+        )
+        .route(
+            "/sse/events",
+            get(|query, State(state): State<Arc<AppState>>| {
+                api_sse::sse_handler(
+                    query,
+                    State(state.node.event_bus()),
+                    State(state.metrics.clone()),
+                )
+            }),
+        )
+}
+
+fn deposit_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/deposits", get(get_deposits_summary))
+        .route("/deposits/:id", get(get_deposit_status))
+}
+
 pub fn start_api_server(node: AdicNode, host: String, port: u16) -> JoinHandle<()> {
     start_api_server_with_listener(node, host, port, None)
 }
@@ -107,78 +271,26 @@ pub fn start_api_server_with_listener(
         economics: Arc::clone(&node.economics),
     };
 
-    // Create main router
-    let main_app = Router::new()
-        .route("/health", get(health))
-        .route("/status", get(get_status))
-        .route("/submit", post(submit_message))
-        .route("/message/:id", get(get_message))
-        .route("/tips", get(get_tips))
-        // Network endpoints
-        .route("/peers", get(get_peers))
-        .route("/network/status", get(get_network_status))
-        // Update endpoints
-        .route("/update/status", get(get_update_status))
-        .route("/update/check", post(trigger_update_check))
-        .route("/update/apply", post(trigger_update_apply))
-        .route("/update/progress", get(get_update_progress))
-        .route("/update/swarm", get(get_update_swarm_stats))
-        // Wallet and transaction endpoints
-        .route("/wallet/info", get(wallet_info_handler))
-        .route("/wallet/balance/:address", get(balance_handler))
-        .route("/wallet/transfer", post(transfer_handler))
-        .route("/wallet/faucet", post(faucet_handler))
-        .route("/wallet/sign", post(sign_handler))
-        .route("/wallet/transactions/:address", get(transactions_handler))
-        // Wallet registry endpoints
-        .route("/wallet/register", post(register_wallet_handler))
-        .route(
-            "/wallet/public_key/:address",
-            get(get_wallet_public_key_handler),
-        )
-        .route("/wallet/registered", get(list_registered_wallets_handler))
-        .route(
-            "/wallet/check/:address",
-            get(check_wallet_registration_handler),
-        )
-        .route(
-            "/wallet/unregister/:address",
-            delete(unregister_wallet_handler),
-        )
-        .route("/wallet/registry/stats", get(wallet_registry_stats_handler))
-        .route("/wallet/info/:address", get(get_wallet_info_handler))
-        .route("/wallet/export", post(export_wallet_handler))
-        .route("/wallet/import", post(import_wallet_handler))
-        .route("/ball/:axis/:radius", get(get_ball_messages))
-        .route("/proof/membership", post(generate_membership_proof))
-        .route("/proof/verify", post(verify_proof))
-        .route("/security/score/:id", get(get_security_score))
-        .route("/v1/finality/:id", get(get_finality_artifact))
-        .route("/v1/mrw/traces", get(get_mrw_traces))
-        .route("/v1/mrw/trace/:id", get(get_mrw_trace))
-        .route("/v1/reputation/all", get(get_all_reputations))
-        .route("/v1/reputation/:pubkey", get(get_reputation))
-        .route("/v1/conflicts", get(get_all_conflicts))
-        .route("/v1/conflict/:id", get(get_conflict_details))
-        .route("/v1/statistics/detailed", get(get_detailed_statistics))
-        .route("/v1/economics/deposits", get(get_deposits_summary))
-        .route("/v1/economics/deposit/:id", get(get_deposit_status))
-        // Bulk message endpoints for efficient indexing
-        .route("/v1/messages/bulk", get(get_messages_bulk))
-        .route("/v1/messages/range", get(get_messages_range))
-        .route("/v1/messages/since/:id", get(get_messages_since))
-        // New endpoints for explorer dashboard metrics
-        .route("/v1/diversity/stats", get(get_diversity_stats))
-        .route("/v1/energy/active", get(get_active_energy_conflicts))
-        .route("/v1/finality/kcore/metrics", get(get_kcore_metrics))
-        .route("/v1/admissibility/rates", get(get_admissibility_rates))
-        .route("/metrics", get(get_metrics))
+    // Build v1 API by composing all domain routers
+    let v1_api = Router::new()
+        .merge(core_routes())
+        .merge(message_routes())
+        .merge(wallet_routes())
+        .merge(network_routes())
+        .merge(consensus_routes())
+        .merge(statistics_routes())
+        .merge(security_routes())
+        .merge(update_routes())
+        .merge(streaming_routes())
+        .merge(deposit_routes())
         .layer(middleware::from_fn(rate_limit_middleware))
         .layer(middleware::from_fn(auth_middleware))
-        .with_state(state);
+        .with_state(state)
+        // Merge economics routes (has its own state)
+        .merge(economics_routes(economics_state));
 
-    // Merge with economics routes
-    let app = main_app.merge(economics_routes(economics_state));
+    // Nest all routes under /v1
+    let app = Router::new().nest("/v1", v1_api);
 
     let addr = format!("{}:{}", host, port);
     info!("Starting API server on {}", addr);
@@ -217,6 +329,28 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         Ok(stats) => (StatusCode::OK, Json(stats)).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+async fn get_streaming_health(State(state): State<Arc<AppState>>) -> Response {
+    let metrics = &state.metrics;
+
+    let response = StreamingHealthResponse {
+        status: "healthy".to_string(),
+        event_streaming: EventStreamingStatus {
+            enabled: true,
+            websocket_enabled: true,
+            sse_enabled: true,
+        },
+        metrics: StreamingMetrics {
+            events_emitted_total: metrics.events_emitted_total.get(),
+            websocket_connections: metrics.websocket_connections.get(),
+            sse_connections: metrics.sse_connections.get(),
+            websocket_messages_sent: metrics.websocket_messages_sent.get(),
+            sse_messages_sent: metrics.sse_messages_sent.get(),
+        },
+    };
+
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 async fn submit_message(
@@ -286,6 +420,45 @@ async fn submit_message(
         }
     }
 
+    // Parse transfer if provided
+    let transfer = if let Some(transfer_req) = req.transfer {
+        // Decode addresses from hex
+        let from_bytes = match hex::decode(&transfer_req.from) {
+            Ok(bytes) if bytes.len() == 32 => bytes,
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Invalid 'from' address in transfer".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+        let to_bytes = match hex::decode(&transfer_req.to) {
+            Ok(bytes) if bytes.len() == 32 => bytes,
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "Invalid 'to' address in transfer".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+        Some(adic_types::ValueTransfer::new(
+            from_bytes,
+            to_bytes,
+            transfer_req.amount,
+            transfer_req.nonce,
+        ))
+    } else {
+        None
+    };
+
     // Handle explicit parents if provided (for genesis messages or specific parent selection)
     let result = if let Some(parent_hexes) = req.parents {
         tracing::warn!(
@@ -323,19 +496,38 @@ async fn submit_message(
                 .collect::<Vec<_>>()
         );
 
-        // Use the new method that accepts explicit parents
+        // Use the method that accepts explicit parents and optional transfer
         state
             .node
-            .submit_message_with_parents(req.content.into_bytes(), parent_ids, req.features)
+            .submit_message_with_parents_and_transfer(
+                req.content.into_bytes(),
+                parent_ids,
+                req.features,
+                transfer,
+            )
             .await
     } else {
-        // Use the existing auto-parent-selection method
-        state.node.submit_message(req.content.into_bytes()).await
+        // Use the auto-parent-selection method with optional transfer
+        state
+            .node
+            .submit_message_with_transfer(req.content.into_bytes(), transfer)
+            .await
     };
 
     match result {
         Ok(message_id) => {
             state.metrics.messages_processed.inc();
+
+            // Emit MessageAdded event
+            state
+                .node
+                .event_bus
+                .emit(crate::events::NodeEvent::MessageAdded {
+                    message_id: hex::encode(message_id.as_bytes()),
+                    depth: state.node.get_message_depth(&message_id).await.unwrap_or(0) as u64,
+                    timestamp: chrono::Utc::now(),
+                });
+
             (
                 StatusCode::OK,
                 Json(SubmitMessageResponse {
@@ -383,7 +575,7 @@ async fn get_message(State(state): State<Arc<AppState>>, Path(id): Path<String>)
                         })
                     }).collect::<Vec<_>>()
                 },
-                "content": general_purpose::STANDARD.encode(&message.payload),  // Use base64 per API spec
+                "content": general_purpose::STANDARD.encode(&message.data),  // Use base64 per API spec
                 "timestamp": message.meta.timestamp.to_rfc3339(),
                 "proposer_pk": hex::encode(message.proposer_pk.as_bytes()),
                 "signature": hex::encode(message.signature.as_bytes()),
@@ -1186,6 +1378,24 @@ async fn transactions_handler(
     crate::api_wallet_tx::get_transaction_history(address, Arc::new(state.node.clone())).await
 }
 
+#[derive(Deserialize)]
+struct AllTransactionsQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn all_transactions_handler(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AllTransactionsQuery>,
+) -> Response {
+    crate::api_wallet_tx::get_all_transactions(
+        query.limit,
+        query.offset,
+        Arc::new(state.node.clone()),
+    )
+    .await
+}
+
 // Bulk message query endpoints
 
 #[derive(Deserialize)]
@@ -1256,7 +1466,7 @@ async fn get_messages_bulk(
                             })
                         }).collect::<Vec<_>>()
                     },
-                    "content": general_purpose::STANDARD.encode(&message.payload),
+                    "content": general_purpose::STANDARD.encode(&message.data),
                     "timestamp": message.meta.timestamp.to_rfc3339(),
                     "proposer_pk": hex::encode(message.proposer_pk.as_bytes()),
                     "signature": hex::encode(message.signature.as_bytes()),
@@ -1361,7 +1571,7 @@ async fn get_messages_range(
                     })
                 }).collect::<Vec<_>>()
             },
-            "content": general_purpose::STANDARD.encode(&message.payload),
+            "content": general_purpose::STANDARD.encode(&message.data),
             "timestamp": message.meta.timestamp.to_rfc3339(),
             "proposer_pk": hex::encode(message.proposer_pk.as_bytes()),
             "signature": hex::encode(message.signature.as_bytes()),
@@ -1443,7 +1653,7 @@ async fn get_messages_since(
                     })
                 }).collect::<Vec<_>>()
             },
-            "content": general_purpose::STANDARD.encode(&message.payload),
+            "content": general_purpose::STANDARD.encode(&message.data),
             "timestamp": message.meta.timestamp.to_rfc3339(),
             "proposer_pk": hex::encode(message.proposer_pk.as_bytes()),
             "signature": hex::encode(message.signature.as_bytes()),

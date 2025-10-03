@@ -5,6 +5,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// Reputation change event data
+#[derive(Debug, Clone)]
+pub struct ReputationChangeEvent {
+    pub validator_pubkey: PublicKey,
+    pub old_reputation: f64,
+    pub new_reputation: f64,
+    pub reason: String,
+}
+
+/// Callback for reputation change events
+pub type ReputationEventCallback = Arc<dyn Fn(ReputationChangeEvent) + Send + Sync>;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReputationScore {
     pub value: f64,
@@ -40,6 +52,7 @@ pub struct ReputationTracker {
     gamma: f64,
     /// Track message approvals for overlap detection
     approval_history: Arc<RwLock<HashMap<PublicKey, Vec<adic_types::MessageId>>>>,
+    event_callback: Arc<RwLock<Option<ReputationEventCallback>>>,
 }
 
 impl ReputationTracker {
@@ -49,7 +62,25 @@ impl ReputationTracker {
             decay_factor: 0.99,
             gamma,
             approval_history: Arc::new(RwLock::new(HashMap::new())),
+            event_callback: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Set the event callback for reputation changes
+    pub async fn set_event_callback(&self, callback: ReputationEventCallback) {
+        let mut cb = self.event_callback.write().await;
+        *cb = Some(callback);
+    }
+
+    /// Emit a reputation change event if callback is set
+    fn emit_reputation_event(&self, event: ReputationChangeEvent) {
+        let callback_clone = self.event_callback.clone();
+        tokio::spawn(async move {
+            let callback_guard = callback_clone.read().await;
+            if let Some(callback) = callback_guard.as_ref() {
+                callback(event);
+            }
+        });
     }
 
     pub async fn get_reputation(&self, pubkey: &PublicKey) -> f64 {
@@ -58,19 +89,26 @@ impl ReputationTracker {
 
         // Debug logging to track reputation lookups
         if let Some(score) = scores.get(pubkey) {
-            tracing::warn!(
-                "DEBUG: Reputation lookup: pubkey={:x} found with value={}",
-                pubkey.as_bytes()[..8]
-                    .iter()
-                    .fold(0u64, |acc, &b| acc << 8 | b as u64),
-                score.value
+            tracing::debug!(
+                pubkey_prefix = format!(
+                    "{:x}",
+                    pubkey.as_bytes()[..8]
+                        .iter()
+                        .fold(0u64, |acc, &b| acc << 8 | b as u64)
+                ),
+                reputation_value = score.value,
+                "Reputation lookup - found"
             );
         } else {
-            tracing::warn!(
-                "DEBUG: Reputation lookup: pubkey={:x} not found, returning default 1.0",
-                pubkey.as_bytes()[..8]
-                    .iter()
-                    .fold(0u64, |acc, &b| acc << 8 | b as u64)
+            tracing::debug!(
+                pubkey_prefix = format!(
+                    "{:x}",
+                    pubkey.as_bytes()[..8]
+                        .iter()
+                        .fold(0u64, |acc, &b| acc << 8 | b as u64)
+                ),
+                default_value = 1.0,
+                "Reputation lookup - not found"
             );
         }
 
@@ -109,6 +147,17 @@ impl ReputationTracker {
             good_score = good_score,
             "✅ Reputation increased (good behavior)"
         );
+
+        // Emit reputation change event
+        self.emit_reputation_event(ReputationChangeEvent {
+            validator_pubkey: *pubkey,
+            old_reputation: old_rep,
+            new_reputation: score.value,
+            reason: format!(
+                "Good behavior: message finalized (diversity={:.2}, depth={})",
+                diversity, depth
+            ),
+        });
     }
 
     /// Update reputation negatively when message is invalid/slashed
@@ -129,6 +178,17 @@ impl ReputationTracker {
             penalty = penalty,
             "⚠️ Reputation decreased (bad behavior)"
         );
+
+        // Emit reputation change event
+        self.emit_reputation_event(ReputationChangeEvent {
+            validator_pubkey: *pubkey,
+            old_reputation: old_rep,
+            new_reputation: score.value,
+            reason: format!(
+                "Bad behavior: message invalid/slashed (penalty={:.2})",
+                penalty
+            ),
+        });
     }
 
     /// Comprehensive reputation update per whitepaper Appendix E
@@ -180,6 +240,17 @@ impl ReputationTracker {
             bad_score = bad,
             "🔄 Reputation updated (comprehensive)"
         );
+
+        // Emit reputation change event
+        self.emit_reputation_event(ReputationChangeEvent {
+            validator_pubkey: *pubkey,
+            old_reputation: old_rep,
+            new_reputation: score.value,
+            reason: format!(
+                "Comprehensive update: finalized={}, diversity={:.2}, depth={}, overlap={:.2}",
+                finalized_count, diversity, depth, overlap_score
+            ),
+        });
     }
 
     /// Calculate overlap score for Sybil detection
@@ -321,6 +392,7 @@ impl Clone for ReputationTracker {
             decay_factor: self.decay_factor,
             gamma: self.gamma,
             approval_history: Arc::clone(&self.approval_history),
+            event_callback: Arc::clone(&self.event_callback),
         }
     }
 }

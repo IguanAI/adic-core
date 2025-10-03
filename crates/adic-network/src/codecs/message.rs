@@ -127,7 +127,7 @@ mod tests {
         let decoded = codec.decode(&encoded).unwrap();
 
         assert_eq!(decoded.id, message.id);
-        assert_eq!(decoded.payload, message.payload);
+        assert_eq!(decoded.data, message.data);
     }
 
     #[test]
@@ -147,7 +147,7 @@ mod tests {
         let decoded = codec.decode(&encoded).unwrap();
 
         assert_eq!(decoded.id, message.id);
-        assert_eq!(decoded.payload, message.payload);
+        assert_eq!(decoded.data, message.data);
     }
 
     #[test]
@@ -166,6 +166,6 @@ mod tests {
         let decoded = codec.decode(&encoded).unwrap();
 
         assert_eq!(decoded.id, message.id);
-        assert_eq!(decoded.payload, message.payload);
+        assert_eq!(decoded.data, message.data);
     }
 }

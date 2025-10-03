@@ -56,6 +56,7 @@ impl FinalityEngine {
             config.min_depth,
             config.min_diversity,
             config.min_reputation,
+            consensus.params().rho.clone(),
         );
         let homology = HomologyAnalyzer::new(consensus.params().clone());
 

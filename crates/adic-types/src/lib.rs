@@ -4,6 +4,7 @@ pub mod features;
 pub mod id;
 pub mod keys;
 pub mod message;
+pub mod transfer;
 
 pub use encoders::{
     EncoderData, EncoderSet, FeatureEncoder, RegionCodeEncoder, TimeEpochEncoder, TopicHashEncoder,
@@ -13,6 +14,7 @@ pub use features::{AdicFeatures, AxisId, AxisPhi, QpDigits};
 pub use id::MessageId;
 pub use keys::{PublicKey, Signature};
 pub use message::{AdicMessage, AdicMeta, ConflictId};
+pub use transfer::ValueTransfer;
 
 /// Default precision for p-adic digit representations
 /// This determines how many p-adic digits are used to represent values

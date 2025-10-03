@@ -18,9 +18,35 @@ pub struct AccountInfo {
     pub last_activity: i64,
 }
 
+/// Balance change event data
+#[derive(Debug, Clone)]
+pub struct BalanceChangeEvent {
+    pub address: AccountAddress,
+    pub balance_before: AdicAmount,
+    pub balance_after: AdicAmount,
+    pub change_amount: AdicAmount,
+    pub change_type: BalanceChangeTypeEvent,
+}
+
+#[derive(Debug, Clone)]
+pub enum BalanceChangeTypeEvent {
+    Credit,
+    Debit,
+    TransferIn,
+    TransferOut,
+}
+
+/// Callback for balance change events
+pub type BalanceEventCallback = Arc<dyn Fn(BalanceChangeEvent) + Send + Sync>;
+
+/// Callback for transfer events
+pub type TransferEventCallback = Arc<dyn Fn(crate::types::TransferEvent) + Send + Sync>;
+
 pub struct BalanceManager {
     storage: Arc<dyn EconomicsStorage>,
     cache: Arc<RwLock<HashMap<AccountAddress, AccountInfo>>>,
+    event_callback: Arc<RwLock<Option<BalanceEventCallback>>>,
+    transfer_event_callback: Arc<RwLock<Option<TransferEventCallback>>>,
 }
 
 impl BalanceManager {
@@ -28,7 +54,43 @@ impl BalanceManager {
         Self {
             storage,
             cache: Arc::new(RwLock::new(HashMap::new())),
+            event_callback: Arc::new(RwLock::new(None)),
+            transfer_event_callback: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Set the event callback for balance changes
+    pub async fn set_event_callback(&self, callback: BalanceEventCallback) {
+        let mut cb = self.event_callback.write().await;
+        *cb = Some(callback);
+    }
+
+    /// Emit a balance change event if callback is set
+    fn emit_balance_event(&self, event: BalanceChangeEvent) {
+        let callback_clone = self.event_callback.clone();
+        tokio::spawn(async move {
+            let callback_guard = callback_clone.read().await;
+            if let Some(callback) = callback_guard.as_ref() {
+                callback(event);
+            }
+        });
+    }
+
+    /// Set the event callback for transfers
+    pub async fn set_transfer_event_callback(&self, callback: TransferEventCallback) {
+        let mut cb = self.transfer_event_callback.write().await;
+        *cb = Some(callback);
+    }
+
+    /// Emit a transfer event if callback is set
+    fn emit_transfer_event(&self, event: crate::types::TransferEvent) {
+        let callback_clone = self.transfer_event_callback.clone();
+        tokio::spawn(async move {
+            let callback_guard = callback_clone.read().await;
+            if let Some(callback) = callback_guard.as_ref() {
+                callback(event);
+            }
+        });
     }
 
     pub async fn get_balance(&self, address: AccountAddress) -> Result<AdicAmount> {
@@ -102,6 +164,16 @@ impl BalanceManager {
             balance_after = new_balance.to_adic(),
             "💰 Balance credited"
         );
+
+        // Emit balance change event
+        self.emit_balance_event(BalanceChangeEvent {
+            address,
+            balance_before: current,
+            balance_after: new_balance,
+            change_amount: amount,
+            change_type: BalanceChangeTypeEvent::Credit,
+        });
+
         Ok(())
     }
 
@@ -137,6 +209,16 @@ impl BalanceManager {
             balance_after = new_balance.to_adic(),
             "💸 Balance debited"
         );
+
+        // Emit balance change event
+        self.emit_balance_event(BalanceChangeEvent {
+            address,
+            balance_before: current,
+            balance_after: new_balance,
+            change_amount: amount,
+            change_type: BalanceChangeTypeEvent::Debit,
+        });
+
         Ok(())
     }
 
@@ -145,9 +227,20 @@ impl BalanceManager {
         from: AccountAddress,
         to: AccountAddress,
         amount: AdicAmount,
-    ) -> Result<()> {
+    ) -> Result<String> {
+        self.transfer_with_reason(from, to, amount, crate::types::TransferReason::Standard)
+            .await
+    }
+
+    pub async fn transfer_with_reason(
+        &self,
+        from: AccountAddress,
+        to: AccountAddress,
+        amount: AdicAmount,
+        reason: crate::types::TransferReason,
+    ) -> Result<String> {
         if amount == AdicAmount::ZERO {
-            return Ok(());
+            return Ok(String::new());
         }
 
         if from == to {
@@ -155,12 +248,6 @@ impl BalanceManager {
         }
 
         // Atomic transfer using storage transaction
-        info!(
-            from = %from,
-            to = %to,
-            amount = amount.to_adic(),
-            "📝 Beginning transfer transaction"
-        );
         self.storage.begin_transaction().await?;
 
         match self.transfer_internal(from, to, amount).await {
@@ -194,7 +281,18 @@ impl BalanceManager {
                     status = "confirmed",
                     "✅ Transfer committed"
                 );
-                Ok(())
+
+                // Emit transfer event
+                let now = chrono::Utc::now().timestamp();
+                self.emit_transfer_event(crate::types::TransferEvent {
+                    from,
+                    to,
+                    amount,
+                    timestamp: now,
+                    reason,
+                });
+
+                Ok(tx_hash)
             }
             Err(e) => {
                 info!(
@@ -291,6 +389,23 @@ impl BalanceManager {
         hasher.update(&amount.to_base_units().to_le_bytes());
         hasher.update(&now.to_le_bytes());
         let tx_hash = hex::encode(hasher.finalize().as_bytes());
+
+        // Emit balance change events for both sender and receiver
+        self.emit_balance_event(BalanceChangeEvent {
+            address: from,
+            balance_before: from_balance,
+            balance_after: new_from_balance,
+            change_amount: amount,
+            change_type: BalanceChangeTypeEvent::TransferOut,
+        });
+
+        self.emit_balance_event(BalanceChangeEvent {
+            address: to,
+            balance_before: to_balance,
+            balance_after: new_to_balance,
+            change_amount: amount,
+            change_type: BalanceChangeTypeEvent::TransferIn,
+        });
 
         Ok(tx_hash)
     }
@@ -418,6 +533,232 @@ impl BalanceManager {
         address: AccountAddress,
     ) -> Result<Vec<TransactionRecord>> {
         self.storage.get_transaction_history(address).await
+    }
+
+    /// Record a transaction in storage (for genesis and other special cases)
+    pub async fn record_transaction(&self, tx: TransactionRecord) -> Result<()> {
+        self.storage.record_transaction(tx).await
+    }
+
+    /// Get all transactions paginated (for blockchain explorer)
+    pub async fn get_all_transactions_paginated(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(Vec<TransactionRecord>, usize)> {
+        self.storage
+            .get_all_transactions_paginated(limit, offset)
+            .await
+    }
+
+    /// Get the current nonce for an account
+    pub async fn get_nonce(&self, address: AccountAddress) -> Result<u64> {
+        // Check cache first
+        {
+            let cache = self.cache.read().await;
+            if let Some(info) = cache.get(&address) {
+                return Ok(info.nonce);
+            }
+        }
+
+        // Load from storage
+        let nonce = self.storage.get_nonce(address).await.unwrap_or(0);
+
+        // Update cache
+        let mut cache = self.cache.write().await;
+        if let Some(info) = cache.get_mut(&address) {
+            info.nonce = nonce;
+        }
+
+        Ok(nonce)
+    }
+
+    /// Increment the nonce for an account
+    async fn increment_nonce(&self, address: AccountAddress) -> Result<()> {
+        let mut cache = self.cache.write().await;
+
+        if let Some(info) = cache.get_mut(&address) {
+            info.nonce += 1;
+            self.storage.set_nonce(address, info.nonce).await?;
+        } else {
+            // Load current nonce from storage and increment
+            let nonce = self.storage.get_nonce(address).await.unwrap_or(0) + 1;
+            self.storage.set_nonce(address, nonce).await?;
+
+            // Update cache
+            let balance = self.storage.get_balance(address).await?;
+            cache.insert(
+                address,
+                AccountInfo {
+                    address,
+                    balance,
+                    nonce,
+                    locked_balance: AdicAmount::ZERO,
+                    last_activity: chrono::Utc::now().timestamp(),
+                },
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Validate a value transfer from a message (check balance and nonce, but don't execute)
+    /// This is called during admissibility checking
+    pub async fn validate_transfer(
+        &self,
+        from: &[u8],
+        to: &[u8],
+        amount: u64,
+        nonce: u64,
+    ) -> Result<()> {
+        // Convert addresses
+        if from.len() != 32 || to.len() != 32 {
+            bail!("Invalid address length");
+        }
+
+        let from_addr = AccountAddress::from_bytes(from.try_into().unwrap());
+        let to_addr = AccountAddress::from_bytes(to.try_into().unwrap());
+
+        // Check addresses are different
+        if from_addr == to_addr {
+            bail!("Cannot transfer to same address");
+        }
+
+        // Check amount is valid
+        if amount == 0 {
+            bail!("Transfer amount must be greater than zero");
+        }
+
+        // Check sender has sufficient balance
+        let balance = self.get_balance(from_addr).await?;
+        let transfer_amount = AdicAmount::from_base_units(amount);
+
+        if balance < transfer_amount {
+            bail!(
+                "Insufficient balance: {} has {}, needs {}",
+                from_addr,
+                balance,
+                transfer_amount
+            );
+        }
+
+        // Check nonce is correct (must be current nonce + 1)
+        let current_nonce = self.get_nonce(from_addr).await?;
+        if nonce != current_nonce + 1 {
+            bail!(
+                "Invalid nonce: expected {}, got {}",
+                current_nonce + 1,
+                nonce
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Process a message with an embedded value transfer
+    /// This is called after the message has been validated and accepted into the DAG
+    pub async fn process_message_transfer(
+        &self,
+        message_id: &str,
+        from: &[u8],
+        to: &[u8],
+        amount: u64,
+        nonce: u64,
+    ) -> Result<String> {
+        // Convert addresses
+        if from.len() != 32 || to.len() != 32 {
+            bail!("Invalid address length");
+        }
+
+        let from_addr = AccountAddress::from_bytes(from.try_into().unwrap());
+        let to_addr = AccountAddress::from_bytes(to.try_into().unwrap());
+        let transfer_amount = AdicAmount::from_base_units(amount);
+
+        info!(
+            message_id = %message_id,
+            from = %from_addr,
+            to = %to_addr,
+            amount = transfer_amount.to_adic(),
+            nonce = nonce,
+            "💸 Processing message transfer"
+        );
+
+        // Validate transfer again (defense in depth)
+        self.validate_transfer(from, to, amount, nonce).await?;
+
+        // Begin atomic transaction
+        self.storage.begin_transaction().await?;
+
+        match self
+            .transfer_internal(from_addr, to_addr, transfer_amount)
+            .await
+        {
+            Ok(tx_hash) => {
+                // Increment nonce after successful transfer
+                if let Err(e) = self.increment_nonce(from_addr).await {
+                    debug!(
+                        from = %from_addr,
+                        error = %e,
+                        "Failed to increment nonce"
+                    );
+                    self.storage.rollback_transaction().await?;
+                    return Err(e);
+                }
+
+                self.storage.commit_transaction().await?;
+
+                // Record the transaction
+                let tx_record = TransactionRecord {
+                    from: from_addr,
+                    to: to_addr,
+                    amount: transfer_amount,
+                    timestamp: Utc::now(),
+                    tx_hash: tx_hash.clone(),
+                    status: "confirmed".to_string(),
+                };
+
+                if let Err(e) = self.storage.record_transaction(tx_record).await {
+                    debug!(
+                        tx_hash = %tx_hash,
+                        error = %e,
+                        "Failed to record transaction"
+                    );
+                }
+
+                info!(
+                    message_id = %message_id,
+                    from = %from_addr,
+                    to = %to_addr,
+                    amount = transfer_amount.to_adic(),
+                    nonce = nonce,
+                    tx_hash = %tx_hash,
+                    "✅ Message transfer processed"
+                );
+
+                // Emit transfer event
+                let now = chrono::Utc::now().timestamp();
+                self.emit_transfer_event(crate::types::TransferEvent {
+                    from: from_addr,
+                    to: to_addr,
+                    amount: transfer_amount,
+                    timestamp: now,
+                    reason: crate::types::TransferReason::MessageTransfer,
+                });
+
+                Ok(tx_hash)
+            }
+            Err(e) => {
+                info!(
+                    message_id = %message_id,
+                    from = %from_addr,
+                    to = %to_addr,
+                    error = %e,
+                    "❌ Message transfer failed"
+                );
+                self.storage.rollback_transaction().await?;
+                Err(e)
+            }
+        }
     }
 }
 

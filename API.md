@@ -60,7 +60,7 @@ Authorization: Bearer <your-jwt-token>
 
 ### Health & Status
 
-#### GET /health **[IMPLEMENTED]**
+#### GET /v1/health **[IMPLEMENTED]**
 Health check endpoint.
 
 **Response:**
@@ -68,7 +68,7 @@ Health check endpoint.
 OK
 ```
 
-#### GET /status **[IMPLEMENTED]**
+#### GET /v1/status **[IMPLEMENTED]**
 Get node status including network statistics and finality metrics.
 
 **Response:**
@@ -111,7 +111,7 @@ Get node status including network statistics and finality metrics.
 
 ### Network Operations
 
-#### GET /peers **[IMPLEMENTED]**
+#### GET /v1/network/peers **[IMPLEMENTED]**
 Get list of connected peers.
 
 **Response:**
@@ -131,7 +131,7 @@ Get list of connected peers.
 }
 ```
 
-#### GET /network/status **[IMPLEMENTED]**
+#### GET /v1/network/status **[IMPLEMENTED]**
 Get detailed network status information.
 
 **Response:**
@@ -151,7 +151,7 @@ Get detailed network status information.
 
 ### Message Operations
 
-#### POST /submit **[IMPLEMENTED]**
+#### POST /v1/messages **[IMPLEMENTED]**
 Submit a new message to the DAG.
 
 **Authentication Required:** Yes
@@ -179,7 +179,7 @@ Submit a new message to the DAG.
 }
 ```
 
-#### GET /message/:id **[IMPLEMENTED]**
+#### GET /v1/messages/:id **[IMPLEMENTED]**
 Retrieve a specific message by ID.
 
 **Parameters:**
@@ -210,7 +210,7 @@ Retrieve a specific message by ID.
 }
 ```
 
-#### GET /tips **[IMPLEMENTED]**
+#### GET /v1/tips **[IMPLEMENTED]**
 Get current DAG tips (messages without children).
 
 **Response (Current Implementation):**
@@ -234,7 +234,7 @@ Get current DAG tips (messages without children).
 
 ### P-adic Operations
 
-#### GET /ball/:axis/:radius **[PLACEHOLDER]**
+#### GET /v1/balls/:axis/:radius **[PLACEHOLDER]**
 Get all messages within a p-adic ball.
 
 **Parameters:**
@@ -253,7 +253,7 @@ Get all messages within a p-adic ball.
 
 ### Proofs & Security
 
-#### POST /proof/membership **[PLACEHOLDER]**
+#### POST /v1/proofs/membership **[PLACEHOLDER]**
 Generate a p-adic ball membership proof.
 
 **Request Body:**
@@ -273,7 +273,7 @@ Generate a p-adic ball membership proof.
 }
 ```
 
-#### POST /proof/verify **[PLACEHOLDER]**
+#### POST /v1/proofs/verify **[PLACEHOLDER]**
 Verify a membership proof.
 
 **Request Body:**
@@ -292,7 +292,7 @@ Verify a membership proof.
 }
 ```
 
-#### GET /security/score/:id **[PARTIAL]**
+#### GET /v1/security/score/:id **[PARTIAL]**
 Get the security score for a message.
 
 **Parameters:**
@@ -368,7 +368,7 @@ Returns the full trace object with detailed execution information.
 
 ### Reputation System
 
-#### GET /v1/reputation/all **[IMPLEMENTED]**
+#### GET /v1/reputation **[IMPLEMENTED]**
 Get all reputation scores.
 
 **Response:**
@@ -418,7 +418,7 @@ Get all active conflicts.
 }
 ```
 
-#### GET /v1/conflict/:id **[IMPLEMENTED]**
+#### GET /v1/conflicts/:id **[IMPLEMENTED]**
 Get details of a specific conflict.
 
 **Parameters:**
@@ -543,7 +543,7 @@ Initialize genesis allocation (can only be called once).
 }
 ```
 
-#### GET /v1/economics/deposits **[PARTIAL]**
+#### GET /v1/deposits **[PARTIAL]**
 Get deposits summary.
 
 **Response:**
@@ -555,7 +555,7 @@ Get deposits summary.
 }
 ```
 
-#### GET /v1/economics/deposit/:id **[PARTIAL]**
+#### GET /v1/deposits/:id **[PARTIAL]**
 Get deposit status for a message.
 
 **Parameters:**
@@ -575,7 +575,7 @@ Get deposit status for a message.
 
 ### Statistics & Monitoring
 
-#### GET /v1/statistics/detailed **[IMPLEMENTED]**
+#### GET /v1/statistics **[IMPLEMENTED]**
 Get detailed node statistics.
 
 **Response:**
@@ -608,7 +608,7 @@ Get detailed node statistics.
 }
 ```
 
-#### GET /metrics **[IMPLEMENTED]**
+#### GET /v1/metrics **[IMPLEMENTED]**
 Prometheus-compatible metrics endpoint.
 
 **Response:**
@@ -630,7 +630,7 @@ adic_peers_connected 5
 
 ### Advanced Metrics
 
-#### GET /v1/diversity/stats **[IMPLEMENTED]**
+#### GET /v1/diversity **[IMPLEMENTED]**
 Get diversity metrics across DAG axes.
 
 **Response:**
@@ -667,10 +667,10 @@ Get diversity metrics across DAG axes.
 
 **Example:**
 ```bash
-curl http://localhost:8080/v1/diversity/stats | jq '.'
+curl http://localhost:8080/v1/diversity | jq '.'
 ```
 
-#### GET /v1/energy/active **[IMPLEMENTED]**
+#### GET /v1/energy **[IMPLEMENTED]**
 Get active energy descent paths and metrics.
 
 **Response:**
@@ -694,7 +694,7 @@ Get active energy descent paths and metrics.
 
 **Example:**
 ```bash
-curl http://localhost:8080/v1/energy/active | jq '.'
+curl http://localhost:8080/v1/energy | jq '.'
 ```
 
 #### GET /v1/finality/kcore/metrics **[IMPLEMENTED]**
@@ -722,7 +722,7 @@ Get k-core finality metrics and thresholds.
 curl http://localhost:8080/v1/finality/kcore/metrics | jq '.'
 ```
 
-#### GET /v1/admissibility/rates **[IMPLEMENTED]**
+#### GET /v1/admissibility **[IMPLEMENTED]**
 Get admissibility check statistics and rates.
 
 **Response:**
@@ -757,12 +757,12 @@ Get admissibility check statistics and rates.
 
 **Example:**
 ```bash
-curl http://localhost:8080/v1/admissibility/rates | jq '.'
+curl http://localhost:8080/v1/admissibility | jq '.'
 ```
 
 ### Update System Endpoints
 
-#### GET /update/swarm **[IMPLEMENTED]**
+#### GET /v1/updates/swarm **[IMPLEMENTED]**
 Get real-time swarm-wide update statistics.
 
 **Response:**
@@ -788,7 +788,7 @@ Get real-time swarm-wide update statistics.
 }
 ```
 
-#### GET /update/status **[IMPLEMENTED]**
+#### GET /v1/updates/status **[IMPLEMENTED]**
 Get current node update status.
 
 **Response:**
@@ -804,7 +804,7 @@ Get current node update status.
 }
 ```
 
-#### POST /update/check **[IMPLEMENTED]**
+#### POST /v1/updates/check **[IMPLEMENTED]**
 Manually trigger an update check.
 
 **Response:**
@@ -818,7 +818,7 @@ Manually trigger an update check.
 }
 ```
 
-#### GET /update/progress **[IMPLEMENTED]**
+#### GET /v1/updates/progress **[IMPLEMENTED]**
 Get detailed update download progress.
 
 **Response:**
@@ -837,7 +837,7 @@ Get detailed update download progress.
 }
 ```
 
-#### POST /update/apply **[IMPLEMENTED]**
+#### POST /v1/updates/apply **[IMPLEMENTED]**
 Apply a downloaded update (restart required).
 
 **Authentication Required:** Yes (admin only)
@@ -955,7 +955,7 @@ For Explorer WebSocket documentation, see the Explorer API documentation.
 ### Submit a Message with cURL
 
 ```bash
-curl -X POST http://localhost:8080/submit \
+curl -X POST http://localhost:8080/v1/messages \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
@@ -973,7 +973,7 @@ curl -X POST http://localhost:8080/submit \
 ### Get Node Status
 
 ```bash
-curl http://localhost:8080/status | jq '.'
+curl http://localhost:8080/v1/status | jq '.'
 ```
 
 ### Check Balance
@@ -986,28 +986,17 @@ curl http://localhost:8080/v1/economics/balance/YOUR_ADDRESS | jq '.'
 
 #### Get Wallet Info
 ```bash
-curl http://localhost:8080/wallet/info | jq '.'
+curl http://localhost:8080/v1/wallets/self | jq '.'
 ```
 
 #### Check Wallet Balance
 ```bash
-curl http://localhost:8080/wallet/balance/ADDRESS | jq '.'
-```
-
-#### Transfer Tokens
-```bash
-curl -X POST http://localhost:8080/wallet/transfer \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "RECIPIENT_ADDRESS",
-    "amount": 100.0,
-    "memo": "Payment for services"
-  }' | jq '.'
+curl http://localhost:8080/v1/wallets/ADDRESS/balance | jq '.'
 ```
 
 #### Request from Faucet
 ```bash
-curl -X POST http://localhost:8080/wallet/faucet \
+curl -X POST http://localhost:8080/v1/wallets/faucet \
   -H "Content-Type: application/json" \
   -d '{
     "address": "YOUR_ADDRESS",
@@ -1017,7 +1006,7 @@ curl -X POST http://localhost:8080/wallet/faucet \
 
 #### Sign Message
 ```bash
-curl -X POST http://localhost:8080/wallet/sign \
+curl -X POST http://localhost:8080/v1/wallets/self/sign \
   -H "Content-Type: application/json" \
   -d '{
     "message": "Message to sign"
@@ -1026,12 +1015,18 @@ curl -X POST http://localhost:8080/wallet/sign \
 
 #### Get Transaction History
 ```bash
-curl http://localhost:8080/wallet/transactions/ADDRESS | jq '.'
+curl http://localhost:8080/v1/wallets/ADDRESS/transactions | jq '.'
 ```
+
+**Note:** The `/v1/wallets/:address/transactions` endpoint accepts addresses in both formats:
+- **Bech32 format** (recommended): `adic14ua43vrnw3pjm8x60fwgva3l2s0lnd3e39q6d0nujnr4fx469nhqhzuuff`
+- **Hex format**: `a72ea59cd73d08fad1bb0a6b1af2e1dd9c42a3b1e11d95fa731aa5f0b52fd7c1`
+
+The same applies to `/v1/wallets/:address/balance` endpoint.
 
 ### Wallet Registry
 
-#### POST /wallet/register **[IMPLEMENTED]**
+#### POST /v1/wallets/registry **[IMPLEMENTED]**
 Register a wallet with optional metadata.
 
 **Request Body:**
@@ -1056,7 +1051,7 @@ Register a wallet with optional metadata.
 
 **Example:**
 ```bash
-curl -X POST http://localhost:8080/wallet/register \
+curl -X POST http://localhost:8080/v1/wallets/registry \
   -H "Content-Type: application/json" \
   -d '{
     "address": "YOUR_ADDRESS",
@@ -1066,7 +1061,7 @@ curl -X POST http://localhost:8080/wallet/register \
   }' | jq '.'
 ```
 
-#### GET /wallet/registered **[IMPLEMENTED]**
+#### GET /v1/wallets/registry **[IMPLEMENTED]**
 Get list of all registered wallets.
 
 **Response:**
@@ -1087,10 +1082,10 @@ Get list of all registered wallets.
 
 **Example:**
 ```bash
-curl http://localhost:8080/wallet/registered | jq '.'
+curl http://localhost:8080/v1/wallets/registry | jq '.'
 ```
 
-#### GET /wallet/registry/stats **[IMPLEMENTED]**
+#### GET /v1/wallets/registry/stats **[IMPLEMENTED]**
 Get wallet registry statistics.
 
 **Response:**
@@ -1105,10 +1100,10 @@ Get wallet registry statistics.
 
 **Example:**
 ```bash
-curl http://localhost:8080/wallet/registry/stats | jq '.'
+curl http://localhost:8080/v1/wallets/registry/stats | jq '.'
 ```
 
-#### GET /wallet/info/:address **[IMPLEMENTED]**
+#### GET /v1/wallets/:address **[IMPLEMENTED]**
 Get detailed information about a specific wallet.
 
 **Parameters:**
@@ -1131,10 +1126,10 @@ Get detailed information about a specific wallet.
 
 **Example:**
 ```bash
-curl http://localhost:8080/wallet/info/YOUR_ADDRESS | jq '.'
+curl http://localhost:8080/v1/wallets/YOUR_ADDRESS | jq '.'
 ```
 
-#### POST /wallet/export **[IMPLEMENTED]**
+#### POST /v1/wallets/self/export **[IMPLEMENTED]**
 Export wallet data (encrypted).
 
 **Authentication Required:** Yes
@@ -1150,11 +1145,11 @@ Export wallet data (encrypted).
 
 **Example:**
 ```bash
-curl -X POST http://localhost:8080/wallet/export \
+curl -X POST http://localhost:8080/v1/wallets/self/export \
   -H "Authorization: Bearer YOUR_TOKEN" | jq '.'
 ```
 
-#### POST /wallet/import **[IMPLEMENTED]**
+#### POST /v1/wallets/self/import **[IMPLEMENTED]**
 Import wallet data from encrypted export.
 
 **Authentication Required:** Yes
@@ -1177,7 +1172,7 @@ Import wallet data from encrypted export.
 
 **Example:**
 ```bash
-curl -X POST http://localhost:8080/wallet/import \
+curl -X POST http://localhost:8080/v1/wallets/self/import \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
@@ -1188,7 +1183,7 @@ curl -X POST http://localhost:8080/wallet/import \
 ### Monitor Metrics
 
 ```bash
-curl http://localhost:8080/metrics | grep adic_messages
+curl http://localhost:8080/v1/metrics | grep adic_messages
 ```
 
 ## SDK Support

@@ -50,6 +50,7 @@ impl Default for GossipConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum GossipMessage {
     Message(AdicMessage),
     Tips(Vec<MessageId>),

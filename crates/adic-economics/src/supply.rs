@@ -4,6 +4,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 
+/// Callback for transfer events
+pub type TransferEventCallback = Arc<dyn Fn(TransferEvent) + Send + Sync>;
+
 #[derive(Debug, Clone)]
 pub struct SupplyMetrics {
     pub total_supply: AdicAmount,
@@ -32,6 +35,7 @@ impl Default for SupplyMetrics {
 pub struct TokenSupply {
     metrics: Arc<RwLock<SupplyMetrics>>,
     transfer_history: Arc<RwLock<Vec<TransferEvent>>>,
+    event_callback: Arc<RwLock<Option<TransferEventCallback>>>,
 }
 
 impl Default for TokenSupply {
@@ -45,6 +49,7 @@ impl TokenSupply {
         Self {
             metrics: Arc::new(RwLock::new(SupplyMetrics::default())),
             transfer_history: Arc::new(RwLock::new(Vec::new())),
+            event_callback: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -210,6 +215,23 @@ impl TokenSupply {
         metrics.clone()
     }
 
+    /// Set the event callback for transfer events
+    pub async fn set_event_callback(&self, callback: TransferEventCallback) {
+        let mut cb = self.event_callback.write().await;
+        *cb = Some(callback);
+    }
+
+    /// Emit a transfer event if callback is set
+    fn emit_transfer_event(&self, event: TransferEvent) {
+        let callback_clone = self.event_callback.clone();
+        tokio::spawn(async move {
+            let callback_guard = callback_clone.read().await;
+            if let Some(callback) = callback_guard.as_ref() {
+                callback(event);
+            }
+        });
+    }
+
     pub async fn add_transfer_event(&self, event: TransferEvent) {
         let mut history = self.transfer_history.write().await;
         let old_count = history.len();
@@ -233,6 +255,9 @@ impl TokenSupply {
             events_pruned = pruned,
             "📜 Transfer event recorded"
         );
+
+        // Emit event to node event bus via callback
+        self.emit_transfer_event(event);
     }
 
     pub async fn get_transfer_history(&self, limit: usize) -> Vec<TransferEvent> {

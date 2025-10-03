@@ -4,7 +4,7 @@
 
 **A Higher-Dimensional p-Adic Ultrametric Tangle with Feeless Consensus**
 
-[![Version](https://img.shields.io/badge/version-0.1.8-blue.svg)](https://github.com/IguanAI/adic-core/releases)
+[![Version](https://img.shields.io/badge/version-0.1.9-blue.svg)](https://github.com/IguanAI/adic-core/releases)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://github.com/IguanAI/adic-core/actions/workflows/ci.yml/badge.svg)](https://github.com/IguanAI/adic-core/actions)
@@ -183,6 +183,58 @@ curl http://localhost:8080/update/swarm
 ```
 
 > **Note**: For testnet participation, see [TESTNET.md](./TESTNET.md). For bootstrap node setup, see [BOOTSTRAP.md](./BOOTSTRAP.md).
+
+### Network & Firewall Configuration
+
+#### Required Ports
+
+ADIC nodes require the following ports to be accessible for proper network operation:
+
+| Port | Protocol | Purpose | Required For |
+|------|----------|---------|--------------|
+| 8080 | HTTP/WS | REST API, WebSocket & SSE streaming | External access |
+| 9000 | TCP | P2P gossip & message sync | Peer communication |
+| 9001 | QUIC/UDP | Fast P2P transport | Peer communication |
+
+#### Firewall Configuration
+
+**Ubuntu/Debian (ufw):**
+```bash
+sudo ufw allow 8080/tcp  # API & WebSocket
+sudo ufw allow 9000/tcp  # P2P TCP
+sudo ufw allow 9001/udp  # QUIC transport
+```
+
+**CentOS/RHEL (firewalld):**
+```bash
+sudo firewall-cmd --permanent --add-port=8080/tcp
+sudo firewall-cmd --permanent --add-port=9000/tcp
+sudo firewall-cmd --permanent --add-port=9001/udp
+sudo firewall-cmd --reload
+```
+
+**Docker:**
+Ports are automatically mapped in `docker-compose.yml`
+
+#### Custom Port Configuration
+
+```bash
+# Start with custom ports
+./target/release/adic start \
+  --api-port 8081 \
+  --port 9002 \
+  --quic-port 9003
+```
+
+Or configure in your config file:
+```toml
+[api]
+port = 8081
+
+[network]
+p2p_port = 9002
+quic_port = 9003
+```
 
 ### Verify Installation
 

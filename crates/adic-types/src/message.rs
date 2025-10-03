@@ -1,4 +1,4 @@
-use crate::{AdicFeatures, MessageId, PublicKey, Signature};
+use crate::{AdicFeatures, MessageId, PublicKey, Signature, ValueTransfer};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -61,7 +61,12 @@ pub struct AdicMessage {
     pub meta: AdicMeta,
     pub proposer_pk: PublicKey,
     pub signature: Signature,
-    pub payload: Vec<u8>,
+
+    /// Optional value transfer - when present, this message transfers ADIC tokens
+    pub transfer: Option<ValueTransfer>,
+
+    /// Arbitrary data payload (renamed from payload for clarity)
+    pub data: Vec<u8>,
 }
 
 impl AdicMessage {
@@ -70,7 +75,7 @@ impl AdicMessage {
         features: AdicFeatures,
         meta: AdicMeta,
         proposer_pk: PublicKey,
-        payload: Vec<u8>,
+        data: Vec<u8>,
     ) -> Self {
         let mut msg = Self {
             id: MessageId::from_bytes([0; 32]),
@@ -79,11 +84,46 @@ impl AdicMessage {
             meta,
             proposer_pk,
             signature: Signature::empty(),
-            payload,
+            transfer: None,
+            data,
         };
 
         msg.id = msg.compute_id();
         msg
+    }
+
+    /// Create a new message with a value transfer
+    pub fn new_with_transfer(
+        parents: Vec<MessageId>,
+        features: AdicFeatures,
+        meta: AdicMeta,
+        proposer_pk: PublicKey,
+        transfer: ValueTransfer,
+        data: Vec<u8>,
+    ) -> Self {
+        let mut msg = Self {
+            id: MessageId::from_bytes([0; 32]),
+            parents,
+            features,
+            meta,
+            proposer_pk,
+            signature: Signature::empty(),
+            transfer: Some(transfer),
+            data,
+        };
+
+        msg.id = msg.compute_id();
+        msg
+    }
+
+    /// Check if this message includes a value transfer
+    pub fn has_value_transfer(&self) -> bool {
+        self.transfer.is_some()
+    }
+
+    /// Get the transfer if present
+    pub fn get_transfer(&self) -> Option<&ValueTransfer> {
+        self.transfer.as_ref()
     }
 
     pub fn compute_id(&self) -> MessageId {
@@ -96,7 +136,13 @@ impl AdicMessage {
         data.extend_from_slice(&serde_json::to_vec(&self.features).unwrap());
         data.extend_from_slice(&serde_json::to_vec(&self.meta).unwrap());
         data.extend_from_slice(self.proposer_pk.as_bytes());
-        data.extend_from_slice(&self.payload);
+
+        // Include transfer data in ID computation if present
+        if let Some(ref transfer) = self.transfer {
+            data.extend_from_slice(&transfer.to_bytes());
+        }
+
+        data.extend_from_slice(&self.data);
 
         MessageId::new(&data)
     }
@@ -132,8 +178,13 @@ impl AdicMessage {
         // Include proposer public key
         data.extend_from_slice(self.proposer_pk.as_bytes());
 
-        // Include payload
-        data.extend_from_slice(&self.payload);
+        // Include transfer data if present
+        if let Some(ref transfer) = self.transfer {
+            data.extend_from_slice(&transfer.to_bytes());
+        }
+
+        // Include data payload
+        data.extend_from_slice(&self.data);
 
         data
     }
@@ -151,13 +202,14 @@ mod tests {
         let features = AdicFeatures::new(vec![phi]);
         let meta = AdicMeta::new(Utc::now());
         let pk = PublicKey::from_bytes([0; 32]);
-        let payload = b"test payload".to_vec();
+        let data = b"test payload".to_vec();
 
-        let msg = AdicMessage::new(parents.clone(), features, meta, pk, payload);
+        let msg = AdicMessage::new(parents.clone(), features, meta, pk, data);
 
         assert_eq!(msg.parent_count(), 2);
         assert!(!msg.is_genesis());
         assert!(msg.verify_id());
+        assert!(!msg.has_value_transfer());
     }
 
     #[test]

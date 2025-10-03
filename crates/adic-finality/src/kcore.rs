@@ -35,15 +35,23 @@ pub struct KCoreAnalyzer {
     min_depth: u32,
     min_diversity: usize,
     min_reputation: f64,
+    rho: Vec<u32>,
 }
 
 impl KCoreAnalyzer {
-    pub fn new(k: usize, min_depth: u32, min_diversity: usize, min_reputation: f64) -> Self {
+    pub fn new(
+        k: usize,
+        min_depth: u32,
+        min_diversity: usize,
+        min_reputation: f64,
+        rho: Vec<u32>,
+    ) -> Self {
         Self {
             k,
             min_depth,
             min_diversity,
             min_reputation,
+            rho,
         }
     }
 
@@ -213,7 +221,10 @@ impl KCoreAnalyzer {
                 total_reputation += reputation.get_reputation(&msg.proposer_pk).await;
 
                 for axis_phi in &msg.features.phi {
-                    let ball_id = axis_phi.qp_digits.ball_id(3); // TODO: Use radius from params
+                    // Use radius from params for this axis
+                    let axis_idx = axis_phi.axis.0 as usize;
+                    let radius = self.rho.get(axis_idx).copied().unwrap_or(2) as usize;
+                    let ball_id = axis_phi.qp_digits.ball_id(radius);
                     balls_per_axis
                         .entry(axis_phi.axis.0)
                         .or_default()

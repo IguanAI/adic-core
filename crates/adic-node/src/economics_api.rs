@@ -80,13 +80,13 @@ pub struct AddressQuery {
 
 pub fn economics_routes(state: EconomicsApiState) -> Router {
     Router::new()
-        .route("/v1/economics/supply", get(get_supply))
-        .route("/v1/economics/balance/:address", get(get_balance))
-        .route("/v1/economics/balance", get(get_balance_query))
-        .route("/v1/economics/emissions", get(get_emissions))
-        .route("/v1/economics/treasury", get(get_treasury))
-        .route("/v1/economics/genesis", get(get_genesis))
-        .route("/v1/economics/initialize", post(initialize_genesis))
+        .route("/economics/supply", get(get_supply))
+        .route("/economics/balance/:address", get(get_balance))
+        .route("/economics/balance", get(get_balance_query))
+        .route("/economics/emissions", get(get_emissions))
+        .route("/economics/treasury", get(get_treasury))
+        .route("/economics/genesis", get(get_genesis))
+        .route("/economics/initialize", post(initialize_genesis))
         .with_state(Arc::new(state))
 }
 

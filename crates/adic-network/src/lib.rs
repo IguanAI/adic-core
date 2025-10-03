@@ -805,6 +805,17 @@ impl NetworkEngine {
                         }
 
                         if !buffer.is_empty() {
+                            // Update peer stats to keep peer alive
+                            network
+                                .peer_manager
+                                .update_peer_stats(
+                                    &remote_peer_id,
+                                    false,
+                                    buffer.len() as u64,
+                                    None,
+                                )
+                                .await;
+
                             // Try to deserialize as NetworkMessage first, fallback to AdicMessage for backward compatibility
                             if let Ok(network_msg) =
                                 serde_json::from_slice::<NetworkMessage>(&buffer)
@@ -1424,6 +1435,13 @@ impl NetworkEngine {
                     }
                 }
 
+                // Start receivers for any pending bootstrap connections
+                let pending_connections = discovery.take_pending_bootstrap_connections().await;
+                for (peer_id, connection) in pending_connections {
+                    info!("Starting QUIC receiver for bootstrap peer {}", peer_id);
+                    network.start_quic_receiver(connection, peer_id).await;
+                }
+
                 // Cleanup stale discovered peers
                 discovery.cleanup_stale_peers().await;
 
@@ -1632,6 +1650,12 @@ impl NetworkEngine {
                     stream.finish().map_err(|e| {
                         AdicError::Network(format!("Failed to finish stream: {}", e))
                     })?;
+
+                    // Update peer stats to keep peer alive
+                    self.peer_manager
+                        .update_peer_stats(&peer, true, data.len() as u64, None)
+                        .await;
+
                     debug!("Sent sync request to peer {}", peer);
                     Ok(())
                 }
@@ -1672,6 +1696,12 @@ impl NetworkEngine {
                     stream.finish().map_err(|e| {
                         AdicError::Network(format!("Failed to finish stream: {}", e))
                     })?;
+
+                    // Update peer stats to keep peer alive
+                    self.peer_manager
+                        .update_peer_stats(&peer, true, data.len() as u64, None)
+                        .await;
+
                     debug!("Sent sync response to peer {}", peer);
                     Ok(())
                 }
@@ -1780,6 +1810,10 @@ impl NetworkEngine {
 
     pub fn peer_manager(&self) -> &PeerManager {
         &self.peer_manager
+    }
+
+    pub fn state_sync(&self) -> &StateSync {
+        &self.state_sync
     }
 
     pub fn router(&self) -> &HypertangleRouter {
@@ -1933,9 +1967,16 @@ mod tests {
             ..Default::default()
         };
 
-        let network = NetworkEngine::new(config, keypair, storage, consensus, finality)
-            .await
-            .unwrap();
+        // Try to create network engine, skip test if port is unavailable
+        let network = match NetworkEngine::new(config, keypair, storage, consensus, finality).await
+        {
+            Ok(n) => n,
+            Err(e) if e.to_string().contains("Address already in use") => {
+                eprintln!("Skipping test due to port conflict: {}", e);
+                return;
+            }
+            Err(e) => panic!("Unexpected error: {}", e),
+        };
 
         // Test IPv4 address
         let addr_ipv4: Multiaddr = "/ip4/127.0.0.1/tcp/9000".parse().unwrap();

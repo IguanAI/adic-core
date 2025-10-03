@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ADIC WebSocket Event Stream - Live Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+
+        .status.connected {
+            background: #10b981;
+            color: white;
+        }
+
+        .status.disconnected {
+            background: #ef4444;
+            color: white;
+        }
+
+        .status.connecting {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+
+        .controls label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .controls input, .controls select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e5e7eb;
+            border-radius: 5px;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+
+        .controls button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-right: 10px;
+            transition: background 0.3s;
+        }
+
+        .controls button:hover {
+            background: #5568d3;
+        }
+
+        .controls button:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .stat-card h3 {
+            color: #6b7280;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .stat-card .value {
+            font-size: 32px;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .events-container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .events-container h2 {
+            color: #333;
+            margin-bottom: 15px;
+            position: sticky;
+            top: 0;
+            background: white;
+            padding-bottom: 10px;
+        }
+
+        .event {
+            padding: 15px;
+            border-left: 4px solid #667eea;
+            background: #f9fafb;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        .event-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .event-type {
+            font-weight: 600;
+            color: #333;
+            font-size: 16px;
+        }
+
+        .event-time {
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        .event-data {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #4b5563;
+            background: white;
+            padding: 10px;
+            border-radius: 3px;
+            overflow-x: auto;
+        }
+
+        .priority-high { border-left-color: #ef4444; }
+        .priority-medium { border-left-color: #f59e0b; }
+        .priority-low { border-left-color: #10b981; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌐 ADIC Real-Time Event Stream</h1>
+            <div id="status" class="status disconnected">Disconnected</div>
+        </div>
+
+        <div class="controls">
+            <label>Node URL:</label>
+            <input type="text" id="nodeUrl" value="ws://localhost:9121" placeholder="ws://localhost:9121">
+
+            <label>Event Filter:</label>
+            <input type="text" id="eventFilter" value="all" placeholder="all or TipsUpdated,MessageFinalized">
+
+            <label>Priority Filter:</label>
+            <select id="priorityFilter">
+                <option value="all">All Priorities</option>
+                <option value="high">High Priority Only</option>
+                <option value="medium">Medium Priority Only</option>
+                <option value="low">Low Priority Only</option>
+            </select>
+
+            <button id="connectBtn" onclick="connect()">Connect</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+            <button onclick="clearEvents()">Clear Events</button>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <h3>Total Events</h3>
+                <div class="value" id="totalEvents">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>Events/Min</h3>
+                <div class="value" id="eventsPerMin">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>High Priority</h3>
+                <div class="value" id="highPriority">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>Medium Priority</h3>
+                <div class="value" id="mediumPriority">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>Low Priority</h3>
+                <div class="value" id="lowPriority">0</div>
+            </div>
+        </div>
+
+        <div class="events-container">
+            <h2>Live Events</h2>
+            <div id="events"></div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let eventCount = 0;
+        let priorityCount = { high: 0, medium: 0, low: 0 };
+        let eventTimestamps = [];
+
+        const eventPriorities = {
+            'TipsUpdated': 'high',
+            'MessageFinalized': 'high',
+            'MessageAdded': 'high',
+            'DiversityUpdated': 'medium',
+            'EnergyUpdated': 'medium',
+            'KCoreUpdated': 'medium',
+            'AdmissibilityUpdated': 'low',
+            'EconomicsUpdated': 'low',
+        };
+
+        function updateStatus(status, text) {
+            const statusEl = document.getElementById('status');
+            statusEl.className = `status ${status}`;
+            statusEl.textContent = text;
+        }
+
+        function updateStats() {
+            document.getElementById('totalEvents').textContent = eventCount;
+            document.getElementById('highPriority').textContent = priorityCount.high;
+            document.getElementById('mediumPriority').textContent = priorityCount.medium;
+            document.getElementById('lowPriority').textContent = priorityCount.low;
+
+            // Calculate events per minute
+            const now = Date.now();
+            const oneMinuteAgo = now - 60000;
+            eventTimestamps = eventTimestamps.filter(t => t > oneMinuteAgo);
+            document.getElementById('eventsPerMin').textContent = eventTimestamps.length;
+        }
+
+        function connect() {
+            const nodeUrl = document.getElementById('nodeUrl').value;
+            const eventFilter = document.getElementById('eventFilter').value;
+            const priorityFilter = document.getElementById('priorityFilter').value;
+
+            const wsUrl = `${nodeUrl}/v1/ws/events?events=${eventFilter}&priority=${priorityFilter}`;
+
+            updateStatus('connecting', 'Connecting...');
+            document.getElementById('connectBtn').disabled = true;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                updateStatus('connected', 'Connected');
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+                addSystemMessage('Connected to event stream');
+            };
+
+            ws.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+
+                if (message.type === 'Event') {
+                    handleEvent(message.event);
+                } else if (message.type === 'Subscribed') {
+                    addSystemMessage(`Subscribed to events: ${message.events.join(', ')}`);
+                } else if (message.type === 'Error') {
+                    addSystemMessage(`Error: ${message.message}`, 'error');
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                addSystemMessage('Connection error', 'error');
+            };
+
+            ws.onclose = () => {
+                updateStatus('disconnected', 'Disconnected');
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('disconnectBtn').disabled = true;
+                addSystemMessage('Connection closed');
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function handleEvent(event) {
+            eventCount++;
+            eventTimestamps.push(Date.now());
+
+            const priority = eventPriorities[event.type] || 'medium';
+            priorityCount[priority]++;
+
+            updateStats();
+            displayEvent(event, priority);
+        }
+
+        function displayEvent(event, priority) {
+            const eventsContainer = document.getElementById('events');
+
+            const eventEl = document.createElement('div');
+            eventEl.className = `event priority-${priority}`;
+
+            const time = new Date(event.timestamp).toLocaleTimeString();
+
+            eventEl.innerHTML = `
+                <div class="event-header">
+                    <span class="event-type">${event.type}</span>
+                    <span class="event-time">${time}</span>
+                </div>
+                <div class="event-data">${JSON.stringify(event, null, 2)}</div>
+            `;
+
+            eventsContainer.insertBefore(eventEl, eventsContainer.firstChild);
+
+            // Keep only last 50 events
+            while (eventsContainer.children.length > 50) {
+                eventsContainer.removeChild(eventsContainer.lastChild);
+            }
+        }
+
+        function addSystemMessage(message, type = 'info') {
+            const eventsContainer = document.getElementById('events');
+
+            const eventEl = document.createElement('div');
+            eventEl.className = `event priority-${type === 'error' ? 'high' : 'low'}`;
+
+            eventEl.innerHTML = `
+                <div class="event-header">
+                    <span class="event-type">System</span>
+                    <span class="event-time">${new Date().toLocaleTimeString()}</span>
+                </div>
+                <div class="event-data">${message}</div>
+            `;
+
+            eventsContainer.insertBefore(eventEl, eventsContainer.firstChild);
+        }
+
+        function clearEvents() {
+            document.getElementById('events').innerHTML = '';
+        }
+
+        // Update events per minute every second
+        setInterval(updateStats, 1000);
+    </script>
+</body>
+</html>

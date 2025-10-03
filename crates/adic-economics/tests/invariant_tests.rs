@@ -16,12 +16,11 @@ async fn test_core_supply_invariants() {
     // Initialize genesis
     economics.initialize_genesis().await.unwrap();
 
-    // Invariant 2: Genesis supply is exactly as specified
-    assert_eq!(
-        economics.get_total_supply().await,
-        AdicAmount::GENESIS_SUPPLY
-    );
-    println!("✓ Invariant 2: Genesis supply is exact");
+    // Invariant 2: Genesis supply + faucet allocation
+    let expected_total =
+        AdicAmount::GENESIS_SUPPLY.saturating_add(AdicAmount::from_adic(10_000_000.0));
+    assert_eq!(economics.get_total_supply().await, expected_total);
+    println!("✓ Invariant 2: Genesis supply + faucet is exact");
 
     // Invariant 3: Total supply never exceeds maximum
     let mut total = economics.get_total_supply().await;
@@ -452,11 +451,19 @@ async fn test_conservation_laws() {
 
     println!("\n=== Testing Conservation Laws ===");
 
-    // Track all accounts
+    // Track all accounts (including faucet)
+    let faucet_addr_bytes: [u8; 32] =
+        hex::decode("b077b3c71b7c3ba568c56a5fdd317847611bab2d1bf67e8079cb515c1e9eb905")
+            .expect("Invalid faucet hex")
+            .try_into()
+            .expect("Invalid faucet address length");
+    let faucet_addr = AccountAddress::from_bytes(faucet_addr_bytes);
+
     let mut all_accounts = vec![
         AccountAddress::treasury(),
         AccountAddress::liquidity_pool(),
         AccountAddress::genesis_pool(),
+        faucet_addr,
     ];
 
     // Create test accounts

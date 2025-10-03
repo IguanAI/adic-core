@@ -82,7 +82,7 @@ async fn test_storage_persistence_and_recovery() {
             assert!(recovered_msg.is_some(), "Message {} should be recovered", i);
 
             if let Some(msg) = recovered_msg {
-                let content = String::from_utf8_lossy(&msg.payload);
+                let content = String::from_utf8_lossy(&msg.data);
                 println!("Recovered message {}: {}", i, content);
                 assert_eq!(content, format!("Test message {}", i));
             }
@@ -194,7 +194,7 @@ async fn test_storage_snapshot_and_restore() {
         );
 
         if let Some(msg) = msg {
-            let content = String::from_utf8_lossy(&msg.payload);
+            let content = String::from_utf8_lossy(&msg.data);
             assert_eq!(content, format!("Snapshot test {}", i));
             println!("Restored message {}: {}", i, content);
         }

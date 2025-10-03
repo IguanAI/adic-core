@@ -48,7 +48,8 @@ proptest! {
 
             economics.initialize_genesis().await.unwrap();
 
-            let mut total_minted = AdicAmount::GENESIS_SUPPLY;
+            // Genesis supply + 10M faucet allocation
+            let mut total_minted = AdicAmount::GENESIS_SUPPLY.saturating_add(AdicAmount::from_adic(10_000_000.0));
 
             for amount in amounts {
                 if economics.supply.can_mint(amount).await {

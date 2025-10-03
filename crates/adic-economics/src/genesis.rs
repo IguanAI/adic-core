@@ -1,8 +1,10 @@
 use crate::balance::BalanceManager;
+use crate::storage::TransactionRecord;
 use crate::supply::TokenSupply;
 use crate::treasury::TreasuryManager;
 use crate::types::{AccountAddress, AdicAmount, AllocationConfig, TransferEvent, TransferReason};
 use anyhow::{bail, Result};
+use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -114,6 +116,19 @@ impl GenesisAllocator {
             )
             .await?;
 
+        // Record genesis transaction
+        let treasury_tx = TransactionRecord {
+            from: AccountAddress::from_bytes([0; 32]),
+            to: treasury_addr,
+            amount: treasury_amount,
+            timestamp: DateTime::from_timestamp(timestamp, 0).unwrap_or_else(Utc::now),
+            tx_hash: "genesis_treasury".to_string(),
+            status: "confirmed".to_string(),
+        };
+        if let Err(e) = self.balances.record_transaction(treasury_tx).await {
+            info!("Note: Genesis transaction record failed: {}", e);
+        }
+
         let treasury_event = TransferEvent {
             from: AccountAddress::from_bytes([0; 32]),
             to: treasury_addr,
@@ -131,6 +146,19 @@ impl GenesisAllocator {
             .credit(liquidity_addr, liquidity_amount)
             .await?;
         self.supply.update_liquidity_balance(liquidity_amount).await;
+
+        // Record genesis transaction
+        let liquidity_tx = TransactionRecord {
+            from: AccountAddress::from_bytes([0; 32]),
+            to: liquidity_addr,
+            amount: liquidity_amount,
+            timestamp: DateTime::from_timestamp(timestamp, 0).unwrap_or_else(Utc::now),
+            tx_hash: "genesis_liquidity".to_string(),
+            status: "confirmed".to_string(),
+        };
+        if let Err(e) = self.balances.record_transaction(liquidity_tx).await {
+            info!("Note: Genesis transaction record failed: {}", e);
+        }
 
         let liquidity_event = TransferEvent {
             from: AccountAddress::from_bytes([0; 32]),
@@ -151,6 +179,19 @@ impl GenesisAllocator {
         self.balances.credit(genesis_addr, genesis_amount).await?;
         self.supply.update_genesis_balance(genesis_amount).await;
 
+        // Record genesis transaction
+        let genesis_tx = TransactionRecord {
+            from: AccountAddress::from_bytes([0; 32]),
+            to: genesis_addr,
+            amount: genesis_amount,
+            timestamp: DateTime::from_timestamp(timestamp, 0).unwrap_or_else(Utc::now),
+            tx_hash: "genesis_pool".to_string(),
+            status: "confirmed".to_string(),
+        };
+        if let Err(e) = self.balances.record_transaction(genesis_tx).await {
+            info!("Note: Genesis transaction record failed: {}", e);
+        }
+
         let genesis_event = TransferEvent {
             from: AccountAddress::from_bytes([0; 32]),
             to: genesis_addr,
@@ -162,7 +203,46 @@ impl GenesisAllocator {
 
         info!("Allocated {} to Genesis Pool", genesis_amount);
 
-        // Update circulating supply to reflect allocated tokens
+        // Allocate to faucet address (bootstrap1 node wallet)
+        // Faucet address: b077b3c71b7c3ba568c56a5fdd317847611bab2d1bf67e8079cb515c1e9eb905
+        let faucet_amount = AdicAmount::from_adic(10_000_000.0); // 10M ADIC for testnet faucet
+        let faucet_addr_bytes: [u8; 32] =
+            hex::decode("b077b3c71b7c3ba568c56a5fdd317847611bab2d1bf67e8079cb515c1e9eb905")
+                .expect("Invalid faucet hex")
+                .try_into()
+                .expect("Invalid faucet address length");
+        let faucet_addr = AccountAddress::from_bytes(faucet_addr_bytes);
+
+        // Mint faucet amount to increase total supply
+        self.supply.mint_emission(faucet_amount).await?;
+
+        self.balances.credit(faucet_addr, faucet_amount).await?;
+
+        // Record genesis transaction
+        let faucet_tx = TransactionRecord {
+            from: AccountAddress::from_bytes([0; 32]),
+            to: faucet_addr,
+            amount: faucet_amount,
+            timestamp: DateTime::from_timestamp(timestamp, 0).unwrap_or_else(Utc::now),
+            tx_hash: "genesis_faucet".to_string(),
+            status: "confirmed".to_string(),
+        };
+        if let Err(e) = self.balances.record_transaction(faucet_tx).await {
+            info!("Note: Genesis transaction record failed: {}", e);
+        }
+
+        let faucet_event = TransferEvent {
+            from: AccountAddress::from_bytes([0; 32]),
+            to: faucet_addr,
+            amount: faucet_amount,
+            timestamp,
+            reason: TransferReason::Genesis,
+        };
+        self.supply.add_transfer_event(faucet_event).await;
+
+        info!("Allocated {} to Faucet", faucet_amount);
+
+        // Update circulating supply to reflect allocated tokens (genesis allocations only, faucet was minted)
         // Note: In production, some tokens might be locked, but for testing we consider them circulating
         self.supply.update_circulating_supply(allocated).await;
 

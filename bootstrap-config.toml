@@ -61,6 +61,7 @@ genesis_identities = ["g0", "g1", "g2", "g3"]
 
 # Genesis allocations: [address_hex, amount_in_adic]
 # Total genesis mint: 300,400,000 ADIC per ADIC-DAG paper Section 6.2
+# Note: 10M ADIC faucet is minted separately by economics layer (not in genesis config)
 allocations = [
     ["0100000000000000000000000000000000000000000000000000000000000000", 60_000_000],    # Treasury - 20%
     ["c1403f4763367340178077be2ab3144af2b9065901232335f960a9910bb9ab1b", 45_000_000],    # Liquidity - 15%

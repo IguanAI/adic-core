@@ -14,7 +14,7 @@ pub use deposit::{
     Deposit, DepositManager, DepositState, DepositStats, DepositStatus, DEFAULT_DEPOSIT_AMOUNT,
 };
 pub use energy_descent::{EnergyDescentTracker, EnergyMetrics};
-pub use reputation::ReputationTracker;
+pub use reputation::{ReputationChangeEvent, ReputationTracker};
 pub use validation::{MessageValidator, ValidationResult};
 
 use adic_storage::StorageEngine;

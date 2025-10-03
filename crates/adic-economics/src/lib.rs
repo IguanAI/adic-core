@@ -11,7 +11,7 @@ pub use balance::BalanceManager;
 pub use emission::{EmissionController, EmissionMetrics};
 pub use genesis::{GenesisAllocation, GenesisAllocator};
 pub use storage::TransactionRecord;
-pub use supply::{SupplyMetrics, TokenSupply};
+pub use supply::{SupplyMetrics, TokenSupply, TransferEventCallback};
 pub use treasury::{TreasuryManager, TreasuryProposal};
 pub use types::{AccountAddress, AdicAmount, AllocationConfig, EmissionSchedule};
 

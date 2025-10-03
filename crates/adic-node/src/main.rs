@@ -6,13 +6,16 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod api;
+mod api_sse;
 mod api_wallet;
 mod api_wallet_tx;
+mod api_ws;
 mod auth;
 mod cli;
 mod config;
 mod copyover;
 mod economics_api;
+mod events;
 mod genesis;
 mod logging;
 mod metrics;
