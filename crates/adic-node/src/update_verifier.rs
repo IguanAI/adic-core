@@ -7,7 +7,7 @@ use tracing::{debug, info};
 
 /// Update verification keys - these would be the official ADIC signing keys
 const ADIC_UPDATE_PUBLIC_KEY: &str =
-    "9f7b0675feb9e4e5a5c5b8f5a5b5c5d5e5f5061727374757677787980818283";
+    "879fecaf2c8133900ab544cc8c5c26c9f739cab6e49ad80358de738899fcbe46";
 
 /// Verifies binary updates using Ed25519 signatures
 pub struct UpdateVerifier {

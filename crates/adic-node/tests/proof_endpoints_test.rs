@@ -2,8 +2,7 @@ use adic_crypto::Keypair;
 use adic_math::ball_id;
 use adic_storage::{store::BackendType, StorageConfig, StorageEngine};
 use adic_types::{
-    AdicFeatures, AdicMessage, AdicMeta, AxisPhi, QpDigits, DEFAULT_P,
-    DEFAULT_PRECISION,
+    AdicFeatures, AdicMessage, AdicMeta, AxisPhi, QpDigits, DEFAULT_P, DEFAULT_PRECISION,
 };
 use chrono::Utc;
 use std::sync::Arc;

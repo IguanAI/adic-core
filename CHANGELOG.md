@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2025-10-04
+
+### Changed
+- **Code Quality**: Improved code formatting and linting compliance
+  - All code formatted with `cargo fmt --all`
+  - Zero clippy warnings across all workspace crates
+  - Enhanced health check endpoint readability in api.rs
+
+### Fixed
+- **Storage Benchmarks**: Updated benchmark suite for accuracy
+  - Improved test data generation in storage_bench.rs
+  - Better performance measurement accuracy
+
+- **API Improvements**: Minor code quality improvements
+  - Cleaner conditional logic in health endpoint
+  - Improved code consistency
+
+- **Update Verifier**: Enhanced update verification logic
+  - Updated verifier implementation for better reliability
+
+- **Test Coverage**: Improved proof endpoint testing
+  - Enhanced test coverage for membership proof endpoints
+  - Better validation of proof generation and verification
+
+### Technical Details
+- **Phase 0 Refinement**: This release focuses on code quality and polish
+  - Aligns with ADIC-DAG paper Section 9.1 (Phase 0 - Prototype)
+  - Preparation for Phase 1 (Beta) development
+  - All pending changes committed and tested
+
 ## [0.1.10] - 2025-10-03
 
 ### Added

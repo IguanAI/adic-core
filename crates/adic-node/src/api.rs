@@ -404,10 +404,9 @@ async fn health(State(state): State<Arc<AppState>>) -> Response {
         "healthy"
     } else {
         // Check if any components are unhealthy vs degraded
-        let has_unhealthy = components.values().any(|v| {
-            v.get("status")
-                .and_then(|s| s.as_str()) == Some("unhealthy")
-        });
+        let has_unhealthy = components
+            .values()
+            .any(|v| v.get("status").and_then(|s| s.as_str()) == Some("unhealthy"));
 
         if has_unhealthy {
             "unhealthy"

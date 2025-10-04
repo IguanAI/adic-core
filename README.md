@@ -4,7 +4,7 @@
 
 **A Higher-Dimensional p-Adic Ultrametric Tangle with Feeless Consensus**
 
-[![Version](https://img.shields.io/badge/version-0.1.9-blue.svg)](https://github.com/IguanAI/adic-core/releases)
+[![Version](https://img.shields.io/badge/version-0.1.11-blue.svg)](https://github.com/IguanAI/adic-core/releases)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://github.com/IguanAI/adic-core/actions/workflows/ci.yml/badge.svg)](https://github.com/IguanAI/adic-core/actions)

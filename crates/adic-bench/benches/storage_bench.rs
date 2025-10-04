@@ -96,8 +96,7 @@ fn bench_storage_reads(c: &mut Criterion) {
             });
 
             b.iter(|| {
-                runtime
-                    .block_on(async { black_box(storage.get_message(&msg_id).await.unwrap()) })
+                runtime.block_on(async { black_box(storage.get_message(&msg_id).await.unwrap()) })
             });
         },
     );
