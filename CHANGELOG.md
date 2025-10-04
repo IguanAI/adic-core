@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2025-10-03
+
+### Added
+- **P-adic Ball Membership Proofs**: Complete implementation of proof generation and verification
+  - `POST /v1/proofs/membership` - Generate cryptographic proofs of ball membership
+  - `POST /v1/proofs/verify` - Verify ball membership proofs
+  - Proofs based on p-adic features and ball ID computation
+  - Support for multiple axes and varying radii
+  - Comprehensive test suite in `proof_endpoints_test.rs`
+
+- **Storage Benchmarks**: New performance benchmarking suite for storage operations
+  - `storage_bench.rs` with benchmarks for write/read operations
+  - Time-range query performance testing
+  - Ball query performance measurement
+  - Bulk operations benchmarking
+  - Support for multiple backend types
+
+### Changed
+- **API Enhancements**: Removed placeholder implementations
+  - `/v1/balls/:axis/:radius` → `/v1/balls/:axis/:radius/:center` with hex-encoded center parameter
+  - Removed `[PARTIAL]` markers from `/v1/messages/range` and `/v1/messages/since/:id`
+  - Removed `[PARTIAL]` markers from `/v1/security/score/:id`
+  - Removed `[PARTIAL]` markers from `/v1/deposits` endpoints
+  - All endpoints now fully implemented and documented
+
+### Fixed
+- **Critical Security Vulnerabilities**:
+  - Updated `prometheus` 0.13 → 0.14 (resolved protobuf 2.28.0 → 3.7.2, RUSTSEC-2024-0437)
+  - Updated `libp2p` 0.54 → 0.56 (removed ring 0.16.20 vulnerability, RUSTSEC-2025-0009)
+  - Fixed libp2p 0.56 breaking changes in gossipsub API (unsubscribe returns bool)
+  - Fixed prometheus 0.14 breaking changes in metrics label types (requires String references)
+
+### Security
+- **Dependency Audit**: All known security vulnerabilities resolved
+  - protobuf uncontrolled recursion vulnerability patched
+  - ring AES panic vulnerability removed from dependency tree
+  - No remaining security advisories
+
+### Changed
+- **Default Parameters**: Updated `AdicParams::default()` to use production values from paper Section 1.2
+  - `k: 3` → `k: 20`
+  - `depth_star: 2` → `depth_star: 12`
+  - Added new `AdicParams::test()` method with lowered values for testing
+
+- **Trust Function**: Completed implementation to match paper Section 3.3 formula
+  - Integrated age decay term: `trust(y) = R(y)^α · (1 + age(y))^{-β}`
+  - Added `age` field to `ParentCandidate` struct
+  - Message age calculated from timestamp in seconds
+  - Updated `compute_weight()` to call `compute_trust_with_age()`
+
+- **Tests**: Added 2 new tests for age decay behavior
+  - `test_age_decay_in_weight()` - Age decay verification
+  - `test_trust_with_age()` - Trust formula validation
+
 ## [0.1.9] - 2025-10-03
 
 ### Added

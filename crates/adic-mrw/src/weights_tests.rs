@@ -7,7 +7,7 @@ mod tests {
         let calc = WeightCalculator::new(1.5, 0.8, 2.0);
         // Test that it was created (we can't access private fields)
         // Test through computation instead
-        let weight = calc.compute_weight(1.0, 1.0, 0.0);
+        let weight = calc.compute_weight(1.0, 1.0, 0.0, 0.0);
         assert!(weight > 0.0);
     }
 
@@ -15,19 +15,19 @@ mod tests {
     fn test_compute_weight() {
         let calc = WeightCalculator::new(1.0, 0.5, 1.0);
 
-        let weight = calc.compute_weight(0.5, 2.0, 0.1);
+        let weight = calc.compute_weight(0.5, 2.0, 0.1, 0.0);
         assert!(weight > 0.0);
 
         // Higher proximity should give higher weight
-        let weight_high_prox = calc.compute_weight(1.0, 2.0, 0.1);
+        let weight_high_prox = calc.compute_weight(1.0, 2.0, 0.1, 0.0);
         assert!(weight_high_prox > weight);
 
         // Higher reputation should give higher weight
-        let weight_high_rep = calc.compute_weight(0.5, 5.0, 0.1);
+        let weight_high_rep = calc.compute_weight(0.5, 5.0, 0.1, 0.0);
         assert!(weight_high_rep > weight);
 
         // Higher conflict penalty should give lower weight
-        let weight_high_penalty = calc.compute_weight(0.5, 2.0, 1.0);
+        let weight_high_penalty = calc.compute_weight(0.5, 2.0, 1.0, 0.0);
         assert!(weight_high_penalty < weight);
     }
 
@@ -125,7 +125,7 @@ mod tests {
         let calc = WeightCalculator::new(0.0, 0.0, 0.0);
 
         // With lambda=0, mu=0: weight = exp(0 * proximity * trust - 0 * conflict) = e^0 = 1.0
-        let weight = calc.compute_weight(10.0, 10.0, 10.0);
+        let weight = calc.compute_weight(10.0, 10.0, 10.0, 0.0);
         assert_eq!(weight, 1.0);
 
         let detailed = calc.compute_detailed_weights(10.0, 10.0, 10.0);
@@ -142,15 +142,15 @@ mod tests {
         let calc = WeightCalculator::new(10.0, 10.0, 10.0);
 
         // Even with extreme parameters, weights should be finite
-        let weight = calc.compute_weight(1.0, 1.0, 1.0);
+        let weight = calc.compute_weight(1.0, 1.0, 1.0, 0.0);
         assert!(weight.is_finite());
 
         // Very high conflict penalty should give very low weight
-        let weight_high_penalty = calc.compute_weight(0.0, 0.0, 100.0);
+        let weight_high_penalty = calc.compute_weight(0.0, 0.0, 100.0, 0.0);
         assert!(weight_high_penalty < 1e-10);
 
         // Very high proximity and reputation should give very high weight
-        let weight_high_positive = calc.compute_weight(10.0, 10.0, 0.0);
+        let weight_high_positive = calc.compute_weight(10.0, 10.0, 0.0, 0.0);
         assert!(weight_high_positive > 1e10);
     }
 }

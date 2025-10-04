@@ -47,10 +47,16 @@ impl WeightCalculator {
         }
     }
 
-    pub fn compute_weight(&self, proximity: f64, reputation: f64, conflict_penalty: f64) -> f64 {
-        let trust = self.compute_trust(reputation);
+    pub fn compute_weight(
+        &self,
+        proximity: f64,
+        reputation: f64,
+        conflict_penalty: f64,
+        age: f64,
+    ) -> f64 {
+        let trust = self.compute_trust_with_age(reputation, age);
         // Per PDF: exp(λ * proximity * trust - μ * conflict)
-        // Note: The PDF shows proximity and trust multiplied together inside exp
+        // trust = R(y)^α * (1 + age(y))^(-β) from Section 3.3
         let exp_arg = self.lambda * proximity * trust - self.mu * conflict_penalty;
         exp_arg.exp()
     }
@@ -113,10 +119,10 @@ mod tests {
     fn test_weight_calculation() {
         let calc = WeightCalculator::new(1.0, 0.5, 1.0);
 
-        let weight = calc.compute_weight(0.5, 2.0, 0.0);
+        let weight = calc.compute_weight(0.5, 2.0, 0.0, 0.0);
         assert!(weight > 0.0);
 
-        let weight_with_penalty = calc.compute_weight(0.5, 2.0, 0.5);
+        let weight_with_penalty = calc.compute_weight(0.5, 2.0, 0.5, 0.0);
         assert!(weight_with_penalty < weight);
     }
 
@@ -166,5 +172,57 @@ mod tests {
 
         let sum: f64 = weights.iter().sum();
         assert!((sum - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_age_decay_in_weight() {
+        let calc = WeightCalculator::new(1.0, 0.5, 1.0);
+
+        // Fresh message (age=0) vs aged message (age=100)
+        let weight_fresh = calc.compute_weight(0.5, 2.0, 0.0, 0.0);
+        let weight_aged = calc.compute_weight(0.5, 2.0, 0.0, 100.0);
+
+        // Aged message should have lower weight due to (1 + age)^(-β) decay in trust
+        assert!(
+            weight_aged < weight_fresh,
+            "Aged messages should have lower weight"
+        );
+
+        // Manually calculate expected values to verify
+        // weight = exp(λ * proximity * trust(reputation, age) - μ * conflict)
+        // trust(rep, age) = rep^α * (1 + age)^(-β)
+        let lambda: f64 = 1.0;
+        let proximity: f64 = 0.5;
+        let reputation: f64 = 2.0;
+        let alpha: f64 = 1.0;
+        let beta: f64 = 0.5;
+
+        let trust_fresh = reputation.powf(alpha) * (1.0 + 0.0_f64).powf(-beta);
+        let trust_aged = reputation.powf(alpha) * (1.0 + 100.0_f64).powf(-beta);
+
+        let expected_fresh = (lambda * proximity * trust_fresh).exp();
+        let expected_aged = (lambda * proximity * trust_aged).exp();
+
+        assert!((weight_fresh - expected_fresh).abs() < 1e-9);
+        assert!((weight_aged - expected_aged).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_trust_with_age() {
+        let calc = WeightCalculator::new(1.0, 0.5, 1.0);
+
+        // Test that trust decreases with age
+        let trust_fresh = calc.compute_trust_with_age(2.0, 0.0);
+        let trust_aged = calc.compute_trust_with_age(2.0, 100.0);
+
+        assert!(trust_aged < trust_fresh, "Trust should decrease with age");
+
+        // trust(y) = R(y)^α * (1 + age)^(-β)
+        // With R=2.0, α=1.0, age=0: trust = 2.0 * 1.0 = 2.0
+        assert!((trust_fresh - 2.0).abs() < 1e-9);
+
+        // With R=2.0, α=1.0, age=100, β=0.5: trust = 2.0 * (101)^(-0.5)
+        let expected_aged = 2.0 * (1.0 + 100.0_f64).powf(-0.5);
+        assert!((trust_aged - expected_aged).abs() < 1e-9);
     }
 }

@@ -697,6 +697,9 @@ impl AdicNode {
             running: Arc::new(RwLock::new(false)),
         };
 
+        // Perform cache warmup
+        node.warmup_caches().await?;
+
         // Emit node started event
         node.event_bus.emit(NodeEvent::NodeStarted {
             node_id: node.node_id(),
@@ -1655,6 +1658,54 @@ impl AdicNode {
     /// Get the depth of a message from the index
     pub async fn get_message_depth(&self, id: &MessageId) -> Option<u32> {
         self.index.get_depth(id).await
+    }
+
+    /// Warmup caches on startup to improve initial performance
+    /// This pre-loads frequently accessed data into memory
+    async fn warmup_caches(&self) -> Result<()> {
+        info!("🔥 Warming up caches...");
+
+        // 1. Load recent finalized messages into finality cache
+        let recent_finalized = self
+            .storage
+            .get_recently_finalized(100)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get recent finalized: {}", e))?;
+
+        info!(
+            finalized_loaded = recent_finalized.len(),
+            "Loaded recent finalized messages"
+        );
+
+        // 2. Load tips to warm up storage cache
+        let tips = self
+            .storage
+            .get_tips()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get tips: {}", e))?;
+
+        info!(tips_loaded = tips.len(), "Loaded current tips");
+
+        // 3. Pre-load recent messages for validation cache warmup
+        let mut loaded_count = 0;
+        for tip_id in tips.iter().take(50) {
+            if let Ok(Some(_msg)) = self.storage.get_message(tip_id).await {
+                loaded_count += 1;
+            }
+        }
+
+        info!(
+            messages_loaded = loaded_count,
+            "Pre-loaded recent messages for cache warmup"
+        );
+
+        // 4. Trigger DAG index warmup by loading recent message depths
+        for finalized_id in recent_finalized.iter().take(20) {
+            let _ = self.index.get_depth(finalized_id).await;
+        }
+
+        info!("✅ Cache warmup complete");
+        Ok(())
     }
 
     async fn process_incoming_messages(&self) -> Result<()> {

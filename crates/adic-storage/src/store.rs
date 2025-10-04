@@ -215,6 +215,11 @@ impl StorageEngine {
         self.backend.get_finality_artifact(id).await
     }
 
+    /// Store a finality artifact
+    pub async fn store_finality_artifact(&self, id: &MessageId, artifact: &[u8]) -> Result<()> {
+        self.backend.store_finality_artifact(id, artifact).await
+    }
+
     /// Add a message to a conflict set
     pub async fn add_to_conflict(&self, conflict_id: &str, message_id: &MessageId) -> Result<()> {
         let set_size_before = self

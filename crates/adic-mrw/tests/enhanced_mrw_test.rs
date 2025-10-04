@@ -235,6 +235,7 @@ async fn test_mrw_q_ball_coverage() {
             conflict_penalty: 0.0,
             weight: 1.0,
             axis_weights: HashMap::new(),
+            age: 0.0,
         },
         ParentCandidate {
             message_id: MessageId::new(&[2; 32]),
@@ -247,6 +248,7 @@ async fn test_mrw_q_ball_coverage() {
             conflict_penalty: 0.0,
             weight: 1.0,
             axis_weights: HashMap::new(),
+            age: 0.0,
         },
         ParentCandidate {
             message_id: MessageId::new(&[3; 32]),
@@ -259,6 +261,7 @@ async fn test_mrw_q_ball_coverage() {
             conflict_penalty: 0.0,
             weight: 1.0,
             axis_weights: HashMap::new(),
+            age: 0.0,
         },
     ];
 
@@ -355,13 +358,13 @@ async fn test_mrw_reputation_weight_calculation() {
     assert_eq!(trust_quad, 4.0);
 
     // Test weight calculation with proximity
-    let weight_high_rep = weight_calc.compute_weight(0.5, 2.0, 0.0);
-    let weight_low_rep = weight_calc.compute_weight(0.5, 1.0, 0.0);
+    let weight_high_rep = weight_calc.compute_weight(0.5, 2.0, 0.0, 0.0);
+    let weight_low_rep = weight_calc.compute_weight(0.5, 1.0, 0.0, 0.0);
     assert!(weight_high_rep > weight_low_rep);
 
     // Test conflict penalty impact
-    let weight_no_conflict = weight_calc.compute_weight(0.5, 2.0, 0.0);
-    let weight_with_conflict = weight_calc.compute_weight(0.5, 2.0, 0.5);
+    let weight_no_conflict = weight_calc.compute_weight(0.5, 2.0, 0.0, 0.0);
+    let weight_with_conflict = weight_calc.compute_weight(0.5, 2.0, 0.5, 0.0);
     assert!(weight_no_conflict > weight_with_conflict);
 }
 

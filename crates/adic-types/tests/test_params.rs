@@ -4,14 +4,14 @@ use adic_types::{AdicParams, DEFAULT_P, DEFAULT_PRECISION};
 fn test_adic_params_default() {
     let params = AdicParams::default();
 
-    // Check default values match expected
+    // Check default values match expected production values
     assert_eq!(params.p, DEFAULT_P);
     assert_eq!(params.p, 3);
     assert_eq!(params.d, 3);
     assert_eq!(params.rho, vec![2, 2, 1]);
     assert_eq!(params.q, 3);
-    assert_eq!(params.k, 3);
-    assert_eq!(params.depth_star, 2);
+    assert_eq!(params.k, 20); // Production value from paper
+    assert_eq!(params.depth_star, 12); // Production value from paper
     assert_eq!(params.delta, 5);
     assert_eq!(params.deposit, 0.1);
     assert_eq!(params.r_min, 1.0);
@@ -221,14 +221,14 @@ fn test_adic_params_float_precision() {
 
 #[test]
 fn test_adic_params_partial_deserialization() {
-    // Test that we can deserialize with missing optional fields
+    // Test that we can deserialize with production values
     let minimal_json = r#"{
         "p": 3,
         "d": 3,
         "rho": [2, 2, 1],
         "q": 3,
-        "k": 3,
-        "depth_star": 2,
+        "k": 20,
+        "depth_star": 12,
         "delta": 5,
         "deposit": 0.1,
         "r_min": 1.0,

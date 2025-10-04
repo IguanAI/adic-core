@@ -1,7 +1,9 @@
 use adic_crypto::CryptoEngine;
 use adic_types::{AdicMessage, MessageId};
 use chrono::Utc;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::info;
 
 #[derive(Debug, Clone)]
@@ -42,6 +44,12 @@ pub struct MessageValidator {
     max_timestamp_drift: i64,
     max_payload_size: usize,
     crypto: CryptoEngine,
+    /// LRU cache for validation results (message_id -> (result, timestamp))
+    validation_cache: Arc<RwLock<HashMap<MessageId, (ValidationResult, std::time::Instant)>>>,
+    /// LRU queue for cache eviction
+    cache_queue: Arc<RwLock<VecDeque<MessageId>>>,
+    /// Maximum cache size
+    max_cache_size: usize,
 }
 
 impl Default for MessageValidator {
@@ -56,7 +64,58 @@ impl MessageValidator {
             max_timestamp_drift: 300,
             max_payload_size: 1024 * 1024,
             crypto: CryptoEngine::new(),
+            validation_cache: Arc::new(RwLock::new(HashMap::new())),
+            cache_queue: Arc::new(RwLock::new(VecDeque::new())),
+            max_cache_size: 10000, // Cache up to 10k validation results
         }
+    }
+
+    /// Clear the validation cache
+    pub async fn clear_cache(&self) {
+        let mut cache = self.validation_cache.write().await;
+        cache.clear();
+        let mut queue = self.cache_queue.write().await;
+        queue.clear();
+    }
+
+    /// Get cache statistics
+    pub async fn cache_stats(&self) -> (usize, usize) {
+        let cache = self.validation_cache.read().await;
+        (cache.len(), self.max_cache_size)
+    }
+
+    /// Validate message with caching (async version)
+    /// This method checks the cache first and returns cached results if available
+    pub async fn validate_message_cached(&self, message: &AdicMessage) -> ValidationResult {
+        // Check cache first
+        {
+            let cache = self.validation_cache.read().await;
+            if let Some((cached_result, _timestamp)) = cache.get(&message.id) {
+                return cached_result.clone();
+            }
+        }
+
+        // Cache miss - perform validation
+        let result = self.validate_message(message);
+
+        // Store in cache if cache is not full
+        {
+            let mut cache = self.validation_cache.write().await;
+            let mut queue = self.cache_queue.write().await;
+
+            // Evict oldest if cache is full
+            if cache.len() >= self.max_cache_size {
+                if let Some(old_id) = queue.pop_front() {
+                    cache.remove(&old_id);
+                }
+            }
+
+            // Add new entry
+            cache.insert(message.id, (result.clone(), std::time::Instant::now()));
+            queue.push_back(message.id);
+        }
+
+        result
     }
 
     pub fn validate_message(&self, message: &AdicMessage) -> ValidationResult {
@@ -448,5 +507,114 @@ mod tests {
 
         // Should have a warning about zero nonce
         assert!(result.warnings.iter().any(|w| w.contains("nonce")));
+    }
+
+    #[tokio::test]
+    async fn test_validate_message_cached_basic() {
+        let validator = MessageValidator::new();
+        let mut message = create_valid_message();
+        message.signature = Signature::new(vec![1; 64]);
+
+        // First call - cache miss
+        let result1 = validator.validate_message_cached(&message).await;
+
+        // Second call - should hit cache
+        let result2 = validator.validate_message_cached(&message).await;
+
+        // Results should be identical
+        assert_eq!(result1.is_valid, result2.is_valid);
+        assert_eq!(result1.errors.len(), result2.errors.len());
+
+        // Check cache stats
+        let (cache_size, max_size) = validator.cache_stats().await;
+        assert_eq!(cache_size, 1, "Should have 1 cached entry");
+        assert_eq!(max_size, 10000);
+    }
+
+    #[tokio::test]
+    async fn test_validate_message_cached_multiple() {
+        let validator = MessageValidator::new();
+
+        // Create 5 different messages
+        let messages: Vec<_> = (0..5)
+            .map(|i| {
+                let parents = vec![MessageId::new(format!("parent{}", i).as_bytes())];
+                let features =
+                    AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(10 + i, 3, 5))]);
+                let meta = AdicMeta::new(Utc::now());
+                let pk = PublicKey::from_bytes([i as u8; 32]);
+                let mut msg = AdicMessage::new(parents, features, meta, pk, vec![1, 2, 3]);
+                msg.signature = Signature::new(vec![1; 64]);
+                msg
+            })
+            .collect();
+
+        // Validate all messages
+        for msg in &messages {
+            let _ = validator.validate_message_cached(msg).await;
+        }
+
+        // Cache should have 5 entries
+        let (cache_size, _) = validator.cache_stats().await;
+        assert_eq!(cache_size, 5, "Should have 5 cached entries");
+
+        // Re-validate first message - should hit cache
+        let _ = validator.validate_message_cached(&messages[0]).await;
+
+        // Cache size should still be 5
+        let (cache_size, _) = validator.cache_stats().await;
+        assert_eq!(cache_size, 5, "Cache size should remain 5");
+    }
+
+    #[tokio::test]
+    async fn test_validate_message_cached_eviction() {
+        // Create validator with very small cache for testing
+        let mut validator = MessageValidator::new();
+        validator.max_cache_size = 3; // Only 3 entries
+
+        // Create 5 different messages
+        let messages: Vec<_> = (0..5)
+            .map(|i| {
+                let parents = vec![MessageId::new(format!("parent{}", i).as_bytes())];
+                let features =
+                    AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(10 + i, 3, 5))]);
+                let meta = AdicMeta::new(Utc::now());
+                let pk = PublicKey::from_bytes([i as u8; 32]);
+                let mut msg = AdicMessage::new(parents, features, meta, pk, vec![1, 2, 3]);
+                msg.signature = Signature::new(vec![1; 64]);
+                msg
+            })
+            .collect();
+
+        // Validate all 5 messages
+        for msg in &messages {
+            let _ = validator.validate_message_cached(msg).await;
+        }
+
+        // Cache should be capped at max_cache_size (3)
+        let (cache_size, max_size) = validator.cache_stats().await;
+        assert_eq!(cache_size, 3, "Cache should be limited to max size");
+        assert_eq!(max_size, 3);
+    }
+
+    #[tokio::test]
+    async fn test_clear_cache() {
+        let validator = MessageValidator::new();
+        let mut message = create_valid_message();
+        message.signature = Signature::new(vec![1; 64]);
+
+        // Add to cache
+        let _ = validator.validate_message_cached(&message).await;
+
+        // Verify cache has entry
+        let (cache_size, _) = validator.cache_stats().await;
+        assert_eq!(cache_size, 1);
+
+        // Clear cache
+        validator.clear_cache().await;
+
+        // Verify cache is empty
+        let (cache_size, _) = validator.cache_stats().await;
+        assert_eq!(cache_size, 0, "Cache should be empty after clear");
     }
 }

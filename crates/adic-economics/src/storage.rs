@@ -854,9 +854,6 @@ impl EconomicsStorage for RocksDbStorage {
         limit: usize,
         offset: usize,
     ) -> Result<(Vec<TransactionRecord>, usize)> {
-        let mut transactions = Vec::new();
-        let mut total_count = 0;
-
         // Iterate through all transactions using the tx: prefix
         let tx_prefix = "tx:";
         let iter = self.db.iterator(rocksdb::IteratorMode::From(
@@ -881,13 +878,13 @@ impl EconomicsStorage for RocksDbStorage {
             }
         }
 
-        total_count = all_txs.len();
+        let total_count = all_txs.len();
 
         // Sort by timestamp (newest first)
         all_txs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
         // Apply pagination
-        transactions = all_txs.into_iter().skip(offset).take(limit).collect();
+        let transactions = all_txs.into_iter().skip(offset).take(limit).collect();
 
         Ok((transactions, total_count))
     }

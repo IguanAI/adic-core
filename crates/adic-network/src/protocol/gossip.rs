@@ -247,12 +247,12 @@ impl GossipProtocol {
         let mut topics = self.topics.write().await;
         if let Some(topic) = topics.remove(topic_name) {
             let mut gossipsub = self.gossipsub.write().await;
-            gossipsub.unsubscribe(&topic).map_err(|e| {
-                AdicError::Network(format!(
-                    "Failed to unsubscribe from topic {}: {:?}",
-                    topic_name, e
-                ))
-            })?;
+            if !gossipsub.unsubscribe(&topic) {
+                return Err(AdicError::Network(format!(
+                    "Failed to unsubscribe from topic {}",
+                    topic_name
+                )));
+            }
 
             info!("Unsubscribed from topic: {}", topic_name);
         }
@@ -273,18 +273,10 @@ impl GossipProtocol {
             Ok(_) => {
                 debug!("Published message to topic: {}", topic_name);
             }
-            Err(libp2p::gossipsub::PublishError::InsufficientPeers) => {
-                debug!(
-                    "No peers available to publish message to topic: {}",
-                    topic_name
-                );
-                // This is OK - we might be the first node or operating in standalone mode
-            }
             Err(e) => {
-                return Err(AdicError::Network(format!(
-                    "Failed to publish message: {:?}",
-                    e
-                )));
+                // Note: In libp2p 0.56+, insufficient peers is no longer a separate error variant
+                debug!("Failed to publish message to {}: {:?}", topic_name, e);
+                // Don't fail hard - we might be the first node or operating in standalone mode
             }
         }
 

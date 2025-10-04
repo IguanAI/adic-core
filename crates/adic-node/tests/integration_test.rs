@@ -161,6 +161,7 @@ async fn test_mrw_parent_selection() {
             conflict_penalty: 0.1 * (i as f64),
             weight: 1.0,
             axis_weights: HashMap::new(),
+            age: 0.0,
         });
     }
 

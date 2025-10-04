@@ -152,6 +152,21 @@ impl FinalityEngine {
                         tracing::warn!("Could not find proposer for finalized message {}", msg_id);
                     }
 
+                    // Persist artifact to storage
+                    if let Ok(artifact_bytes) = serde_json::to_vec(&artifact) {
+                        if let Err(e) = self
+                            .storage
+                            .store_finality_artifact(&msg_id, &artifact_bytes)
+                            .await
+                        {
+                            tracing::warn!(
+                                "Failed to persist finality artifact for {:?}: {}",
+                                msg_id,
+                                e
+                            );
+                        }
+                    }
+
                     let mut finalized = self.finalized.write().await;
                     finalized.insert(msg_id, artifact);
                     newly_finalized.push(msg_id);

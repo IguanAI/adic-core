@@ -1,6 +1,8 @@
 use adic_storage::StorageEngine;
 use adic_types::{MessageId, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use adic_consensus::ReputationTracker;
 
@@ -29,13 +31,15 @@ impl KCoreResult {
 }
 
 /// k-core analyzer for finality determination
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct KCoreAnalyzer {
     k: usize,
     min_depth: u32,
     min_diversity: usize,
     min_reputation: f64,
     rho: Vec<u32>,
+    depth_cache: Arc<RwLock<HashMap<MessageId, u32>>>,
+    children_cache: Arc<RwLock<HashMap<MessageId, Vec<MessageId>>>>,
 }
 
 impl KCoreAnalyzer {
@@ -52,7 +56,24 @@ impl KCoreAnalyzer {
             min_diversity,
             min_reputation,
             rho,
+            depth_cache: Arc::new(RwLock::new(HashMap::new())),
+            children_cache: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Clear caches (useful for testing or after major DAG updates)
+    pub async fn clear_caches(&self) {
+        let mut depth_cache = self.depth_cache.write().await;
+        depth_cache.clear();
+        let mut children_cache = self.children_cache.write().await;
+        children_cache.clear();
+    }
+
+    /// Get cache statistics
+    pub async fn cache_stats(&self) -> (usize, usize) {
+        let depth_cache = self.depth_cache.read().await;
+        let children_cache = self.children_cache.read().await;
+        (depth_cache.len(), children_cache.len())
     }
 
     /// Analyze the k-core starting from a message
@@ -177,13 +198,21 @@ impl KCoreAnalyzer {
         Ok(core)
     }
 
-    /// Compute depth of the k-core from root
+    /// Compute depth of the k-core from root (with caching)
     async fn compute_depth(
         &self,
         kcore: &HashSet<MessageId>,
         root: MessageId,
         storage: &StorageEngine,
     ) -> u32 {
+        // Check cache first
+        {
+            let depth_cache = self.depth_cache.read().await;
+            if let Some(&cached_depth) = depth_cache.get(&root) {
+                return cached_depth;
+            }
+        }
+
         let mut max_depth = 0;
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();
@@ -194,13 +223,35 @@ impl KCoreAnalyzer {
         while let Some((current, depth)) = queue.pop_front() {
             max_depth = max_depth.max(depth);
 
-            if let Ok(children) = storage.get_children(&current).await {
-                for child in children {
-                    if kcore.contains(&child) && visited.insert(child) {
-                        queue.push_back((child, depth + 1));
+            // Try to get children from cache first
+            let children = {
+                let children_cache = self.children_cache.read().await;
+                if let Some(cached_children) = children_cache.get(&current) {
+                    cached_children.clone()
+                } else {
+                    drop(children_cache);
+                    // Fetch from storage and cache
+                    if let Ok(children) = storage.get_children(&current).await {
+                        let mut children_cache = self.children_cache.write().await;
+                        children_cache.insert(current, children.clone());
+                        children
+                    } else {
+                        vec![]
                     }
                 }
+            };
+
+            for child in children {
+                if kcore.contains(&child) && visited.insert(child) {
+                    queue.push_back((child, depth + 1));
+                }
             }
+        }
+
+        // Cache the result
+        {
+            let mut depth_cache = self.depth_cache.write().await;
+            depth_cache.insert(root, max_depth);
         }
 
         max_depth

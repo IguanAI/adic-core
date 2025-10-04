@@ -451,6 +451,13 @@ impl StorageBackend for RocksBackend {
             .map_err(|e| StorageError::BackendError(format!("RocksDB get artifact error: {}", e)))
     }
 
+    async fn store_finality_artifact(&self, id: &MessageId, artifact: &[u8]) -> Result<()> {
+        let key = Self::finality_artifact_key(id);
+        self.db
+            .put(key, artifact)
+            .map_err(|e| StorageError::BackendError(format!("RocksDB put artifact error: {}", e)))
+    }
+
     async fn add_to_conflict(&self, conflict_id: &str, message_id: &MessageId) -> Result<()> {
         let key = Self::conflict_key(conflict_id, message_id);
         self.db

@@ -26,6 +26,7 @@ mod tests {
             conflict_penalty: 0.0,
             weight: 0.0,
             axis_weights: HashMap::new(),
+            age: 0.0, // Test messages are fresh
         }
     }
 

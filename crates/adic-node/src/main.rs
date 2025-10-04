@@ -105,6 +105,17 @@ enum Commands {
         count: usize,
     },
 
+    /// Generate a genesis configuration file
+    Genesis {
+        /// Output file path
+        #[arg(short, long, default_value = "genesis.json")]
+        output: PathBuf,
+
+        /// Network type (mainnet, testnet, devnet)
+        #[arg(short, long, default_value = "testnet")]
+        network: String,
+    },
+
     /// Wallet management commands
     Wallet {
         #[command(subcommand)]
@@ -514,6 +525,63 @@ async fn main() -> Result<()> {
         Commands::Test { count } => {
             info!(message_count = count, "🧪 Running local test");
             cli::run_local_test(count).await?;
+            Ok(())
+        }
+
+        Commands::Genesis { output, network } => {
+            info!(
+                network = %network,
+                output = ?output,
+                "🧬 Generating genesis configuration"
+            );
+
+            let genesis_config = match network.as_str() {
+                "mainnet" => {
+                    info!("Using mainnet genesis parameters (300M ADIC)");
+                    genesis::GenesisConfig::default()
+                }
+                "testnet" | "devnet" => {
+                    info!("Using test genesis parameters");
+                    genesis::GenesisConfig::test()
+                }
+                _ => {
+                    warn!(
+                        network = %network,
+                        "⚠️ Unknown network type, using testnet"
+                    );
+                    genesis::GenesisConfig::test()
+                }
+            };
+
+            // Verify the config before saving
+            genesis_config
+                .verify()
+                .map_err(|e| anyhow::anyhow!("Genesis configuration validation failed: {}", e))?;
+
+            // Serialize to JSON
+            let json = serde_json::to_string_pretty(&genesis_config)
+                .context("Failed to serialize genesis config")?;
+
+            // Write to file
+            std::fs::write(&output, json).context("Failed to write genesis file")?;
+
+            let total_supply = genesis_config.total_supply();
+
+            info!(
+                path = ?output,
+                allocations = genesis_config.allocations.len(),
+                total_supply = %total_supply.to_adic(),
+                genesis_hash = %genesis_config.calculate_hash(),
+                "✅ Genesis configuration saved"
+            );
+
+            println!("✅ Genesis configuration saved to {:?}", output);
+            println!("   Network:        {}", network);
+            println!("   Chain ID:       {}", genesis_config.chain_id);
+            println!("   Total supply:   {} ADIC", total_supply.to_adic());
+            println!("   Allocations:    {}", genesis_config.allocations.len());
+            println!("   Genesis hash:   {}", genesis_config.calculate_hash());
+
             Ok(())
         }
 

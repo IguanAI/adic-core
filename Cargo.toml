@@ -15,7 +15,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 authors = ["ADIC Core Team"]
 license = "MIT"
@@ -42,7 +42,7 @@ hex = "0.4"
 rocksdb = "0.22"
 
 # Networking
-libp2p = { version = "0.54", features = ["tcp", "tokio", "noise", "yamux", "gossipsub", "kad", "identify", "mdns", "request-response", "dcutr", "relay", "metrics"] }
+libp2p = { version = "0.56", features = ["tcp", "tokio", "noise", "yamux", "gossipsub", "kad", "identify", "mdns", "request-response", "dcutr", "relay", "metrics"] }
 quinn = "0.11"
 
 # Math
@@ -67,7 +67,7 @@ futures-util = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 
 # Metrics
-prometheus = "0.13"
+prometheus = "0.14"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }

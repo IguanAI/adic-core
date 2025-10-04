@@ -152,7 +152,7 @@ mod tests {
         let storage = create_test_storage();
         let engine = ConsensusEngine::new(params, storage);
         assert_eq!(engine.params().d, 3);
-        assert_eq!(engine.params().k, 3); // Changed to match default
+        assert_eq!(engine.params().k, 20); // Production value from paper
         assert_eq!(engine.params().gamma, 0.9);
     }
 

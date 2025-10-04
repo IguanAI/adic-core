@@ -315,12 +315,154 @@ fn bench_reputation(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_finality_checking(c: &mut Criterion) {
+    let mut group = c.benchmark_group("finality");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    for dag_size in &[50, 100, 200] {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(dag_size),
+            dag_size,
+            |b, &dag_size| {
+                let params = AdicParams::default();
+                let mut context = TestContext::new(params.clone());
+                let keypair = Keypair::generate();
+
+                // Build a DAG
+                let mut all_ids = vec![];
+                runtime.block_on(async {
+                    for i in 0..dag_size {
+                        let parents = if i < (params.d + 1) {
+                            vec![]
+                        } else {
+                            let start = all_ids.len().saturating_sub((params.d + 1) as usize);
+                            all_ids[start..start + (params.d + 1) as usize].to_vec()
+                        };
+                        let msg = create_test_message(i, parents, &keypair);
+                        all_ids.push(msg.id);
+                        context.add_message(msg).await.unwrap();
+                    }
+                });
+
+                // Benchmark finality check on a message in the middle
+                let target_msg_id = all_ids[(dag_size / 2) as usize];
+
+                b.iter(|| {
+                    runtime.block_on(async {
+                        // Simulate finality check
+                        black_box(context.storage.get_message(&target_msg_id).await.unwrap())
+                    })
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_conflict_resolution(c: &mut Criterion) {
+    let mut group = c.benchmark_group("conflict_resolution");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let params = AdicParams::default();
+    let mut context = TestContext::new(params);
+    let keypair = Keypair::generate();
+
+    // Create conflicting messages (same parents, different data)
+    let parent1 = create_test_message(1, vec![], &keypair);
+    let parent2 = create_test_message(2, vec![], &keypair);
+    let parents = vec![parent1.id, parent2.id];
+
+    let msg_a = create_test_message(10, parents.clone(), &keypair);
+    let msg_b = create_test_message(20, parents.clone(), &keypair);
+
+    runtime.block_on(async {
+        context.add_message(parent1).await.unwrap();
+        context.add_message(parent2).await.unwrap();
+        context.add_message(msg_a.clone()).await.unwrap();
+        context.add_message(msg_b.clone()).await.unwrap();
+    });
+
+    group.bench_function("resolve_conflict", |b| {
+        let parent_features_a = context.get_parent_features(&msg_a);
+        let parent_features_b = context.get_parent_features(&msg_b);
+        let parent_reps_a = context.get_parent_reputations(&msg_a);
+        let parent_reps_b = context.get_parent_reputations(&msg_b);
+
+        b.iter(|| {
+            let check_a = context.engine.admissibility().check_message(
+                &msg_a,
+                &parent_features_a,
+                &parent_reps_a,
+            );
+            let check_b = context.engine.admissibility().check_message(
+                &msg_b,
+                &parent_features_b,
+                &parent_reps_b,
+            );
+
+            black_box((check_a, check_b))
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_dag_traversal(c: &mut Criterion) {
+    let mut group = c.benchmark_group("dag_traversal");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    for depth in &[10, 25, 50] {
+        group.bench_with_input(BenchmarkId::from_parameter(depth), depth, |b, &depth| {
+            let params = AdicParams::default();
+            let mut context = TestContext::new(params.clone());
+            let keypair = Keypair::generate();
+
+            // Build a linear chain
+            let mut prev_id = None;
+            runtime.block_on(async {
+                for i in 0..depth {
+                    let parents = if let Some(id) = prev_id {
+                        vec![id]
+                    } else {
+                        vec![]
+                    };
+                    let msg = create_test_message(i, parents, &keypair);
+                    prev_id = Some(msg.id);
+                    context.add_message(msg).await.unwrap();
+                }
+            });
+
+            let tip_id = prev_id.unwrap();
+
+            b.iter(|| {
+                runtime.block_on(async {
+                    // Traverse from tip to genesis
+                    let mut current = tip_id;
+                    let mut count = 0;
+                    while let Ok(Some(msg)) = context.storage.get_message(&current).await {
+                        if msg.parents.is_empty() {
+                            break;
+                        }
+                        current = msg.parents[0];
+                        count += 1;
+                    }
+                    black_box(count)
+                })
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_message_processing,
     bench_admissibility_check,
     bench_validation,
     bench_padic_operations,
-    bench_reputation
+    bench_reputation,
+    bench_finality_checking,
+    bench_conflict_resolution,
+    bench_dag_traversal
 );
 criterion_main!(benches);

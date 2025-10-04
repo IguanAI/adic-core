@@ -90,6 +90,11 @@ impl MrwEngine {
                         .map(|axis_phi| axis_phi.qp_digits.clone())
                         .collect();
 
+                    // Calculate message age in seconds for trust decay
+                    let now = chrono::Utc::now();
+                    let age_duration = now.signed_duration_since(tip_msg.meta.timestamp);
+                    let age = age_duration.num_seconds() as f64;
+
                     candidates.push(ParentCandidate {
                         message_id: *tip_id,
                         features,
@@ -97,6 +102,7 @@ impl MrwEngine {
                         conflict_penalty,
                         weight: 0.0,                  // Will be calculated later
                         axis_weights: HashMap::new(), // Will be filled by MRW
+                        age,                          // Age in seconds for trust decay
                     });
                 }
                 Ok(None) => {

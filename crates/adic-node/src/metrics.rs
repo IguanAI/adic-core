@@ -44,6 +44,14 @@ pub struct Metrics {
     pub sse_connections: IntGauge,
     pub websocket_messages_sent: IntCounter,
     pub sse_messages_sent: IntCounter,
+
+    // Message Propagation Metrics
+    pub messages_gossiped: IntCounter,
+    pub messages_received_network: IntCounter,
+    pub duplicate_messages: IntCounter,
+    pub propagation_latency: Histogram,
+    pub validation_latency: Histogram,
+    pub gossip_failures: IntCounter,
 }
 
 impl Default for Metrics {
@@ -138,6 +146,37 @@ impl Metrics {
         let sse_messages_sent =
             IntCounter::new("adic_sse_messages_sent_total", "Total SSE messages sent").unwrap();
 
+        let messages_gossiped = IntCounter::new(
+            "adic_messages_gossiped_total",
+            "Total messages broadcast via gossip",
+        )
+        .unwrap();
+        let messages_received_network = IntCounter::new(
+            "adic_messages_received_network_total",
+            "Total messages received from network",
+        )
+        .unwrap();
+        let duplicate_messages = IntCounter::new(
+            "adic_duplicate_messages_total",
+            "Total duplicate messages received",
+        )
+        .unwrap();
+        let propagation_latency = Histogram::with_opts(HistogramOpts::new(
+            "adic_message_propagation_latency_seconds",
+            "Message propagation latency from submission to reception",
+        ))
+        .unwrap();
+        let validation_latency = Histogram::with_opts(HistogramOpts::new(
+            "adic_message_validation_latency_seconds",
+            "Message validation latency",
+        ))
+        .unwrap();
+        let gossip_failures = IntCounter::new(
+            "adic_gossip_failures_total",
+            "Total gossip/broadcast failures",
+        )
+        .unwrap();
+
         registry
             .register(Box::new(messages_submitted.clone()))
             .unwrap();
@@ -205,6 +244,24 @@ impl Metrics {
         registry
             .register(Box::new(sse_messages_sent.clone()))
             .unwrap();
+        registry
+            .register(Box::new(messages_gossiped.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(messages_received_network.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(duplicate_messages.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(propagation_latency.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(validation_latency.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(gossip_failures.clone()))
+            .unwrap();
 
         Self {
             registry,
@@ -233,6 +290,12 @@ impl Metrics {
             sse_connections,
             websocket_messages_sent,
             sse_messages_sent,
+            messages_gossiped,
+            messages_received_network,
+            duplicate_messages,
+            propagation_latency,
+            validation_latency,
+            gossip_failures,
         }
     }
 
@@ -257,5 +320,90 @@ mod tests {
         let text = m.gather();
         assert!(text.contains("adic_messages_submitted_total"));
         assert!(text.contains("adic_finalizations_total"));
+    }
+
+    #[test]
+    fn test_propagation_metrics() {
+        let m = Metrics::new();
+
+        // Test message propagation metrics
+        m.messages_gossiped.inc();
+        m.messages_received_network.inc_by(5);
+        m.duplicate_messages.inc_by(2);
+        m.gossip_failures.inc();
+
+        let text = m.gather();
+
+        // Verify all new propagation metrics are present
+        assert!(text.contains("adic_messages_gossiped_total"));
+        assert!(text.contains("adic_messages_received_network_total"));
+        assert!(text.contains("adic_duplicate_messages_total"));
+        assert!(text.contains("adic_gossip_failures_total"));
+        assert!(text.contains("adic_message_propagation_latency_seconds"));
+        assert!(text.contains("adic_message_validation_latency_seconds"));
+    }
+
+    #[test]
+    fn test_propagation_latency_histogram() {
+        let m = Metrics::new();
+
+        // Record some latencies
+        m.propagation_latency.observe(0.05); // 50ms
+        m.propagation_latency.observe(0.1); // 100ms
+        m.propagation_latency.observe(0.2); // 200ms
+
+        m.validation_latency.observe(0.001); // 1ms
+        m.validation_latency.observe(0.002); // 2ms
+
+        let text = m.gather();
+
+        // Verify histograms are tracked
+        assert!(text.contains("adic_message_propagation_latency_seconds"));
+        assert!(text.contains("adic_message_validation_latency_seconds"));
+
+        // Histograms should have bucket and count metrics
+        assert!(text.contains("_bucket"));
+        assert!(text.contains("_count"));
+        assert!(text.contains("_sum"));
+    }
+
+    #[test]
+    fn test_all_metrics_registered() {
+        let m = Metrics::new();
+        let text = m.gather();
+
+        // Verify all core metrics exist
+        assert!(text.contains("adic_messages_submitted_total"));
+        assert!(text.contains("adic_messages_processed_total"));
+        assert!(text.contains("adic_messages_failed_total"));
+
+        // MRW metrics
+        assert!(text.contains("adic_mrw_attempts_total"));
+        assert!(text.contains("adic_mrw_widens_total"));
+
+        // Admissibility metrics
+        assert!(text.contains("adic_admissibility_checks_total"));
+
+        // Deposit metrics
+        assert!(text.contains("adic_deposits_escrowed_total"));
+
+        // Finality metrics
+        assert!(text.contains("adic_finalizations_total"));
+        assert!(text.contains("adic_kcore_size"));
+
+        // Validation metrics
+        assert!(text.contains("adic_signature_verifications_total"));
+
+        // DAG state metrics
+        assert!(text.contains("adic_current_tips"));
+        assert!(text.contains("adic_dag_messages"));
+
+        // Event streaming metrics
+        assert!(text.contains("adic_websocket_connections"));
+        assert!(text.contains("adic_sse_connections"));
+
+        // Propagation metrics
+        assert!(text.contains("adic_messages_gossiped_total"));
+        assert!(text.contains("adic_duplicate_messages_total"));
     }
 }

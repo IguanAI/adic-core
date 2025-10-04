@@ -49,8 +49,8 @@ impl Default for AdicParams {
             d: 3,
             rho: vec![2, 2, 1],
             q: 3,
-            k: 3,          // Lowered for testing - was 20
-            depth_star: 2, // Lowered for testing - was 12
+            k: 20,          // Production value from ADIC-DAG paper Section 1.2
+            depth_star: 12, // Production value from ADIC-DAG paper Section 1.2
             delta: 5,
             deposit: 0.1,
             r_min: 1.0,
@@ -59,6 +59,28 @@ impl Default for AdicParams {
             beta: 0.5,
             mu: 1.0,
             gamma: 0.9, // Default reputation update factor
+        }
+    }
+}
+
+impl AdicParams {
+    /// Create test parameters with lowered thresholds for faster testing
+    pub fn test() -> Self {
+        Self {
+            p: DEFAULT_P,
+            d: 3,
+            rho: vec![2, 2, 1],
+            q: 3,
+            k: 3,          // Lowered for testing (production: 20)
+            depth_star: 2, // Lowered for testing (production: 12)
+            delta: 5,
+            deposit: 0.1,
+            r_min: 1.0,
+            r_sum_min: 4.0,
+            lambda: 1.0,
+            beta: 0.5,
+            mu: 1.0,
+            gamma: 0.9,
         }
     }
 }

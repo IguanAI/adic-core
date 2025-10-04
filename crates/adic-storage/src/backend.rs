@@ -79,6 +79,9 @@ pub trait StorageBackend: Send + Sync {
     /// Get finality artifact
     async fn get_finality_artifact(&self, id: &MessageId) -> Result<Option<Vec<u8>>>;
 
+    /// Store finality artifact
+    async fn store_finality_artifact(&self, id: &MessageId, artifact: &[u8]) -> Result<()>;
+
     /// Store conflict information
     async fn add_to_conflict(&self, conflict_id: &str, message_id: &MessageId) -> Result<()>;
 

@@ -178,6 +178,12 @@ impl StorageBackend for MemoryBackend {
         Ok(finalized.get(id).cloned())
     }
 
+    async fn store_finality_artifact(&self, id: &MessageId, artifact: &[u8]) -> Result<()> {
+        let mut finalized = self.finalized.write().await;
+        finalized.insert(*id, artifact.to_vec());
+        Ok(())
+    }
+
     async fn add_to_conflict(&self, conflict_id: &str, message_id: &MessageId) -> Result<()> {
         let mut conflicts = self.conflicts.write().await;
         conflicts

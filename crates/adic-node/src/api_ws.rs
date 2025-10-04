@@ -10,7 +10,8 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
     },
-    response::Response,
+    http::StatusCode,
+    response::{IntoResponse, Response},
 };
 use futures_util::{
     stream::{SplitSink, SplitStream},
@@ -18,9 +19,82 @@ use futures_util::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
+
+/// WebSocket connection pool manager
+/// Manages connection limits and tracks active connections
+#[derive(Clone)]
+pub struct WsConnectionPool {
+    /// Current number of active connections
+    active_connections: Arc<AtomicUsize>,
+    /// Maximum allowed connections
+    max_connections: usize,
+}
+
+impl WsConnectionPool {
+    pub fn new(max_connections: usize) -> Self {
+        Self {
+            active_connections: Arc::new(AtomicUsize::new(0)),
+            max_connections,
+        }
+    }
+
+    /// Try to acquire a connection slot
+    /// Returns None if the pool is full
+    pub fn try_acquire(&self) -> Option<WsConnectionGuard> {
+        let current = self.active_connections.load(Ordering::SeqCst);
+
+        if current >= self.max_connections {
+            return None;
+        }
+
+        // Try to increment atomically
+        let prev = self.active_connections.fetch_add(1, Ordering::SeqCst);
+
+        if prev >= self.max_connections {
+            // Race condition - another thread took the last slot
+            self.active_connections.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+
+        Some(WsConnectionGuard { pool: self.clone() })
+    }
+
+    /// Get current connection count
+    pub fn active_count(&self) -> usize {
+        self.active_connections.load(Ordering::SeqCst)
+    }
+
+    /// Get maximum connection limit
+    pub fn max_count(&self) -> usize {
+        self.max_connections
+    }
+
+    fn release(&self) {
+        self.active_connections.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Default for WsConnectionPool {
+    fn default() -> Self {
+        Self::new(1000) // Default: 1000 concurrent connections
+    }
+}
+
+/// RAII guard for WebSocket connection
+/// Automatically releases the connection slot when dropped
+pub struct WsConnectionGuard {
+    pool: WsConnectionPool,
+}
+
+impl Drop for WsConnectionGuard {
+    fn drop(&mut self) {
+        self.pool.release();
+    }
+}
 
 /// Query parameters for WebSocket connection
 #[derive(Debug, Deserialize)]
@@ -155,20 +229,39 @@ impl WsConnection {
     }
 }
 
-/// WebSocket handler
+/// WebSocket handler with connection pooling
 pub async fn websocket_handler(
     ws: WebSocketUpgrade,
     Query(query): Query<WsQuery>,
     State(event_bus): State<Arc<EventBus>>,
     State(metrics): State<Metrics>,
+    State(pool): State<WsConnectionPool>,
 ) -> Response {
+    // Try to acquire a connection slot from the pool
+    let guard = match pool.try_acquire() {
+        Some(guard) => guard,
+        None => {
+            warn!(
+                active = pool.active_count(),
+                max = pool.max_count(),
+                "WebSocket connection rejected - pool full"
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Too many WebSocket connections",
+            )
+                .into_response();
+        }
+    };
+
     info!(
         events = ?query.events,
         priority = ?query.priority,
-        "WebSocket connection request"
+        active_connections = pool.active_count(),
+        "WebSocket connection request accepted"
     );
 
-    ws.on_upgrade(move |socket| handle_socket(socket, query, event_bus, metrics))
+    ws.on_upgrade(move |socket| handle_socket(socket, query, event_bus, metrics, guard))
 }
 
 /// Handle WebSocket connection
@@ -177,6 +270,7 @@ async fn handle_socket(
     query: WsQuery,
     event_bus: Arc<EventBus>,
     metrics: Metrics,
+    _guard: WsConnectionGuard, // Hold guard to maintain connection slot
 ) {
     // Increment connection count
     metrics.websocket_connections.inc();
@@ -382,5 +476,121 @@ mod tests {
         conn.unsubscribe(vec!["tips.update".to_string()]);
         assert!(!conn.subscribed_events.contains("tips.update"));
         assert!(conn.subscribed_events.contains("message.new"));
+    }
+
+    #[test]
+    fn test_ws_connection_pool_basic() {
+        let pool = WsConnectionPool::new(5);
+        assert_eq!(pool.active_count(), 0);
+        assert_eq!(pool.max_count(), 5);
+
+        // Acquire connections
+        let _guard1 = pool.try_acquire().expect("Should acquire first connection");
+        assert_eq!(pool.active_count(), 1);
+
+        let _guard2 = pool
+            .try_acquire()
+            .expect("Should acquire second connection");
+        assert_eq!(pool.active_count(), 2);
+    }
+
+    #[test]
+    fn test_ws_connection_pool_limit() {
+        let pool = WsConnectionPool::new(2);
+
+        let _guard1 = pool.try_acquire().expect("Should acquire first connection");
+        let _guard2 = pool
+            .try_acquire()
+            .expect("Should acquire second connection");
+
+        // Pool is now full
+        assert_eq!(pool.active_count(), 2);
+
+        // Third connection should fail
+        let guard3 = pool.try_acquire();
+        assert!(
+            guard3.is_none(),
+            "Should reject connection when pool is full"
+        );
+
+        // Still at capacity
+        assert_eq!(pool.active_count(), 2);
+    }
+
+    #[test]
+    fn test_ws_connection_pool_release() {
+        let pool = WsConnectionPool::new(2);
+
+        {
+            let _guard1 = pool.try_acquire().expect("Should acquire connection");
+            assert_eq!(pool.active_count(), 1);
+
+            {
+                let _guard2 = pool
+                    .try_acquire()
+                    .expect("Should acquire second connection");
+                assert_eq!(pool.active_count(), 2);
+            } // guard2 dropped here
+
+            // After guard2 is dropped, count should decrease
+            assert_eq!(pool.active_count(), 1);
+        } // guard1 dropped here
+
+        // After both guards are dropped, pool should be empty
+        assert_eq!(pool.active_count(), 0);
+
+        // Should be able to acquire again
+        let _guard3 = pool.try_acquire().expect("Should acquire after release");
+        assert_eq!(pool.active_count(), 1);
+    }
+
+    #[test]
+    fn test_ws_connection_pool_concurrent() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let pool = Arc::new(WsConnectionPool::new(10));
+        let guards = Arc::new(Mutex::new(Vec::new()));
+
+        let mut handles = vec![];
+
+        // Spawn 20 threads trying to acquire connections
+        for _ in 0..20 {
+            let pool_clone = Arc::clone(&pool);
+            let guards_clone = Arc::clone(&guards);
+            let handle = thread::spawn(move || {
+                if let Some(guard) = pool_clone.try_acquire() {
+                    // Hold the guard so it doesn't get dropped immediately
+                    guards_clone.lock().unwrap().push(guard);
+                    true
+                } else {
+                    false
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all threads and collect results
+        let mut successful = 0;
+        let mut failed = 0;
+
+        for handle in handles {
+            if handle.join().unwrap() {
+                successful += 1;
+            } else {
+                failed += 1;
+            }
+        }
+
+        // Should have exactly 10 successful and 10 failed
+        assert_eq!(successful, 10, "Should have 10 successful acquisitions");
+        assert_eq!(failed, 10, "Should have 10 failed acquisitions");
+
+        // Verify active count
+        assert_eq!(
+            pool.active_count(),
+            10,
+            "Pool should have 10 active connections"
+        );
     }
 }

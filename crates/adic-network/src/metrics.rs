@@ -188,11 +188,13 @@ impl NetworkMetrics {
 
     pub async fn record_peer_bandwidth(&self, peer: &PeerId, upload_mbps: f64, download_mbps: f64) {
         let peer_str = peer.to_string();
+        let upload = "upload".to_string();
+        let download = "download".to_string();
         self.peer_bandwidth
-            .with_label_values(&[&peer_str, "upload"])
+            .with_label_values(&[&peer_str, &upload])
             .set(upload_mbps);
         self.peer_bandwidth
-            .with_label_values(&[&peer_str, "download"])
+            .with_label_values(&[&peer_str, &download])
             .set(download_mbps);
 
         let mut stats = self.peer_stats.write().await;

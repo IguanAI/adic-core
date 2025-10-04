@@ -234,12 +234,13 @@ Get current DAG tips (messages without children).
 
 ### P-adic Operations
 
-#### GET /v1/balls/:axis/:radius **[PLACEHOLDER]**
+#### GET /v1/balls/:axis/:radius/:center
 Get all messages within a p-adic ball.
 
 **Parameters:**
 - `axis` (path) - Axis index (0 to d-1)
-- `radius` (path) - P-adic radius
+- `radius` (path) - P-adic radius (must match length of center)
+- `center` (path) - Hex-encoded ball center (p-adic features)
 
 **Response:**
 ```json
@@ -247,14 +248,15 @@ Get all messages within a p-adic ball.
   "axis": 0,
   "radius": 3,
   "center": "hex_string",
+  "message_count": 5,
   "messages": ["hex_string", ...]
 }
 ```
 
 ### Proofs & Security
 
-#### POST /v1/proofs/membership **[PLACEHOLDER]**
-Generate a p-adic ball membership proof.
+#### POST /v1/proofs/membership
+Generate a p-adic ball membership proof for a message.
 
 **Request Body:**
 ```json
@@ -268,44 +270,68 @@ Generate a p-adic ball membership proof.
 **Response:**
 ```json
 {
-  "proof": "base64_string",
-  "valid_until": "2025-08-29T13:00:00Z"
+  "message_id": "hex_string",
+  "axis": 0,
+  "radius": 3,
+  "ball_id": "hex_string",
+  "proof": {
+    "type": "ball_membership",
+    "features": {
+      "p": 3,
+      "digits": [1, 2, 0, 1]
+    },
+    "ball_id": "hex_string",
+    "verification": "Ball ID computed from message p-adic features"
+  },
+  "verified": true
 }
 ```
 
-#### POST /v1/proofs/verify **[PLACEHOLDER]**
-Verify a membership proof.
+#### POST /v1/proofs/verify
+Verify a p-adic ball membership proof.
 
 **Request Body:**
 ```json
 {
-  "proof": "base64_string",
-  "message_id": "hex_string"
+  "proof": {
+    "type": "ball_membership",
+    "features": {
+      "p": 3,
+      "digits": [1, 2, 0, 1]
+    },
+    "ball_id": "hex_string"
+  }
 }
 ```
 
 **Response:**
 ```json
 {
-  "valid": true,
-  "details": "Proof valid for axis 0, radius 3"
+  "verified": true,
+  "proof_type": "ball_membership",
+  "details": "Proof valid: computed ball ID matches claimed ball ID",
+  "computed_ball_id": "hex_string",
+  "claimed_ball_id": "hex_string"
 }
 ```
 
-#### GET /v1/security/score/:id **[PARTIAL]**
-Get the security score for a message.
+#### GET /v1/security/score/:id
+Get the security score and admissibility check for a message.
 
 **Parameters:**
-- `id` (path) - Message ID
+- `id` (path) - Message ID (hex-encoded)
 
 **Response:**
 ```json
 {
   "message_id": "hex_string",
+  "is_admissible": true,
+  "admissibility_score": 0.95,
   "c1_score": 0.95,
-  "c2_score": 0.88,
-  "c3_score": 0.92,
-  "overall": 0.91
+  "c2_score": 1.0,
+  "c3_score": 1.0,
+  "overall": 0.98,
+  "details": "Admissibility check details"
 }
 ```
 
@@ -543,33 +569,48 @@ Initialize genesis allocation (can only be called once).
 }
 ```
 
-#### GET /v1/deposits **[PARTIAL]**
-Get deposits summary.
+#### GET /v1/deposits
+Get deposits summary and recent deposit history.
 
 **Response:**
 ```json
 {
-  "total_escrowed": "10000000000000",
-  "active_deposits": 45,
-  "refunded_amount": "2000000000000"
+  "summary": {
+    "escrowed_count": 45,
+    "total_escrowed": 10000000000000,
+    "slashed_count": 2,
+    "total_slashed": 200000000000,
+    "refunded_count": 10,
+    "total_refunded": 1000000000000
+  },
+  "recent_deposits": [
+    {
+      "message_id": "hex_string",
+      "proposer": "pubkey_hex",
+      "amount": 100000000000,
+      "status": "Escrowed",
+      "timestamp": "2025-08-29T12:00:00Z"
+    }
+  ]
 }
 ```
 
-#### GET /v1/deposits/:id **[PARTIAL]**
-Get deposit status for a message.
+#### GET /v1/deposits/:id
+Get deposit status for a specific message.
 
 **Parameters:**
-- `id` (path) - Message ID
+- `id` (path) - Message ID (hex-encoded)
 
 **Response:**
 ```json
 {
   "message_id": "hex_string",
-  "amount": "100000000000",
-  "status": "escrowed",
-  "depositor": "pubkey_hex",
-  "escrowed_at": "2025-08-29T12:00:00Z",
-  "refundable_at": "2025-08-29T13:00:00Z"
+  "proposer": "pubkey_hex",
+  "amount": 100000000000,
+  "status": "Escrowed",
+  "timestamp": "2025-08-29T12:00:00Z",
+  "slashed": false,
+  "refunded": false
 }
 ```
 
@@ -873,14 +914,14 @@ Query multiple messages in a single request for efficient indexing.
 }
 ```
 
-#### GET /v1/messages/range **[PARTIAL]** 
-Get messages within a time range.
+#### GET /v1/messages/range
+Get messages within a time range with pagination support.
 
 **Query Parameters:**
 - `start` - ISO8601 timestamp (required)
 - `end` - ISO8601 timestamp (required)
-- `limit` - Max messages (default 1000)
-- `cursor` - Pagination cursor
+- `limit` - Max messages (default 1000, max 1000)
+- `cursor` - Pagination cursor (optional)
 
 **Response:**
 ```json
@@ -891,16 +932,14 @@ Get messages within a time range.
 }
 ```
 
-**Note:** Storage backend implementation for time-based queries is pending. Currently returns empty results.
-
-#### GET /v1/messages/since/:id **[PARTIAL]**
+#### GET /v1/messages/since/:id
 Get all messages since a specific checkpoint for incremental sync.
 
 **Parameters:**
-- `id` (path) - Checkpoint message ID
+- `id` (path) - Checkpoint message ID (hex-encoded)
 
 **Query Parameters:**
-- `limit` - Max messages (default 1000)
+- `limit` - Max messages (default 1000, max 1000)
 
 **Response:**
 ```json
@@ -909,8 +948,6 @@ Get all messages since a specific checkpoint for incremental sync.
   "count": 150
 }
 ```
-
-**Note:** Storage backend implementation for incremental sync is pending. Currently returns empty results.
 
 ## Error Responses
 

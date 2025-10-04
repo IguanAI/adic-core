@@ -13,6 +13,7 @@ pub struct ParentCandidate {
     pub conflict_penalty: f64,
     pub weight: f64,
     pub axis_weights: HashMap<u32, f64>,
+    pub age: f64, // Message age in seconds (for trust decay calculation)
 }
 
 #[derive(Debug, Clone)]
@@ -124,8 +125,12 @@ impl MrwSelector {
                     self.params.rho[axis_idx as usize],
                 );
 
-                let weight =
-                    weight_calc.compute_weight(proximity, tip.reputation, tip.conflict_penalty);
+                let weight = weight_calc.compute_weight(
+                    proximity,
+                    tip.reputation,
+                    tip.conflict_penalty,
+                    tip.age,
+                );
 
                 let mut candidate = tip.clone();
                 candidate.weight = weight;
@@ -295,8 +300,12 @@ impl MrwSelector {
                         self.params.rho.get(axis_idx).copied().unwrap_or(2),
                     );
 
-                    let weight =
-                        weight_calc.compute_weight(proximity, tip.reputation, tip.conflict_penalty);
+                    let weight = weight_calc.compute_weight(
+                        proximity,
+                        tip.reputation,
+                        tip.conflict_penalty,
+                        tip.age,
+                    );
 
                     total_weight += weight;
                 }
@@ -339,6 +348,7 @@ mod tests {
                 conflict_penalty: 0.0,
                 weight: 0.0,
                 axis_weights: HashMap::new(),
+                age: 0.0, // Test messages are fresh
             })
             .collect()
     }
