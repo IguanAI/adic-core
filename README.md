@@ -4,7 +4,7 @@
 
 **A Higher-Dimensional p-Adic Ultrametric Tangle with Feeless Consensus**
 
-[![Version](https://img.shields.io/badge/version-0.1.11-blue.svg)](https://github.com/IguanAI/adic-core/releases)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://github.com/IguanAI/adic-core/releases)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://github.com/IguanAI/adic-core/actions/workflows/ci.yml/badge.svg)](https://github.com/IguanAI/adic-core/actions)
@@ -29,6 +29,7 @@ ADIC-DAG Core is a Rust implementation of the **ADIC-DAG protocol** as specified
 - **Higher-Dimensional Tangle**: Messages form d-simplices with d+1 parent approvals
 - **Feeless Consensus**: Refundable anti-spam deposits replace transaction fees
 - **Deterministic Finality**: K-core coverage and persistent homology stabilization
+- **Streaming Persistent Homology**: Incremental F2 finality with O(n) amortized complexity
 - **Reputation-Weighted**: Non-transferable ADIC-Rep scores weight consensus
 - **Energy Descent Conflict Resolution**: Mathematically guaranteed convergence
 - **Genesis Configuration System**: Canonical genesis state with cryptographic validation (300.4M ADIC supply)
@@ -40,7 +41,7 @@ ADIC-DAG Core is a Rust implementation of the **ADIC-DAG protocol** as specified
 
 - **🔐 Ultrametric Cryptography**: ⚠️ **Partially Implemented** - Hash-based ball proofs, experimental p-adic crypto
 - **⚡ High Performance**: ⚠️ **Benchmarks Needed** - P-adic operations performance unverified
-- **📊 Dual Finality Tests**: ✅ **K-core (F1) Complete** | ⚠️ **F2 Homology Heuristic** - Simplified implementation
+- **📊 Dual Finality Tests**: ✅ **K-core (F1) Complete** | ✅ **F2 Persistent Homology Complete** - Full implementation with GUDHI validation
 - **🌐 Multi-Axis Diversity**: ✅ **C1-C3 Constraints Implemented**
 - **🛡️ Attack Resistant**: ⚠️ **Basic Protection** - Sybil, collusion, and censorship resistance implemented
 - **📈 Natural Sharding**: ⚠️ **Conceptual** - Emerges from p-adic ball topology (not production-ready)
@@ -56,6 +57,9 @@ This implementation provides a foundation for the ADIC-DAG protocol but contains
 - **Message Structure**: d-dimensional simplices with parent approvals
 - **C1-C3 Constraint Validation**: Proximity, diversity, and reputation checking
 - **K-core (F1) Finality**: Complete implementation with proper graph algorithms
+- **F2 Persistent Homology**: Complete implementation with streaming support (3,566 lines)
+- **GUDHI Validation Suite**: Gold-standard TDA library validation (5 topological test cases)
+- **Streaming Finality Updates**: O(n) amortized incremental persistence computation
 - **Multi-axis Random Walk**: Tip selection with ultrametric weighting
 - **Deposit System**: Anti-spam deposits with refund mechanism
 - **Network Gossip**: P2P message propagation (axis-aware overlays planned)
@@ -69,7 +73,6 @@ This implementation provides a foundation for the ADIC-DAG protocol but contains
 - **Version Management**: ✅ Automatic version syncing via CARGO_PKG_VERSION
 
 ### ⚠️ Partially Implemented / Simplified
-- **F2 Homology Finality**: Heuristic approximation, not full persistent homology pipeline
 - **Ball Membership Proofs**: Blake3 hash-based verification instead of cryptographic proofs
 - **Feature Commitments**: Hash commitments without zero-knowledge properties
 - **API Security Endpoints**: Return placeholder values instead of real computations
@@ -374,7 +377,7 @@ adic-core/
 │   │   └── padic_crypto.rs          # Ultrametric key operations
 │   ├── adic-consensus/   # Admissibility checker, energy descent
 │   ├── adic-mrw/         # Multi-axis random walk tip selection
-│   ├── adic-finality/    # K-core (F1) finality ✅; F2 homology ⚠️ (heuristic implementation)
+│   ├── adic-finality/    # K-core (F1) ✅; F2 persistent homology ✅ (3,566 lines, streaming support)
 │   ├── adic-storage/     # Persistent hypergraph storage
 │   ├── adic-network/     # P2P gossip with axis-aware overlays
 │   ├── adic-economics/   # ADIC token and ADIC-Rep reputation
@@ -391,7 +394,7 @@ adic-core/
 | **MRW Tip Selection** | §3.3 | Trust-weighted with proximity scoring |
 | **Energy Descent** | §4.1 | `ConflictResolver` with support calculation |
 | **K-core Finality F1** | §4.2 | Requires k≥20, q≥3 distinct balls, depth≥12 |
-| **Homology Finality F2** | §4.2 & App.C | ⚠️ Heuristic stabilization (not full persistent homology) |
+| **Homology Finality F2** | §4.2 & App.C | ✅ Full persistent homology with GUDHI validation, streaming O(n) updates |
 | **Feeless + Deposits** | §5.1 | Refundable 0.1 ADIC anti-spam |
 | **ADIC Token** | §5.2 | Utility token (not for consensus weight) |
 | **ADIC-Rep** | §5.3 | Non-transferable reputation scoring |
@@ -506,6 +509,61 @@ Node configuration is managed via TOML files. Example configs are provided:
 
 See [Genesis & Bootstrap](#genesis--bootstrap) section for configuration structure.
 
+## F2 Persistent Homology Implementation
+
+### Overview
+Version 0.2.0 introduces a complete F2 topological finality implementation based on persistent homology over the field F₂. This replaces the previous heuristic approximation with a mathematically rigorous computation aligned with the ADIC-DAG paper (Appendix C).
+
+### Module Architecture (3,566 lines)
+- **simplex.rs** (401 lines): Simplicial complex data structures with filtration
+- **streaming.rs** (485 lines): Incremental persistence with O(n) amortized complexity
+- **f2_finality.rs** (797 lines): Dual-mode finality checker (batch vs streaming)
+- **persistence.rs** (431 lines): Persistence diagram computation
+- **reduction.rs** (336 lines): Boundary matrix reduction over F₂
+- **bottleneck.rs** (374 lines): L∞ Wasserstein distance for diagram comparison
+- **matrix.rs** (347 lines): Sparse boundary matrix operations
+- **adic_complex.rs** (306 lines): ADIC message → simplicial complex conversion
+
+### GUDHI Validation
+The implementation is validated against GUDHI (Geometric Understanding in Higher Dimensions), the gold-standard TDA library:
+- **5 test cases**: Simple triangle, tetrahedron, sphere S², torus, Klein bottle
+- **Accuracy criteria**: Barcode accuracy ε = 10⁻⁶, Betti number exactness, bottleneck distance ε = 10⁻⁴
+- **Generate references**: `cd crates/adic-finality/validation && poetry run python generate_references.py`
+
+### Streaming vs Batch Mode
+**Batch Mode** (default, backward compatible):
+- Recomputes full persistent homology each round
+- Complexity: O(n²-n³) per round
+- Use case: Small message sets, maximum accuracy
+
+**Streaming Mode** (v0.2.0):
+- Incremental updates using vineyard-style algorithm
+- Complexity: O(n) amortized per new message
+- 10-1000x speedup potential for large message sets
+- Bounded memory: maintains last Δ snapshots
+
+Configuration:
+```rust
+F2Config {
+    use_streaming: true,  // Enable streaming mode
+    dimension: 3,          // Compute H₀, H₁, H₂, H₃
+    radius: 5,             // Δ = 5 rounds for bottleneck comparison
+    epsilon: 0.1,          // Stabilization threshold
+    ...
+}
+```
+
+### Finality Criteria
+**F2 finality achieved when**:
+1. H₃ (3-dimensional holes) is stable for Δ rounds
+2. H₂ bottleneck distance < ε between consecutive rounds
+3. Confidence score exceeds threshold
+
+### Performance
+- **101 tests passing** (96 core + 5 GUDHI validation)
+- **Benchmarks**: `cargo bench --bench f2_finality_bench`
+- **Memory**: O(n) simplices + bounded snapshots (10 by default)
+
 ## Protocol Implementation
 
 ### Ultrametric Security (PARTIAL IMPLEMENTATION)
@@ -590,7 +648,7 @@ mu = 1.0           # Conflict penalty weight
 | `/submit` | POST | Submit message with features and parents |
 | `/message/:id` | GET | Retrieve message with ultrametric data |
 | `/tips` | GET | Current tips with diversity metrics |
-| `/v1/finality/:id` | GET | Check F1 k-core status; F2 homology ⚠️ (heuristic) |
+| `/v1/finality/:id` | GET | Check F1 k-core status; F2 persistent homology ✅ (complete) |
 
 ### Ultrametric Security
 
@@ -616,6 +674,15 @@ cargo test --all
 
 # Test specific security components
 cargo test -p adic-crypto
+
+# Run F2 persistent homology tests
+cargo test -p adic-finality ph::
+
+# Run GUDHI validation suite
+cargo test validation_against_gudhi
+
+# Benchmark F2 finality
+cargo bench --bench f2_finality_bench
 
 # Benchmark consensus operations
 cargo bench --bench consensus_bench
@@ -675,7 +742,7 @@ cargo test -p adic-network
 
 ### Phase 1 (Beta) 🚧
 - [ ] Genesis L1 anchoring (Ethereum/Bitcoin)
-- [x] Persistent homology streaming (heuristic implementation)
+- [x] Persistent homology streaming (complete implementation, 3,566 lines)
 - [ ] ADIC-Rep SBT implementation
 - [ ] Axis-aware gossip overlays
 

@@ -1,0 +1,60 @@
+{
+  "test_case": "tetrahedron",
+  "description": "Filled tetrahedron (3-ball) - contractible space",
+  "num_points": 4,
+  "max_dimension": 3,
+  "expected_betti": {
+    "beta_0": 1,
+    "beta_1": 0,
+    "beta_2": 0,
+    "beta_3": 0
+  },
+  "betti_numbers": {
+    "beta_0": 1,
+    "beta_1": 0,
+    "beta_2": 0,
+    "beta_3": 0
+  },
+  "barcodes": {
+    "H0": [
+      {
+        "birth": 0.0,
+        "death": 1.0
+      },
+      {
+        "birth": 0.0,
+        "death": 1.0
+      },
+      {
+        "birth": 0.0,
+        "death": 1.0
+      },
+      {
+        "birth": 0.0,
+        "death": null
+      }
+    ],
+    "H1": [
+      {
+        "birth": 1.0,
+        "death": 2.0
+      },
+      {
+        "birth": 1.0,
+        "death": 2.0
+      },
+      {
+        "birth": 1.0,
+        "death": 2.0
+      }
+    ],
+    "H2": [
+      {
+        "birth": 2.0,
+        "death": 3.0
+      }
+    ],
+    "H3": []
+  },
+  "num_simplices": 15
+}

@@ -375,6 +375,10 @@ async fn test_kcore_finality_properties() {
         min_reputation: 0.5,
         check_interval_ms: 1000,
         window_size: 100,
+        f2_enabled: true,
+        f2_timeout_ms: 2000,
+        f1_enabled: true,
+        epsilon: 0.1,
     };
     let finality = FinalityEngine::new(finality_config, consensus.clone(), storage.clone());
     let _kcore = KCoreAnalyzer::new(params.k as usize, 2, 2, 0.5, params.rho.clone());

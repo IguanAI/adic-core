@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "adic-finality-validation"
+version = "0.1.0"
+description = "GUDHI-based validation reference generator for ADIC F2 persistent homology"
+authors = ["ADIC Core Team"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+gudhi = "^3.9.0"
+numpy = "^2.0.0"
+
+[tool.poetry.scripts]
+generate = "generate_references:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

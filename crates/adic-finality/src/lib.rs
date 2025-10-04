@@ -2,6 +2,7 @@ pub mod artifact;
 pub mod engine;
 pub mod homology;
 pub mod kcore;
+pub mod ph;
 
 pub use artifact::{FinalityArtifact, FinalityGate, FinalityParams, FinalityWitness};
 pub use engine::{FinalityConfig, FinalityEngine, KCoreFinalityResult};

@@ -30,6 +30,12 @@ pub struct Metrics {
     pub kcore_size: IntGauge,
     pub finality_depth: Histogram,
 
+    // F2 (Persistent Homology) Finality Metrics
+    pub f2_computation_time: Histogram,
+    pub f2_timeout_count: IntCounter,
+    pub f1_fallback_count: IntCounter,
+    pub finality_method_used: IntGauge, // 0=pending, 1=F1, 2=F2
+
     // Validation Metrics
     pub signature_verifications: IntCounter,
     pub signature_failures: IntCounter,
@@ -116,6 +122,25 @@ impl Metrics {
             "adic_finality_depth_seconds",
             "Finality depth",
         ))
+        .unwrap();
+
+        // F2 finality metrics
+        let f2_computation_time = Histogram::with_opts(HistogramOpts::new(
+            "adic_f2_computation_time_seconds",
+            "F2 persistent homology computation time",
+        ))
+        .unwrap();
+        let f2_timeout_count =
+            IntCounter::new("adic_f2_timeout_total", "Total F2 computation timeouts").unwrap();
+        let f1_fallback_count = IntCounter::new(
+            "adic_f1_fallback_total",
+            "Total F1 fallbacks after F2 timeout",
+        )
+        .unwrap();
+        let finality_method_used = IntGauge::new(
+            "adic_finality_method_used",
+            "Current finality method (0=pending, 1=F1, 2=F2)",
+        )
         .unwrap();
 
         let signature_verifications = IntCounter::new(
@@ -222,6 +247,18 @@ impl Metrics {
         registry.register(Box::new(kcore_size.clone())).unwrap();
         registry.register(Box::new(finality_depth.clone())).unwrap();
         registry
+            .register(Box::new(f2_computation_time.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(f2_timeout_count.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(f1_fallback_count.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(finality_method_used.clone()))
+            .unwrap();
+        registry
             .register(Box::new(signature_verifications.clone()))
             .unwrap();
         registry
@@ -281,6 +318,10 @@ impl Metrics {
             finalizations_total,
             kcore_size,
             finality_depth,
+            f2_computation_time,
+            f2_timeout_count,
+            f1_fallback_count,
+            finality_method_used,
             signature_verifications,
             signature_failures,
             current_tips,

@@ -91,6 +91,10 @@ async fn test_complete_message_lifecycle() {
         min_reputation: params.r_sum_min,
         check_interval_ms: 1000,
         window_size: 1000,
+        f2_enabled: true,
+        f2_timeout_ms: 2000,
+        f1_enabled: true,
+        epsilon: 0.1,
     };
     let finality = Arc::new(FinalityEngine::new(
         finality_config,
@@ -304,6 +308,10 @@ async fn test_full_finalization_flow() {
         min_reputation: params.r_sum_min,
         check_interval_ms: 1000,
         window_size: 1000,
+        f2_enabled: true,
+        f2_timeout_ms: 2000,
+        f1_enabled: true,
+        epsilon: 0.1,
     };
     let consensus_engine = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality = FinalityEngine::new(finality_config, consensus_engine, storage.clone());
@@ -374,6 +382,10 @@ async fn test_full_finalization_flow() {
                 reputation_sum: 1.0,
                 distinct_balls: HashMap::new(),
                 core_size: 4,
+                h3_stable: None,
+                h2_bottleneck_distance: None,
+                f2_confidence: None,
+                num_finalized_messages: None,
             },
         );
         storage

@@ -1,0 +1,12 @@
+{
+  "generator_version": "1.0.0",
+  "gudhi_version": "3.11.0",
+  "test_cases": [
+    "simple_triangle",
+    "tetrahedron",
+    "sphere",
+    "torus",
+    "klein_bottle"
+  ],
+  "total_test_cases": 5
+}

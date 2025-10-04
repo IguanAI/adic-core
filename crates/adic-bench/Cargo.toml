@@ -10,9 +10,18 @@ repository.workspace = true
 name = "consensus_bench"
 harness = false
 
+[[bench]]
+name = "storage_bench"
+harness = false
+
+[[bench]]
+name = "f2_finality_bench"
+harness = false
+
 [dependencies]
 criterion = { workspace = true }
 adic-consensus = { path = "../adic-consensus" }
+adic-finality = { path = "../adic-finality" }
 adic-types = { path = "../adic-types" }
 adic-crypto = { path = "../adic-crypto" }
 adic-mrw = { path = "../adic-mrw" }

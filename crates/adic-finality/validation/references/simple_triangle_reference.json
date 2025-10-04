@@ -1,0 +1,35 @@
+{
+  "test_case": "simple_triangle",
+  "description": "Simple triangle (3 vertices, 3 edges) - minimal test",
+  "num_points": 3,
+  "max_dimension": 1,
+  "expected_betti": {
+    "beta_0": 1,
+    "beta_1": 1,
+    "beta_2": 0
+  },
+  "betti_numbers": {
+    "beta_0": 1,
+    "beta_1": 0,
+    "beta_2": 0
+  },
+  "barcodes": {
+    "H0": [
+      {
+        "birth": 0.0,
+        "death": 1.0
+      },
+      {
+        "birth": 0.0,
+        "death": 1.0
+      },
+      {
+        "birth": 0.0,
+        "death": null
+      }
+    ],
+    "H1": [],
+    "H2": []
+  },
+  "num_simplices": 6
+}

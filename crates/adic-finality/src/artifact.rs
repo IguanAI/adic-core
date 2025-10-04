@@ -13,12 +13,19 @@ pub enum FinalityGate {
 /// Witness data for finality
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalityWitness {
+    // F1 (K-core) witness data
     pub kcore_root: Option<MessageId>,
     pub depth: u32,
     pub diversity_ok: bool,
     pub reputation_sum: f64,
     pub distinct_balls: HashMap<u32, usize>,
     pub core_size: usize,
+
+    // F2 (Persistent Homology) witness data
+    pub h3_stable: Option<bool>,
+    pub h2_bottleneck_distance: Option<f64>,
+    pub f2_confidence: Option<f64>,
+    pub num_finalized_messages: Option<usize>,
 }
 
 /// Validator attestation
@@ -111,6 +118,10 @@ mod tests {
             reputation_sum: 10.5,
             distinct_balls: [(0, 3), (1, 4), (2, 3)].into_iter().collect(),
             core_size: 25,
+            h3_stable: None,
+            h2_bottleneck_distance: None,
+            f2_confidence: None,
+            num_finalized_messages: None,
         };
 
         let artifact = FinalityArtifact::new(intent_id, FinalityGate::F1KCore, params, witness);
@@ -136,6 +147,10 @@ mod tests {
             reputation_sum: 10.5,
             distinct_balls: HashMap::new(),
             core_size: 25,
+            h3_stable: None,
+            h2_bottleneck_distance: None,
+            f2_confidence: None,
+            num_finalized_messages: None,
         };
 
         let artifact = FinalityArtifact::new(intent_id, FinalityGate::F1KCore, params, witness);
