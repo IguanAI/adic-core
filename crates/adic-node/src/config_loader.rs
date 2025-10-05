@@ -243,6 +243,14 @@ impl UnifiedConfig {
             self.node.name = name;
         }
 
+        // Bootstrap mode override
+        if let Ok(bootstrap) = std::env::var("BOOTSTRAP") {
+            if let Ok(is_bootstrap) = bootstrap.parse::<bool>() {
+                info!(old = self.node.bootstrap, new = is_bootstrap, "Overriding bootstrap mode from environment");
+                self.node.bootstrap = is_bootstrap;
+            }
+        }
+
         // Bootstrap peers override (comma-separated)
         if let Ok(peers) = std::env::var("BOOTSTRAP_PEERS") {
             if !peers.is_empty() {
