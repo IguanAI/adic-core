@@ -96,6 +96,79 @@ cargo test --all
 RUST_LOG=info ./target/release/adic start
 ```
 
+### Docker Development Environment (Recommended for New Contributors)
+
+The fastest way to get started is using our Docker-based development environment, which includes:
+- 2 ADIC nodes running in devnet mode
+- PostgreSQL for state queries
+- Prometheus for metrics collection
+- Grafana for visualization
+
+**Prerequisites:**
+- Docker and Docker Compose installed
+- At least 4GB of free RAM
+
+**Quick Start:**
+
+```bash
+# Start the complete development environment
+./scripts/dev-start.sh
+
+# View logs from all services
+./scripts/dev-logs.sh
+
+# View logs from a specific service
+./scripts/dev-logs.sh adic-node-1
+
+# Stop the environment (preserves data)
+./scripts/dev-stop.sh
+
+# Reset everything (removes all data)
+./scripts/dev-reset.sh
+```
+
+**Available Services:**
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Node 1 API | http://localhost:8080 | - |
+| Node 1 Swagger UI | http://localhost:8080/api/docs | - |
+| Node 2 API | http://localhost:18081 | - |
+| Node 2 Swagger UI | http://localhost:18081/api/docs | - |
+| Grafana | http://localhost:3000 | admin/admin |
+| Prometheus | http://localhost:9090 | - |
+| PostgreSQL | localhost:15432 | adic/adic_dev_password |
+
+**Testing Multi-Node Communication:**
+
+```bash
+# Submit a message to node 1
+curl -X POST http://localhost:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"payload": "test message"}'
+
+# Check if node 2 received it
+curl http://localhost:18081/v1/messages | jq
+```
+
+**Environment Variables:**
+
+You can customize the dev environment by setting variables in `.env`:
+
+```bash
+# Example: Change Grafana password
+GRAFANA_ADMIN_PASSWORD=my_secure_password ./scripts/dev-start.sh
+
+# Example: Adjust Prometheus retention
+PROMETHEUS_RETENTION=30d ./scripts/dev-start.sh
+```
+
+**Monitoring & Debugging:**
+
+- **Grafana Dashboards**: Pre-configured dashboards show message flow, finality, and performance
+- **Prometheus Metrics**: Raw metrics available at each node's `/metrics` endpoint
+- **Container Logs**: Use `docker logs adic-node-1` for detailed debugging
+
 ### Troubleshooting Build Issues
 
 **RocksDB compilation fails:**

@@ -137,8 +137,36 @@ cargo test --all
 ```bash
 # Verify installation
 ./target/release/adic --version
-# Output: adic 0.1.8
+# Output: adic 0.2.0
 ```
+
+#### Quick Start: Using Network Presets
+
+The simplest way to start a node is using the `--network` flag with built-in network configurations:
+
+```bash
+# Start a mainnet node (production configuration)
+./target/release/adic start --network mainnet
+
+# Start a testnet node (public testing network)
+./target/release/adic start --network testnet
+
+# Start a devnet node (local development with fast finality)
+./target/release/adic start --network devnet
+```
+
+**Network Configurations:**
+- **`mainnet`**: Production parameters (k=20, D*=12, deposit=0.1 ADIC)
+- **`testnet`**: Same consensus params as mainnet, lower reputation thresholds for testing
+- **`devnet`**: Minimal thresholds (k=2, D*=2) for rapid local development
+
+Network configurations are defined in `config/*.toml` files and include all consensus parameters, economic settings, and network topology. Runtime settings (ports, paths) can be overridden via environment variables (see `.env.example`).
+
+**⚠️ Important:** Consensus parameters (p, d, k, rho, etc.) are immutable and defined in the network config files. Never override them via environment variables.
+
+#### Advanced: Custom Configurations
+
+For custom network configurations, you can use the `--config` flag:
 
 #### Choose Your Node Type
 
@@ -147,10 +175,11 @@ cargo test --all
 # Generate keypair
 ./target/release/adic keygen --output node.key
 
-# Edit bootstrap-config.toml: set [node] bootstrap = true
+# Start bootstrap node for mainnet (creates genesis.json)
+./target/release/adic start --network mainnet
 
-# Start bootstrap node with config file (creates genesis.json)
-./target/release/adic --config bootstrap-config.toml start
+# Or create custom bootstrap config with [node] bootstrap = true
+# ./target/release/adic --config custom-bootstrap.toml start
 
 # Bootstrap nodes initialize the network genesis state
 # See BOOTSTRAP.md for complete setup guide
@@ -164,10 +193,11 @@ cargo test --all
 # Obtain genesis.json from bootstrap node or network
 # Place it in your data directory
 
-# Edit testnet-config.toml: ensure [node] bootstrap = false (or omit)
+# Start validator node for testnet
+./target/release/adic start --network testnet
 
-# Start validator node with config file
-./target/release/adic --config testnet-config.toml start
+# Or use mainnet
+./target/release/adic start --network mainnet
 
 # Node validates genesis.json against canonical hash
 # See TESTNET.md for joining the testnet
@@ -243,20 +273,20 @@ quic_port = 9003
 
 ```bash
 # Check node health
-curl http://localhost:8080/health
+curl http://localhost:8080/v1/health
 
 # Get node status (includes finality metrics)
-curl http://localhost:8080/status
+curl http://localhost:8080/v1/status
 
 # Submit a message with features
-curl -X POST http://localhost:8080/submit \
+curl -X POST http://localhost:8080/v1/messages \
   -H "Content-Type: application/json" \
   -d '{
     "content": "Hello, ADIC-DAG!",
     "features": {
       "axes": [
         {"axis": 0, "value": 42},
-        {"axis": 1, "value": 100}, 
+        {"axis": 1, "value": 100},
         {"axis": 2, "value": 7}
       ]
     }
@@ -407,11 +437,11 @@ The ADIC node exposes a comprehensive REST API for interacting with the network.
 ### Quick Reference
 
 #### Basic Operations
-- `GET /health` - Health check
-- `GET /status` - Node status with finality metrics and capability flags
-- `POST /submit` - Submit a message to the DAG
-- `GET /message/:id` - Retrieve a specific message
-- `GET /tips` - Get current DAG tips
+- `GET /v1/health` - Health check
+- `GET /v1/status` - Node status with finality metrics and capability flags
+- `POST /v1/messages` - Submit a message to the DAG
+- `GET /v1/messages/:id` - Retrieve a specific message
+- `GET /v1/tips` - Get current DAG tips
 
 #### Economics & Token Management
 - `GET /v1/economics/supply` - Token supply metrics
@@ -501,11 +531,12 @@ Commands:
 
 ### Configuration Files
 
-Node configuration is managed via TOML files. Example configs are provided:
-- `bootstrap-config.toml` - Bootstrap node configuration
-- `testnet-config.toml` - Testnet validator configuration
-- `adic-config.toml` - Mainnet configuration
-- `config/node{1,2,3}-config.toml` - Multi-node test configurations
+Node configuration is managed via TOML files using the `--network` flag:
+- `config/mainnet.toml` - Production network configuration (k=20, D*=12, 300.4M ADIC supply)
+- `config/testnet.toml` - Public testing network (same consensus as mainnet, lower thresholds)
+- `config/devnet.toml` - Local development (k=2, D*=2, fast finality)
+
+For custom configurations, create your own TOML file and use `--config custom.toml`.
 
 See [Genesis & Bootstrap](#genesis--bootstrap) section for configuration structure.
 
@@ -645,9 +676,9 @@ mu = 1.0           # Conflict penalty weight
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/submit` | POST | Submit message with features and parents |
-| `/message/:id` | GET | Retrieve message with ultrametric data |
-| `/tips` | GET | Current tips with diversity metrics |
+| `/v1/messages` | POST | Submit message with features and parents |
+| `/v1/messages/:id` | GET | Retrieve message with ultrametric data |
+| `/v1/tips` | GET | Current tips with diversity metrics |
 | `/v1/finality/:id` | GET | Check F1 k-core status; F2 persistent homology ✅ (complete) |
 
 ### Ultrametric Security

@@ -18,6 +18,8 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+sha2 = "0.10"
+ed25519-dalek = { workspace = true }
 # Mathematical libraries for persistent homology
 num-traits = { workspace = true }
 num-integer = { workspace = true }

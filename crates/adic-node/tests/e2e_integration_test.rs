@@ -95,6 +95,7 @@ async fn test_complete_message_lifecycle() {
         f2_timeout_ms: 2000,
         f1_enabled: true,
         epsilon: 0.1,
+        checkpoint_interval: 100,
     };
     let finality = Arc::new(FinalityEngine::new(
         finality_config,
@@ -312,6 +313,7 @@ async fn test_full_finalization_flow() {
         f2_timeout_ms: 2000,
         f1_enabled: true,
         epsilon: 0.1,
+        checkpoint_interval: 100,
     };
     let consensus_engine = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality = FinalityEngine::new(finality_config, consensus_engine, storage.clone());

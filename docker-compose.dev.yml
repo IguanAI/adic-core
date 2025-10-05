@@ -1,0 +1,209 @@
+# Docker Compose file for ADIC development environment
+# Remove version as it's obsolete in modern docker compose
+
+# ADIC-DAG Development Environment
+# Complete local development stack with 2 nodes, monitoring, and database
+
+services:
+  # ============================================
+  # ADIC Node 1 (Bootstrap)
+  # ============================================
+  adic-node-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: adic-node-1
+    ports:
+      - "8080:8080"  # API
+      - "9000:9000"  # P2P
+      - "9001:9001"  # QUIC
+    environment:
+      # Network configuration
+      - NETWORK=devnet
+      - NODE_NAME=dev-node-1
+      - NODE_MODE=validator
+
+      # Network ports
+      - API_PORT=8080
+      - API_HOST=0.0.0.0
+      - P2P_PORT=9000
+      - QUIC_PORT=9001
+
+      # Data directory
+      - DATA_DIR=/app/data
+
+      # Bootstrap configuration
+      - BOOTSTRAP_PEERS=
+
+      # Logging
+      - LOG_LEVEL=debug
+      - LOG_FORMAT=pretty
+      - LOG_USE_EMOJIS=true
+      - RUST_LOG=debug,adic=debug
+
+      # Metrics
+      - METRICS_ENABLED=true
+    volumes:
+      - adic-node-1-data:/app/data
+      - ./config:/app/config:ro
+    networks:
+      - adic-dev
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ============================================
+  # ADIC Node 2 (Validator)
+  # ============================================
+  adic-node-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: adic-node-2
+    ports:
+      - "18081:8080"  # API
+      - "19002:9000"  # P2P
+      - "19003:9001"  # QUIC
+    environment:
+      # Network configuration
+      - NETWORK=devnet
+      - NODE_NAME=dev-node-2
+      - NODE_MODE=validator
+
+      # Network ports
+      - API_PORT=8080
+      - API_HOST=0.0.0.0
+      - P2P_PORT=9000
+      - QUIC_PORT=9001
+
+      # Data directory
+      - DATA_DIR=/app/data
+
+      # Bootstrap to node 1
+      - BOOTSTRAP_PEERS=/ip4/adic-node-1/tcp/9000
+
+      # Logging
+      - LOG_LEVEL=debug
+      - LOG_FORMAT=pretty
+      - LOG_USE_EMOJIS=true
+      - RUST_LOG=debug,adic=debug
+
+      # Metrics
+      - METRICS_ENABLED=true
+    volumes:
+      - adic-node-2-data:/app/data
+      - ./config:/app/config:ro
+    networks:
+      - adic-dev
+    depends_on:
+      adic-node-1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ============================================
+  # PostgreSQL (Future State Queries)
+  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: adic-postgres
+    ports:
+      - "15432:5432"
+    environment:
+      - POSTGRES_DB=adic_dev
+      - POSTGRES_USER=adic
+      - POSTGRES_PASSWORD=adic_dev_password
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - adic-dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U adic"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ============================================
+  # Prometheus (Metrics Collection)
+  # ============================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: adic-prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - adic-dev
+    depends_on:
+      - adic-node-1
+      - adic-node-2
+    restart: unless-stopped
+
+  # ============================================
+  # Grafana (Metrics Visualization)
+  # ============================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: adic-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - adic-dev
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  adic-dev:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.100.0/24
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  adic-node-1-data:
+    driver: local
+  adic-node-2-data:
+    driver: local
+  postgres-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local

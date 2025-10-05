@@ -1,4 +1,6 @@
+pub mod axis_overlay;
 pub mod binary_store;
+pub mod checkpoint_sync;
 pub mod consensus;
 pub mod discovery;
 pub mod dns_seeds;
@@ -9,7 +11,12 @@ pub mod sync;
 pub mod update;
 pub mod update_protocol;
 
+pub use axis_overlay::{AxisOverlay, BallId, OverlayStats};
 pub use binary_store::{BinaryMetadata, BinaryStore};
+pub use checkpoint_sync::{
+    CheckpointSyncEvent, CheckpointSyncMessage, CheckpointSyncProtocol, CheckpointSyncStrategy,
+    DivergenceInfo,
+};
 pub use consensus::{ConsensusConfig, ConsensusMessage, ConsensusProtocol};
 pub use discovery::{DiscoveryConfig, DiscoveryMessage, DiscoveryProtocol};
 pub use dns_seeds::{DnsSeedConfig, DnsSeedDiscovery};

@@ -17,12 +17,20 @@ pub struct ReputationChangeEvent {
 /// Callback for reputation change events
 pub type ReputationEventCallback = Arc<dyn Fn(ReputationChangeEvent) + Send + Sync>;
 
+/// ADIC-Rep: Non-transferable (Soul-Bound) reputation score
+/// Per ADIC-DAG White Paper §5.3 and Yellow Paper §6.2
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReputationScore {
     pub value: f64,
     pub messages_finalized: u64,
     pub messages_pending: u64,
     pub last_update: i64,
+
+    // SBT (Soul-Bound Token) properties - reputation is NOT transferable
+    pub is_transferable: bool,       // Always false
+    pub issue_timestamp: i64,        // When reputation was first issued
+    pub issuer: Option<PublicKey>,   // Genesis or network authority
+    pub bound_to_keypair: PublicKey, // Permanently bound to this key
 }
 
 impl Default for ReputationScore {
@@ -33,16 +41,44 @@ impl Default for ReputationScore {
 
 impl ReputationScore {
     pub fn new() -> Self {
+        // Default constructor for testing - creates unbound reputation
         Self {
             value: 1.0,
             messages_finalized: 0,
             messages_pending: 0,
             last_update: chrono::Utc::now().timestamp(),
+            is_transferable: false,
+            issue_timestamp: chrono::Utc::now().timestamp(),
+            issuer: None,
+            bound_to_keypair: PublicKey::from_bytes([0; 32]), // Placeholder for testing
+        }
+    }
+
+    /// Create a new soul-bound reputation for a specific keypair
+    pub fn new_sbt(bound_to: PublicKey, issuer: Option<PublicKey>) -> Self {
+        Self {
+            value: 1.0,
+            messages_finalized: 0,
+            messages_pending: 0,
+            last_update: chrono::Utc::now().timestamp(),
+            is_transferable: false, // Soul-bound: never transferable
+            issue_timestamp: chrono::Utc::now().timestamp(),
+            issuer,
+            bound_to_keypair: bound_to,
         }
     }
 
     pub fn trust_score(&self) -> f64 {
         (1.0 + self.value).ln()
+    }
+
+    /// Check if reputation can be transferred (always returns error per SBT spec)
+    /// ADIC-Rep is soul-bound and non-transferable per White Paper §5.3
+    pub fn can_transfer(&self) -> Result<(), String> {
+        Err(format!(
+            "ADIC-Rep is non-transferable (soul-bound). Reputation is bound to keypair {} and cannot be transferred.",
+            hex::encode(&self.bound_to_keypair.as_bytes()[..8])
+        ))
     }
 }
 
@@ -617,5 +653,30 @@ mod tests {
         let score = scores.get(&pubkey).unwrap();
         assert_eq!(score.messages_finalized, 10);
         assert!(score.value > 1.0);
+    }
+
+    #[test]
+    fn test_reputation_non_transferable() {
+        let keypair = PublicKey::from_bytes([1; 32]);
+        let issuer = Some(PublicKey::from_bytes([2; 32]));
+        let score = ReputationScore::new_sbt(keypair, issuer);
+
+        // Verify is_transferable is false
+        assert!(!score.is_transferable);
+
+        // Verify bound_to_keypair is set correctly
+        assert_eq!(score.bound_to_keypair, keypair);
+
+        // Verify issuer is set correctly
+        assert_eq!(score.issuer, issuer);
+
+        // Verify can_transfer always returns error
+        let result = score.can_transfer();
+        assert!(result.is_err());
+
+        // Verify error message contains expected text
+        let error_msg = result.unwrap_err();
+        assert!(error_msg.contains("non-transferable"));
+        assert!(error_msg.contains("soul-bound"));
     }
 }

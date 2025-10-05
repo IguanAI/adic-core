@@ -1,0 +1,41 @@
+# Prometheus configuration for ADIC-DAG development environment
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'adic-dev'
+    environment: 'development'
+
+# Scrape configurations
+scrape_configs:
+  # ADIC Node 1 metrics
+  - job_name: 'adic-node-1'
+    static_configs:
+      - targets: ['adic-node-1:8080']
+        labels:
+          instance: 'node-1'
+          network: 'devnet'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # ADIC Node 2 metrics
+  - job_name: 'adic-node-2'
+    static_configs:
+      - targets: ['adic-node-2:8080']
+        labels:
+          instance: 'node-2'
+          network: 'devnet'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # PostgreSQL metrics (if available)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres:5432']
+    scrape_interval: 30s

@@ -12,23 +12,23 @@ services:
       - "${QUIC_PORT:-9001}:9001/udp" # QUIC UDP port
     volumes:
       - adic-testnet-data:/data
-      - ./testnet-config.toml:/config/adic-config.toml:ro
-      - ./genesis.json:/data/data/testnet/genesis.json:ro
+      - ./genesis.json:/data/genesis.json:ro
     environment:
       - RUST_LOG=${RUST_LOG:-info}
       - NODE_NAME=${NODE_NAME:-testnet-validator}
+      - DATA_DIR=/data
       - AUTO_UPDATE=true
       - DNS_SEEDS=_seeds.adicl1.com
     command: [
       "adic",
-      "--config", "/config/adic-config.toml",
-      "start"
+      "start",
+      "--network", "testnet"
     ]
     restart: unless-stopped
     networks:
       - adic-testnet
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3

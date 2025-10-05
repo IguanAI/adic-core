@@ -657,12 +657,17 @@ impl UpdateManager {
     }
 
     async fn find_peers_with_version(&self, version: &str) -> Result<Vec<PeerId>> {
-        let peer_versions = self.peer_versions.read().await;
-        Ok(peer_versions
-            .iter()
-            .filter(|(_, v)| v.version == version)
-            .map(|(peer_id, _)| *peer_id)
-            .collect())
+        // Query the UpdateProtocol for peers with this version
+        let update_protocol = self
+            .network
+            .get_update_protocol()
+            .ok_or_else(|| anyhow!("Update protocol not available"))?;
+
+        let all_peer_versions = update_protocol.get_all_peer_versions().await;
+
+        Ok(all_peer_versions
+            .get(version).cloned()
+            .unwrap_or_default())
     }
 
     async fn request_chunk_count(&self, peer: &PeerId, version: &str) -> Result<u32> {

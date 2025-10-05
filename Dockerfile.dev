@@ -1,0 +1,56 @@
+# Development Dockerfile for ADIC-DAG Node
+# Optimized for fast rebuilds during development
+
+FROM rust:latest AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    libclang-dev \
+    protobuf-compiler \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app directory
+WORKDIR /app
+
+# Copy workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY config ./config
+
+# Build release binary
+RUN cargo build --release --bin adic
+
+# Runtime stage
+FROM debian:sid-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app user
+RUN useradd -m -u 1000 adic
+
+# Copy binary from builder
+COPY --from=builder /app/target/release/adic /usr/local/bin/adic
+COPY --from=builder /app/config /app/config
+
+# Create data directory
+RUN mkdir -p /app/data && chown -R adic:adic /app
+
+# Switch to app user
+USER adic
+WORKDIR /app
+
+# Expose ports
+EXPOSE 8080 9000 9001
+
+# Default to devnet for development
+ENTRYPOINT ["/usr/local/bin/adic"]
+CMD ["start", "--network", "devnet"]

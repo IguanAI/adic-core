@@ -52,10 +52,122 @@ impl BinaryStore {
         fs::create_dir_all(&binaries_dir)?;
         fs::create_dir_all(&chunks_dir)?;
 
-        Ok(Self {
+        let store = Self {
             base_dir,
             chunk_cache: Arc::new(RwLock::new(HashMap::new())),
             version_metadata: Arc::new(RwLock::new(HashMap::new())),
+        };
+
+        // Auto-discover existing binaries
+        store.discover_existing_binaries()?;
+
+        Ok(store)
+    }
+
+    /// Discover and load metadata for existing binaries in the store
+    fn discover_existing_binaries(&self) -> Result<()> {
+        let binaries_dir = self.base_dir.join("binaries");
+
+        // Scan binaries directory for .bin files
+        if !binaries_dir.exists() {
+            return Ok(());
+        }
+
+        let entries = fs::read_dir(&binaries_dir)?;
+        let mut discovered_count = 0;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+
+            // Check if it's a .bin file
+            if path.extension().and_then(|s| s.to_str()) == Some("bin") {
+                // Extract version from filename (e.g., "0.2.0.bin" -> "0.2.0")
+                if let Some(version) = path.file_stem().and_then(|s| s.to_str()) {
+                    match self.reconstruct_metadata(version.to_string(), &path) {
+                        Ok(metadata) => {
+                            info!(
+                                "Discovered binary version {}: {} chunks, {} bytes",
+                                version, metadata.total_chunks, metadata.total_size
+                            );
+
+                            // Store metadata synchronously during initialization
+                            if let Ok(mut meta_lock) = self.version_metadata.try_write() {
+                                meta_lock.insert(version.to_string(), metadata);
+                                discovered_count += 1;
+                            }
+                        }
+                        Err(e) => {
+                            debug!("Failed to reconstruct metadata for {}: {}", version, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        if discovered_count > 0 {
+            info!(
+                "Auto-discovered {} existing binaries for P2P seeding",
+                discovered_count
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Reconstruct metadata from an existing binary and its chunks
+    fn reconstruct_metadata(&self, version: String, binary_path: &Path) -> Result<BinaryMetadata> {
+        // Read binary to calculate hash and size
+        let binary_data = fs::read(binary_path)?;
+        let total_size = binary_data.len() as u64;
+
+        // Calculate binary hash
+        let mut hasher = Sha256::new();
+        hasher.update(&binary_data);
+        let binary_hash = format!("{:x}", hasher.finalize());
+
+        // Check chunks directory
+        let chunks_dir = self.base_dir.join("chunks").join(&version);
+        if !chunks_dir.exists() {
+            return Err(anyhow!(
+                "Chunks directory not found for version {}: {:?}",
+                version,
+                chunks_dir
+            ));
+        }
+
+        // Count chunks and collect their hashes
+        let mut chunk_hashes = Vec::new();
+        let mut chunk_index = 0u32;
+
+        loop {
+            let chunk_path = chunks_dir.join(format!("chunk_{:04}.bin", chunk_index));
+            if !chunk_path.exists() {
+                break;
+            }
+
+            // Read chunk and calculate hash
+            let chunk_data = fs::read(&chunk_path)?;
+            let mut chunk_hasher = Sha256::new();
+            chunk_hasher.update(&chunk_data);
+            let chunk_hash = format!("{:x}", chunk_hasher.finalize());
+            chunk_hashes.push(chunk_hash);
+
+            chunk_index += 1;
+        }
+
+        let total_chunks = chunk_index;
+
+        if total_chunks == 0 {
+            return Err(anyhow!("No chunks found for version {}", version));
+        }
+
+        Ok(BinaryMetadata {
+            version: version.clone(),
+            binary_path: binary_path.to_path_buf(),
+            binary_hash,
+            total_chunks,
+            total_size,
+            chunk_hashes,
         })
     }
 

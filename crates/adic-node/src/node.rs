@@ -18,7 +18,8 @@ use adic_network::{NetworkConfig, NetworkEngine};
 use adic_storage::store::BackendType;
 use adic_storage::{MessageIndex, StorageConfig, StorageEngine, TipManager};
 use adic_types::{
-    AdicFeatures, AdicMessage, AdicMeta, AxisId, AxisPhi, MessageId, PublicKey, QpDigits,
+    AdicFeatures, AdicMessage, AdicMeta, AxisId, AxisPhi, EncoderData, EncoderSet, MessageId,
+    PublicKey, QpDigits,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -44,6 +45,8 @@ pub struct AdicNode {
     index: Arc<MessageIndex>,
     tip_manager: Arc<TipManager>,
     running: Arc<RwLock<bool>>,
+    /// Feature encoders for all 4 axes per ADIC-DAG paper Appendix A
+    encoders: Arc<EncoderSet>,
 }
 
 impl AdicNode {
@@ -679,6 +682,10 @@ impl AdicNode {
             (None, None)
         };
 
+        // Initialize encoder set with all 4 axes
+        let encoders = Arc::new(EncoderSet::default_full());
+        info!("📊 Initialized encoder set: Time, Topic, Region, StakeTier");
+
         let node = Self {
             config,
             wallet,
@@ -695,6 +702,7 @@ impl AdicNode {
             index,
             tip_manager,
             running: Arc::new(RwLock::new(false)),
+            encoders,
         };
 
         // Perform cache warmup
@@ -848,6 +856,29 @@ impl AdicNode {
         Ok(())
     }
 
+    /// Generate features using the encoder set with actual metadata
+    async fn create_encoded_features(&self, topic: &str, region: &str) -> Result<AdicFeatures> {
+        // Get current stake balance for StakeTierEncoder
+        let proposer_addr = AccountAddress::from_public_key(&self.wallet.public_key());
+        let balance = self.economics.balances.get_balance(proposer_addr).await?;
+        let stake_amount = balance.to_adic() as u64;
+
+        // Create encoder data with all required fields
+        let encoder_data = EncoderData::new(
+            Utc::now().timestamp(),
+            topic.to_string(),
+            region.to_string(),
+        )
+        .with_stake(stake_amount);
+
+        // Use encoders to create all 4 axes
+        let params = self.config.adic_params();
+        let precision = 10; // Default p-adic precision
+        let axis_phi = self.encoders.encode_all(&encoder_data, params.p, precision);
+
+        Ok(AdicFeatures::new(axis_phi))
+    }
+
     #[allow(dead_code)]
     pub async fn submit_message(&self, content: Vec<u8>) -> Result<MessageId> {
         self.submit_message_with_transfer(content, None).await
@@ -909,23 +940,12 @@ impl AdicNode {
                 }
                 AdicFeatures::new(new_features)
             } else {
-                // Fallback to timestamp-based if tip not found
-                AdicFeatures::new(vec![
-                    AxisPhi::new(
-                        0,
-                        QpDigits::from_u64((Utc::now().timestamp() % 243) as u64, 3, 10),
-                    ),
-                    AxisPhi::new(1, QpDigits::from_u64(0, 3, 10)),
-                    AxisPhi::new(2, QpDigits::from_u64(0, 3, 10)),
-                ])
+                // Fallback: use encoded features with all 4 axes
+                self.create_encoded_features("default", "unknown").await?
             }
         } else {
-            // No tips available, use simple features for genesis-like messages
-            AdicFeatures::new(vec![
-                AxisPhi::new(0, QpDigits::from_u64(1, 3, 10)),
-                AxisPhi::new(1, QpDigits::from_u64(1, 3, 10)),
-                AxisPhi::new(2, QpDigits::from_u64(1, 3, 10)),
-            ])
+            // No tips available: use encoded features for genesis-like messages (all 4 axes)
+            self.create_encoded_features("default", "unknown").await?
         };
 
         // 3. Select d+1 parents using MRW
@@ -1219,12 +1239,8 @@ impl AdicNode {
             }
             AdicFeatures::new(axis_features)
         } else if parents.is_empty() {
-            // Genesis message - use simple default features
-            AdicFeatures::new(vec![
-                AxisPhi::new(0, QpDigits::from_u64(1, 3, 10)),
-                AxisPhi::new(1, QpDigits::from_u64(1, 3, 10)),
-                AxisPhi::new(2, QpDigits::from_u64(1, 3, 10)),
-            ])
+            // Genesis message: use encoded features with all 4 axes
+            self.create_encoded_features("default", "unknown").await?
         } else {
             // CRITICAL FIX: Generate features that are p-adic close to ALL parents, not just first parent
             // The admissibility formula requires proximity to ALL parents for each axis
@@ -1351,12 +1367,8 @@ impl AdicNode {
 
                 AdicFeatures::new(new_features)
             } else {
-                // Fallback to default if no parents found
-                AdicFeatures::new(vec![
-                    AxisPhi::new(0, QpDigits::from_u64(1, 3, 10)),
-                    AxisPhi::new(1, QpDigits::from_u64(2, 3, 10)),
-                    AxisPhi::new(2, QpDigits::from_u64(3, 3, 10)),
-                ])
+                // Fallback: use encoded features with all 4 axes
+                self.create_encoded_features("default", "unknown").await?
             }
         };
 
@@ -2174,6 +2186,7 @@ impl Clone for AdicNode {
             index: Arc::clone(&self.index),
             tip_manager: Arc::clone(&self.tip_manager),
             running: Arc::clone(&self.running),
+            encoders: Arc::clone(&self.encoders),
         }
     }
 }

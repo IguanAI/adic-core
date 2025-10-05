@@ -116,7 +116,7 @@ impl UpdateProtocol {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
 
         // Create binary store for chunk management
-        let binary_store = BinaryStore::new(storage_dir.join("binaries"))?;
+        let binary_store = BinaryStore::new(storage_dir.clone())?;
 
         // Create swarm speed tracker
         let swarm_tracker = SwarmSpeedTracker::new(local_peer_id);

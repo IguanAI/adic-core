@@ -13,6 +13,7 @@ mod api_ws;
 mod auth;
 mod cli;
 mod config;
+mod config_loader;
 mod copyover;
 mod economics_api;
 mod events;
@@ -20,6 +21,7 @@ mod genesis;
 mod logging;
 mod metrics;
 mod node;
+mod openapi;
 mod progress_display;
 mod update_manager;
 mod update_verifier;
@@ -47,6 +49,10 @@ struct Cli {
 enum Commands {
     /// Start the ADIC node
     Start {
+        /// Network to connect to (mainnet, testnet, devnet)
+        #[arg(long, default_value = "mainnet")]
+        network: String,
+
         /// Data directory for storage
         #[arg(short, long, default_value = "./data")]
         data_dir: PathBuf,
@@ -190,6 +196,17 @@ enum UpdateCommands {
 
     /// Show current update status
     Status,
+
+    /// Seed a binary for P2P distribution
+    Seed {
+        /// Path to the binary to seed
+        #[arg(long)]
+        binary: PathBuf,
+
+        /// Version string (e.g., "0.2.0")
+        #[arg(long)]
+        version: String,
+    },
 }
 
 #[tokio::main]
@@ -244,6 +261,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Start {
+            network,
             data_dir,
             port,
             quic_port,
@@ -327,22 +345,19 @@ async fn main() -> Result<()> {
             }
 
             // Normal startup path
-            // Priority order: CLI args > ENV vars > Config file > Defaults
+            // Priority order: CLI args > ENV vars > Network config file
 
-            // 1. Start with config file or defaults
-            let mut config = if let Some(config_path) = cli.config {
-                config::NodeConfig::from_file(&config_path)?
-            } else if Path::new("./adic-config.toml").exists() {
-                // Load existing config file if present
-                config::NodeConfig::from_file(Path::new("./adic-config.toml"))?
-            } else {
-                config::NodeConfig::default()
-            };
+            // 1. Load network-specific configuration (applies env overrides automatically)
+            let unified_config = config_loader::UnifiedConfig::load(&network)?;
 
-            // 2. Apply environment variable overrides (medium priority)
-            // Note: from_file already calls apply_env_overrides, but we call again
-            // in case we loaded from default
-            config.apply_env_overrides();
+            info!(
+                network = %unified_config.network_name(),
+                chain_id = %unified_config.chain_id(),
+                "📡 Network configuration loaded"
+            );
+
+            // 2. Convert to legacy NodeConfig format for compatibility
+            let mut config = unified_config.to_node_config();
 
             // 3. Apply CLI argument overrides (highest priority)
             // Only override if CLI args were explicitly provided (not defaults)
@@ -815,6 +830,51 @@ async fn handle_update_command(cmd: UpdateCommands, config_path: Option<PathBuf>
             println!("  Current version: {}", env!("CARGO_PKG_VERSION"));
             println!("  Update system:   Ready");
             println!("\nUse 'adic update check' to check for updates");
+            Ok(())
+        }
+
+        UpdateCommands::Seed { binary, version } => {
+            use adic_network::protocol::binary_store::BinaryStore;
+            use std::path::PathBuf;
+
+            info!("🌱 Seeding binary for P2P distribution");
+
+            if !binary.exists() {
+                return Err(anyhow::anyhow!("Binary file not found: {:?}", binary));
+            }
+
+            // Load config to get data directory
+            let config_path = config_path.unwrap_or_else(|| PathBuf::from("./adic-config.toml"));
+            let config = if config_path.exists() {
+                config::NodeConfig::from_file(&config_path)?
+            } else {
+                config::NodeConfig::default()
+            };
+
+            // Create binary store
+            let data_dir = PathBuf::from(&config.node.data_dir);
+            let binary_store = BinaryStore::new(data_dir)?;
+
+            println!(
+                "Adding binary {} version {} to store...",
+                binary.display(),
+                version
+            );
+
+            // Add binary to store (creates chunks and metadata)
+            let metadata = binary_store.add_binary(version.clone(), &binary).await?;
+
+            println!("✅ Binary successfully added to P2P seed store");
+            println!("  Version:      {}", metadata.version);
+            println!("  Binary hash:  {}", &metadata.binary_hash[..16]);
+            println!("  Total size:   {} bytes", metadata.total_size);
+            println!("  Chunks:       {}", metadata.total_chunks);
+            println!("\nBinary is now available for P2P distribution to peers.");
+            println!(
+                "Restart the node to begin seeding: adic --config {} start",
+                config_path.display()
+            );
+
             Ok(())
         }
     }

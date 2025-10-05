@@ -1,0 +1,59 @@
+{
+  "dashboard": {
+    "title": "ADIC-DAG Development Overview",
+    "tags": ["adic", "development"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Active Nodes",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "count(up{job=~\"adic-node.*\"})",
+            "legendFormat": "Nodes Online"
+          }
+        ],
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "Total Messages",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "adic_messages_total",
+            "legendFormat": "{{instance}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4}
+      },
+      {
+        "id": 3,
+        "title": "F1 Finalized Messages",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "adic_f1_finalized_total",
+            "legendFormat": "{{instance}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4}
+      },
+      {
+        "id": 4,
+        "title": "API Response Time",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(adic_api_request_duration_seconds_sum[5m]) / rate(adic_api_request_duration_seconds_count[5m])",
+            "legendFormat": "{{instance}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12}
+      }
+    ],
+    "schemaVersion": 16,
+    "version": 1
+  }
+}

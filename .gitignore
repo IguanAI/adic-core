@@ -112,6 +112,12 @@ test_*.py
 local-*.toml
 adic-config.toml
 
+# Deprecated config files (use --network flag instead)
+testnet-config.toml
+bootstrap-config.toml
+config/node[0-9]-config.toml
+config/node[0-9][0-9]-config.toml
+
 # Deployment scripts with sensitive info
 deploy.sh
 install-on-server.sh

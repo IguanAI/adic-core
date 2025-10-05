@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 
-use adic_types::{AdicError, AdicMessage, MessageId, Result};
+use crate::protocol::AxisOverlay;
+use adic_types::{AdicError, AdicMessage, AxisPhi, MessageId, Result};
 
 #[derive(Debug, Clone)]
 pub struct GossipConfig {
@@ -67,6 +68,8 @@ pub struct GossipProtocol {
     validation_queue: Arc<RwLock<ValidationQueue>>,
     event_sender: mpsc::UnboundedSender<GossipEvent>,
     event_receiver: Arc<RwLock<mpsc::UnboundedReceiver<GossipEvent>>>,
+    /// Axis-aware overlay for p-adic gossip routing per ADIC-DAG paper §4
+    axis_overlay: Arc<AxisOverlay>,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +187,9 @@ impl GossipProtocol {
 
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
 
+        // Initialize axis overlay with p=3, ball_radius=3 per ADIC-DAG paper
+        let axis_overlay = Arc::new(AxisOverlay::new(3, 3));
+
         Ok(Self {
             gossipsub: Arc::new(RwLock::new(gossipsub)),
             config,
@@ -195,6 +201,7 @@ impl GossipProtocol {
             validation_queue: Arc::new(RwLock::new(ValidationQueue::new(1000))),
             event_sender,
             event_receiver: Arc::new(RwLock::new(event_receiver)),
+            axis_overlay,
         })
     }
 
@@ -437,6 +444,42 @@ impl GossipProtocol {
     pub async fn all_peers(&self) -> HashSet<PeerId> {
         let gossipsub = self.gossipsub.read().await;
         gossipsub.all_peers().map(|(peer_id, _)| *peer_id).collect()
+    }
+
+    /// Update peer features in the axis overlay
+    /// Should be called when peer metadata is received
+    pub async fn update_peer_features(
+        &self,
+        peer_id: PeerId,
+        features: Vec<AxisPhi>,
+    ) -> Result<()> {
+        self.axis_overlay.assign_peer(peer_id, features).await?;
+        info!(peer_id = %peer_id, "Updated peer features in axis overlay");
+        Ok(())
+    }
+
+    /// Remove peer from axis overlay when they disconnect
+    pub async fn remove_peer_from_overlay(&self, peer_id: &PeerId) -> Result<()> {
+        self.axis_overlay.remove_peer(peer_id).await?;
+        info!(peer_id = %peer_id, "Removed peer from axis overlay");
+        Ok(())
+    }
+
+    /// Get diverse peers for axis-aware gossip routing
+    /// Uses p-adic proximity to select peers from diverse regions
+    pub async fn get_diverse_peers(
+        &self,
+        num_peers: usize,
+        target_features: &[AxisPhi],
+    ) -> Vec<PeerId> {
+        self.axis_overlay
+            .select_diverse_peers(num_peers, target_features)
+            .await
+    }
+
+    /// Get axis overlay statistics for debugging
+    pub async fn overlay_stats(&self) -> crate::protocol::OverlayStats {
+        self.axis_overlay.stats().await
     }
 }
 

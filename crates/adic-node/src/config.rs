@@ -215,6 +215,10 @@ impl NodeConfig {
     }
 
     /// Apply environment variable overrides
+    ///
+    /// Note: This is primarily used for testing. Production code uses UnifiedConfig
+    /// in config_loader.rs which has its own environment override implementation.
+    #[allow(dead_code)]
     pub fn apply_env_overrides(&mut self) {
         // Node configuration
         if let Ok(data_dir) = env::var("DATA_DIR") {

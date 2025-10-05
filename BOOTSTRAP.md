@@ -102,83 +102,41 @@ chmod 600 node.key
 
 ### Step 3: Configure Bootstrap Node
 
-Create or modify `bootstrap-config.toml`:
+The bootstrap node uses the mainnet configuration with bootstrap mode enabled. You can either:
+
+**Option 1: Use environment variable (recommended):**
+```bash
+# Set bootstrap mode via environment
+export BOOTSTRAP=true
+```
+
+**Option 2: Create custom config file:**
+
+Create `custom-bootstrap.toml` based on `config/mainnet.toml` with:
 
 ```toml
 [node]
 data_dir = "./data"
 validator = true
 name = "bootstrap1.adicl1.com"
-bootstrap = true  # CRITICAL: Set to true for bootstrap node
+bootstrap = true  # CRITICAL: Set to true for bootstrap node only
 
-[consensus]
-p = 3
-d = 3
-rho = [2, 2, 1]
-q = 3
-k = 20
-depth_star = 12
-delta = 5
-r_sum_min = 4.0
-r_min = 1.0
-
-[storage]
-backend = "rocksdb"
-cache_size = 10000
-snapshot_interval = 3600
-max_snapshots = 10
-
-[api]
-enabled = true
-host = "0.0.0.0"
-port = 8080
-max_connections = 100
-
-[network]
-enabled = true
-p2p_port = 19000
-quic_port = 9000
-bootstrap_peers = []  # Empty for bootstrap node
-dns_seeds = []        # Empty for bootstrap node
-max_peers = 100
-
-[genesis]
-deposit_amount = 0.1
-timestamp = "2025-01-01T00:00:00Z"
-chain_id = "adic-dag-v1"
-genesis_identities = ["g0", "g1", "g2", "g3"]
-
-# Mainnet allocations (300.4M ADIC total)
-allocations = [
-    ["0100000000000000000000000000000000000000000000000000000000000000", 60_000_000],    # Treasury - 20%
-    ["c1403f4763367340178077be2ab3144af2b9065901232335f960a9910bb9ab1b", 45_000_000],    # Liquidity - 15%
-    ["2f89601b32149388d38652ac432307bf183eb97de87b5599cb76d256fd7a7f89", 45_000_000],    # Community - 15%
-    ["98831caf9b0861ec6eba3072275efc0de1557062043d317ba5f218361e028441", 150_000_000],   # Genesis pool - 50%
-    ["52ba18a771da5f8ebfb7e0eb88a229b748637c8041e0ddf06271b0511e67a5d4", 100_000],       # g0
-    ["39abcb02b715f742149a698dcfd534884b8696d07d3d40afd83a0ebd5dcfa3e8", 100_000],       # g1
-    ["fd2401601d44dd03cfe585782b48bf2f5681ac3264975ab43a4fea2d0089a543", 100_000],       # g2
-    ["d5828a126c990608a0d385cb31dcc818fcef5bdf64a2315481f7f656d42e53af", 100_000],       # g3
-]
-
-[genesis.parameters]
-p = 3
-d = 3
-rho = [2, 2, 1]
-q = 3
-k = 20
-depth_star = 12
-homology_window = 5
-alpha = 1.0
-beta = 1.0
+# All other settings inherited from mainnet config
+# See config/mainnet.toml for full configuration
 ```
+
+**Note:** The mainnet configuration (`config/mainnet.toml`) already contains all necessary consensus parameters, genesis allocations (300.4M ADIC), and network settings. Custom configs should only override runtime settings like ports, paths, or the bootstrap flag.
 
 ### Step 4: Start Bootstrap Node
 
 ```bash
-# Start the bootstrap node
-./target/release/adic start --config bootstrap-config.toml
+# Start the bootstrap node using mainnet config with bootstrap mode
+BOOTSTRAP=true ./target/release/adic start --network mainnet
 
-# Or run in background with systemd (recommended for production)
+# Or use custom config file
+# ./target/release/adic start --config custom-bootstrap.toml
+
+# For production, use systemd (recommended - see below)
 ```
 
 ### Step 5: Verify Genesis Creation
@@ -258,7 +216,8 @@ Type=simple
 User=adic
 Group=adic
 WorkingDirectory=/home/adic/adic-core
-ExecStart=/home/adic/adic-core/target/release/adic start --config /home/adic/adic-core/bootstrap-config.toml
+Environment="BOOTSTRAP=true"
+ExecStart=/home/adic/adic-core/target/release/adic start --network mainnet
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:/var/log/adic/bootstrap.log
@@ -297,8 +256,8 @@ docker run -d \
   -p 9000:9000/udp \
   -p 19000:19000 \
   -v $(pwd)/data:/data \
-  -v $(pwd)/bootstrap-config.toml:/config.toml \
-  adic-bootstrap start --config /config.toml
+  -e BOOTSTRAP=true \
+  adic-bootstrap start --network mainnet
 ```
 
 ### Network Infrastructure
@@ -334,13 +293,13 @@ _seeds.adicl1.com       TXT      "bootstrap1.adicl1.com:9000"
 
 ```bash
 # Health check
-curl http://localhost:8080/health
+curl http://localhost:8080/v1/health
 
-# Node info
-curl http://localhost:8080/api/v1/node/info | jq
+# Node status
+curl http://localhost:8080/v1/status | jq
 
 # Genesis hash verification
-curl http://localhost:8080/api/v1/economics/genesis | jq '.genesis_amount'
+curl http://localhost:8080/v1/economics/genesis | jq '.genesis_amount'
 ```
 
 ### 2. Verify Genesis File
@@ -414,7 +373,7 @@ chown adic:adic node.key
 tar -czf backup-$(date +%Y%m%d).tar.gz \
   ./data/genesis.json \
   ./node.key \
-  ./bootstrap-config.toml
+  ./config
 
 # Store backups securely off-site
 ```
@@ -474,7 +433,7 @@ cargo build --release
 systemctl restart adic-bootstrap
 
 # Verify node is running
-curl http://localhost:8080/health
+curl http://localhost:8080/v1/health
 ```
 
 ### Storage Management
@@ -562,7 +521,7 @@ journalctl -u adic-bootstrap -n 100
 sudo netstat -tulpn | grep -E '8080|9000|19000'
 
 # Test connectivity
-curl http://localhost:8080/api/v1/network/status
+curl http://localhost:8080/v1/network/status
 ```
 
 ## Support

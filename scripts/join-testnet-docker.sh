@@ -79,14 +79,6 @@ else
     exit 1
 fi
 
-# Download testnet-config.toml
-if curl -fsSL -o testnet-config.toml https://raw.githubusercontent.com/IguanAI/adic-core/main/testnet-config.toml; then
-    print_status "Downloaded testnet-config.toml"
-else
-    print_error "Failed to download testnet-config.toml"
-    exit 1
-fi
-
 # Download genesis.json for testnet
 print_info "Downloading testnet genesis configuration..."
 if curl -fsSL -o genesis.json https://raw.githubusercontent.com/IguanAI/adic-core/main/genesis-testnet.json; then
@@ -158,7 +150,7 @@ print_info "Waiting for node to initialize..."
 sleep 10
 
 # Check if node is running
-if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+if curl -s http://localhost:8080/v1/health > /dev/null 2>&1; then
     print_status "Node is healthy and responding"
 else
     print_warning "Node may still be starting up. Check status in a few moments."
@@ -172,7 +164,7 @@ echo -e "${GREEN}═════════════════════
 echo
 echo "📊 Node Information:"
 echo "   Directory: $INSTALL_DIR"
-echo "   Config: $INSTALL_DIR/testnet-config.toml"
+echo "   Network: testnet (config built into image)"
 echo "   Data: Docker volume (adic-testnet-data)"
 echo
 echo "🌐 Network Endpoints:"
@@ -184,8 +176,8 @@ echo "🔧 Useful Commands:"
 echo "   View logs:    $DOCKER_COMPOSE logs -f"
 echo "   Stop node:    $DOCKER_COMPOSE down"
 echo "   Start node:   $DOCKER_COMPOSE up -d"
-echo "   Node status:  curl http://localhost:8080/api/v1/node/info"
-echo "   Peer count:   curl http://localhost:8080/api/v1/network/peers | jq '.peers | length'"
+echo "   Node status:  curl http://localhost:8080/v1/status | jq"
+echo "   Peer count:   curl http://localhost:8080/v1/network/peers | jq '.peers | length'"
 echo
 echo "📚 Documentation: https://github.com/IguanAI/adic-core/blob/main/TESTNET.md"
 echo "🔍 Explorer: https://adicl1.com/explorer"

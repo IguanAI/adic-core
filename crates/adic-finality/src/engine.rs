@@ -1,6 +1,6 @@
 use crate::{
     artifact::{FinalityArtifact, FinalityGate, FinalityParams, FinalityWitness},
-    homology::{HomologyAnalyzer, HomologyResult},
+    checkpoint::{Checkpoint, F1Metadata, F2Metadata, MerkleTreeBuilder},
     kcore::{KCoreAnalyzer, KCoreResult},
     ph::{F2Config, F2FinalityChecker, F2Result},
 };
@@ -28,6 +28,9 @@ pub struct FinalityConfig {
     pub f2_timeout_ms: u64,
     pub f1_enabled: bool,
     pub epsilon: f64,
+
+    // Checkpoint parameters
+    pub checkpoint_interval: u64, // Create checkpoint every N finalized messages
 }
 
 impl From<&AdicParams> for FinalityConfig {
@@ -46,6 +49,9 @@ impl From<&AdicParams> for FinalityConfig {
             f2_timeout_ms: 2000,
             f1_enabled: true,
             epsilon: 0.1,
+
+            // Checkpoint parameters
+            checkpoint_interval: 100, // Create checkpoint every 100 finalized messages
         }
     }
 }
@@ -66,6 +72,9 @@ impl Default for FinalityConfig {
             f2_timeout_ms: 2000,
             f1_enabled: true,
             epsilon: 0.1,
+
+            // Checkpoint defaults
+            checkpoint_interval: 100,
         }
     }
 }
@@ -74,12 +83,17 @@ impl Default for FinalityConfig {
 pub struct FinalityEngine {
     config: FinalityConfig,
     analyzer: KCoreAnalyzer,
-    homology: HomologyAnalyzer,
     f2_checker: Arc<Mutex<F2FinalityChecker>>,
     storage: Arc<StorageEngine>,
     finalized: Arc<RwLock<HashMap<MessageId, FinalityArtifact>>>,
     pending: Arc<RwLock<VecDeque<MessageId>>>,
     consensus: Arc<ConsensusEngine>,
+
+    // Checkpoint state
+    checkpoints: Arc<RwLock<Vec<Checkpoint>>>,
+    f1_finalized_messages: Arc<RwLock<Vec<MessageId>>>,
+    f2_stabilized_messages: Arc<RwLock<Vec<MessageId>>>,
+    checkpoint_height: Arc<RwLock<u64>>,
 }
 
 impl FinalityEngine {
@@ -95,7 +109,6 @@ impl FinalityEngine {
             config.min_reputation,
             consensus.params().rho.clone(),
         );
-        let homology = HomologyAnalyzer::new(consensus.params().clone());
 
         // Initialize F2 checker with config
         let f2_config = F2Config {
@@ -111,12 +124,15 @@ impl FinalityEngine {
         Self {
             config,
             analyzer,
-            homology,
             f2_checker,
             storage,
             finalized: Arc::new(RwLock::new(HashMap::new())),
             pending: Arc::new(RwLock::new(VecDeque::new())),
             consensus,
+            checkpoints: Arc::new(RwLock::new(Vec::new())),
+            f1_finalized_messages: Arc::new(RwLock::new(Vec::new())),
+            f2_stabilized_messages: Arc::new(RwLock::new(Vec::new())),
+            checkpoint_height: Arc::new(RwLock::new(0)),
         }
     }
 
@@ -200,7 +216,7 @@ impl FinalityEngine {
                 }
                 Ok(None) => {
                     // F2 returned Pending or not enough data - fall through to F1
-                    info!(
+                    debug!(
                         f1_enabled = self.config.f1_enabled,
                         "🔄 F2 finality not achieved, falling back to F1"
                     );
@@ -264,6 +280,10 @@ impl FinalityEngine {
                         newly_finalized.push(msg_id);
 
                         tracing::info!("Message {:?} finalized via F1", msg_id);
+
+                        // Track for checkpoint creation
+                        drop(finalized);
+                        self.track_f1_finalized(msg_id).await;
                     }
                     Ok(_) => {}
                     Err(e) => {
@@ -442,6 +462,10 @@ impl FinalityEngine {
         finalized.insert(msg_id, artifact);
 
         tracing::info!("Message {:?} finalized via F2", msg_id);
+
+        // Track for checkpoint creation
+        drop(finalized);
+        self.track_f2_stabilized(msg_id).await;
         Ok(())
     }
 
@@ -493,16 +517,6 @@ impl FinalityEngine {
         });
     }
 
-    /// Check F2 homology finality status
-    pub async fn check_homology_finality(&self, messages: &[MessageId]) -> Result<HomologyResult> {
-        self.homology.check_finality(messages).await
-    }
-
-    /// Check if F2 homology finality is enabled
-    pub fn is_homology_enabled(&self) -> bool {
-        self.homology.is_enabled()
-    }
-
     /// Get statistics about finality
     pub async fn get_stats(&self) -> FinalityStats {
         let finalized_count = self.finalized.read().await.len();
@@ -543,13 +557,128 @@ impl Clone for FinalityEngine {
         Self {
             config: self.config.clone(),
             analyzer: self.analyzer.clone(),
-            homology: HomologyAnalyzer::new(self.consensus.params().clone()),
             f2_checker: Arc::clone(&self.f2_checker),
             storage: Arc::clone(&self.storage),
             finalized: Arc::clone(&self.finalized),
             pending: Arc::clone(&self.pending),
             consensus: Arc::clone(&self.consensus),
+            checkpoints: Arc::clone(&self.checkpoints),
+            f1_finalized_messages: Arc::clone(&self.f1_finalized_messages),
+            f2_stabilized_messages: Arc::clone(&self.f2_stabilized_messages),
+            checkpoint_height: Arc::clone(&self.checkpoint_height),
         }
+    }
+}
+
+impl FinalityEngine {
+    /// Track F1 finalized message for checkpoint
+    async fn track_f1_finalized(&self, message_id: MessageId) {
+        let mut f1_messages = self.f1_finalized_messages.write().await;
+        f1_messages.push(message_id);
+
+        // Check if we should create a checkpoint
+        if f1_messages.len() >= self.config.checkpoint_interval as usize {
+            if let Err(e) = self.create_checkpoint().await {
+                warn!(error = %e, "Failed to create checkpoint on F1 finality");
+            }
+        }
+    }
+
+    /// Track F2 stabilized message for checkpoint
+    async fn track_f2_stabilized(&self, message_id: MessageId) {
+        let mut f2_messages = self.f2_stabilized_messages.write().await;
+        f2_messages.push(message_id);
+    }
+
+    /// Create a checkpoint of current finalized state
+    pub async fn create_checkpoint(&self) -> Result<Checkpoint> {
+        let mut height_guard = self.checkpoint_height.write().await;
+        let height = *height_guard;
+        *height_guard += 1;
+
+        let f1_messages = self.f1_finalized_messages.read().await;
+        let f2_messages = self.f2_stabilized_messages.read().await;
+        let finalized = self.finalized.read().await;
+
+        // Build merkle tree for finalized messages
+        let mut message_tree = MerkleTreeBuilder::new();
+        for msg_id in f1_messages.iter() {
+            message_tree.add_message(*msg_id);
+        }
+        let messages_root = message_tree.compute_root();
+
+        // Build merkle tree for witnesses
+        let mut witness_tree = MerkleTreeBuilder::new();
+        for artifact in finalized.values() {
+            if let Ok(witness_bytes) = serde_json::to_vec(&artifact.witness) {
+                witness_tree.add_witness(&witness_bytes);
+            }
+        }
+        let witnesses_root = witness_tree.compute_root();
+
+        // Build F1 metadata
+        let max_k_core = finalized
+            .values()
+            .map(|a| a.params.k as u64)
+            .max()
+            .unwrap_or(0);
+        let f1_metadata = F1Metadata::new(max_k_core, f1_messages.clone());
+
+        // Build F2 metadata
+        let f2_metadata = F2Metadata::new(f2_messages.clone(), None);
+
+        // Get previous checkpoint hash
+        let checkpoints = self.checkpoints.read().await;
+        let prev_hash = checkpoints.last().map(|c| c.compute_hash());
+        drop(checkpoints);
+
+        let checkpoint = Checkpoint::new(
+            height,
+            chrono::Utc::now().timestamp(),
+            messages_root,
+            witnesses_root,
+            f1_metadata,
+            f2_metadata,
+            prev_hash,
+        );
+
+        // Store checkpoint
+        let mut checkpoints = self.checkpoints.write().await;
+        checkpoints.push(checkpoint.clone());
+
+        // Clear tracked messages after checkpoint
+        drop(f1_messages);
+        drop(f2_messages);
+        let mut f1_messages = self.f1_finalized_messages.write().await;
+        let mut f2_messages = self.f2_stabilized_messages.write().await;
+        f1_messages.clear();
+        f2_messages.clear();
+
+        info!(
+            height = checkpoint.height,
+            messages_count = checkpoint.f1_metadata.finalized_count,
+            "✅ Created checkpoint"
+        );
+
+        Ok(checkpoint)
+    }
+
+    /// Get the latest checkpoint
+    pub async fn get_latest_checkpoint(&self) -> Option<Checkpoint> {
+        let checkpoints = self.checkpoints.read().await;
+        checkpoints.last().cloned()
+    }
+
+    /// Get checkpoint at specific height
+    pub async fn get_checkpoint(&self, height: u64) -> Option<Checkpoint> {
+        let checkpoints = self.checkpoints.read().await;
+        checkpoints.iter().find(|c| c.height == height).cloned()
+    }
+
+    /// Get all checkpoints
+    pub async fn get_all_checkpoints(&self) -> Vec<Checkpoint> {
+        let checkpoints = self.checkpoints.read().await;
+        checkpoints.clone()
     }
 }
 
@@ -1063,6 +1192,7 @@ mod tests {
             f2_timeout_ms: 2000,
             f1_enabled: true,
             epsilon: 0.1,
+            checkpoint_interval: 100,
         };
 
         assert_eq!(config.k, 5);

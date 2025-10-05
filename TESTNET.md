@@ -64,7 +64,7 @@ docker-compose -f docker-compose.testnet.yml up -d
 
 ```bash
 # Check node health
-curl http://localhost:8080/health
+curl http://localhost:8080/v1/health
 
 # View logs
 docker-compose -f docker-compose.testnet.yml logs -f
@@ -93,16 +93,16 @@ As a validator on the ADIC testnet, your node will:
 
 ```bash
 # Check if node is healthy
-curl http://localhost:8080/health
+curl http://localhost:8080/v1/health
 
-# Get node information
-curl http://localhost:8080/api/v1/node/info | jq
+# Get node status
+curl http://localhost:8080/v1/status | jq
 
 # Check peer connections
-curl http://localhost:8080/api/v1/network/peers | jq '.peers | length'
+curl http://localhost:8080/v1/network/peers | jq '.peers | length'
 
 # View recent messages
-curl http://localhost:8080/api/v1/messages/recent | jq
+curl http://localhost:8080/v1/messages | jq
 ```
 
 ### Docker Commands
@@ -311,7 +311,7 @@ See [GENESIS.md](./GENESIS.md) and [BOOTSTRAP.md](./BOOTSTRAP.md) for comprehens
 
 3. Verify network configuration:
    ```bash
-   curl http://localhost:8080/api/v1/network/status
+   curl http://localhost:8080/v1/network/status
    ```
 
 ### High Memory Usage

@@ -5,6 +5,82 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2025-10-05
+
+### Added
+- **Unified Network Configuration System** (`config_loader.rs`, 497 lines): New `--network` flag for simplified node deployment
+  - `UnifiedConfig` supporting mainnet/testnet/devnet network presets
+  - Network-specific configurations in `config/{mainnet,testnet,devnet}.toml`
+  - Environment variable overrides for runtime settings (ports, paths) while consensus params remain immutable
+  - Automatic genesis loading and validation per network
+
+- **Checkpoint Synchronization System** (749 lines total)
+  - `checkpoint.rs` (463 lines): Cryptographic checkpoint creation and verification with Merkle tree builders
+  - `checkpoint_sync.rs` (286 lines): Protocol for checkpoint-based state recovery and divergence detection
+  - Signature verification for checkpoint authenticity
+  - Enables rapid state recovery from checkpoints instead of full DAG sync
+
+- **Axis-Aware Overlay Network** (`axis_overlay.rs`, 407 lines): P-adic ball-based peer organization
+  - Implements axis-aware gossip routing per ADIC-DAG White Paper §4
+  - Q-diverse peer selection across p-adic balls for enhanced propagation
+  - Ball membership tracking per axis for targeted message routing
+  - Supports natural sharding topology from p-adic structure
+
+- **OpenAPI Documentation** (`openapi.rs`, 247 lines)
+  - Auto-generated API documentation with Swagger UI integration
+  - Complete schema for all v1 endpoints
+  - Interactive documentation available at `/swagger-ui/`
+
+- **Feature Encoders** (`encoders.rs`, +264 lines)
+  - `StakeTierEncoder`: Maps stake amounts to discrete logarithmic tiers (0-9) per ADIC-DAG Appendix A
+  - `AsnEncoder`: Encodes Autonomous System Numbers for network topology diversity
+  - Enables stake-based and network-topology axes for ultrametric security
+
+- **Development Environment**
+  - Multi-node Docker Compose setup in `docker-compose.dev.yml`
+  - Monitoring stack with Grafana dashboards and Prometheus
+  - PostgreSQL backend for persistent storage
+  - Dev helper scripts: `dev-start.sh`, `dev-stop.sh`, `dev-reset.sh`, `dev-logs.sh`
+
+### Changed
+- **Documentation**: Updated for `--network` flag and `/v1/` API endpoints
+  - `README.md`: Replaced config file examples with `--network {mainnet|testnet|devnet}` usage
+  - `BOOTSTRAP.md`: Bootstrap setup now uses `BOOTSTRAP=true` environment variable with `--network mainnet`
+  - `TESTNET.md`: Standardized all API endpoints to `/v1/` prefix
+  - `CONTRIBUTING.md`: Updated multi-node development port references
+
+- **API Endpoints**: Standardized versioning across all HTTP endpoints
+  - `/health` → `/v1/health`
+  - `/status` → `/v1/status`
+  - `/submit` → `/v1/messages`
+  - `/message/:id` → `/v1/messages/:id`
+
+- **Configuration Architecture**: Simplified deployment model
+  - Bootstrap mode via `BOOTSTRAP=true` environment variable (not separate config files)
+  - Network selection via `--network` flag instead of manual config file selection
+  - Centralized network configs in `config/` directory
+
+- **P2P Networking Enhancements**
+  - Binary store improvements for efficient update distribution
+  - Gossip protocol integration with axis-aware overlay routing
+  - Update protocol optimizations for version synchronization
+
+- **Reputation System** (`reputation.rs`, +61 lines): Added Soul-Bound Token (SBT) properties
+  - `is_transferable`, `issue_timestamp`, `issuer`, `bound_to_keypair` fields
+  - Enforces non-transferable reputation per ADIC-DAG paper §5.3
+
+### Removed
+- **Deprecated Configuration Files** (260 lines removed)
+  - `bootstrap-config.toml` (85 lines) - superseded by `config/mainnet.toml` + `BOOTSTRAP=true`
+  - `testnet-config.toml` (90 lines) - superseded by `config/testnet.toml`
+  - `config/node{1,2,3}-config.toml` (85 lines total) - superseded by dev Docker environment
+  - Updated `.gitignore` to prevent deprecated config patterns
+
+- **Legacy F2 Implementation** (2,561 lines removed)
+  - `homology.rs` (1,206 lines) - replaced by streaming persistent homology in 0.2.0
+  - `f2_homology_integration_test.rs` (711 lines) - superseded by streaming PH validation
+  - `f2_security_test.rs` (644 lines) - superseded by GUDHI validation suite
+
 ## [0.2.0] - 2025-10-04
 
 ### Added

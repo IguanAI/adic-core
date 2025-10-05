@@ -4,6 +4,7 @@ use crate::auth::{auth_middleware, rate_limit_middleware, AuthUser};
 use crate::economics_api::{economics_routes, EconomicsApiState};
 use crate::metrics;
 use crate::node::AdicNode;
+use crate::openapi::ApiDoc;
 use crate::wallet_registry::WalletRegistrationRequest;
 use adic_math::ball_id;
 use adic_types::{ConflictId, MessageId, PublicKey, QpDigits};
@@ -21,6 +22,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 #[derive(Clone)]
 struct AppState {
@@ -294,8 +297,10 @@ pub fn start_api_server_with_listener(
         // Merge economics routes (has its own state)
         .merge(economics_routes(economics_state));
 
-    // Nest all routes under /v1
-    let app = Router::new().nest("/v1", v1_api);
+    // Add Swagger UI for API documentation
+    let app = Router::new()
+        .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
+        .nest("/v1", v1_api);
 
     let addr = format!("{}:{}", host, port);
     info!("Starting API server on {}", addr);
@@ -568,10 +573,9 @@ async fn submit_message(
 
     // Handle explicit parents if provided (for genesis messages or specific parent selection)
     let result = if let Some(parent_hexes) = req.parents {
-        tracing::warn!(
-            "DEBUG API: Received submission with {} parents: {:?}",
-            parent_hexes.len(),
-            parent_hexes
+        tracing::debug!(
+            num_parents = parent_hexes.len(),
+            "Received submission with explicit parents"
         );
 
         // Parse parent IDs from hex strings
@@ -595,13 +599,7 @@ async fn submit_message(
             }
         }
 
-        tracing::warn!(
-            "DEBUG API: Parsed parent IDs: {:?}",
-            parent_ids
-                .iter()
-                .map(|p| hex::encode(p.as_bytes()))
-                .collect::<Vec<_>>()
-        );
+        tracing::debug!(num_parents = parent_ids.len(), "Parsed explicit parent IDs");
 
         // Use the method that accepts explicit parents and optional transfer
         state
@@ -1056,41 +1054,40 @@ async fn get_finality_artifact(
     // Get F1 (K-core) finality status
     let f1_artifact = state.node.get_finality_artifact(&message_id).await;
 
-    // Get F2 (homology) finality status
-    let f2_result = (state
-        .node
-        .finality
-        .check_homology_finality(&[message_id])
-        .await)
-        .ok();
-
-    // Extract k-core and depth from artifact if available
-    let (f1_k_core, f1_depth) = if let Some(ref artifact) = f1_artifact {
-        (artifact.witness.core_size, artifact.witness.depth)
+    // Extract finality data from artifact if available
+    let (
+        f1_finalized,
+        f1_k_core,
+        f1_depth,
+        f2_stabilized,
+        f2_h3_stable,
+        f2_bottleneck,
+        f2_confidence,
+    ) = if let Some(ref artifact) = f1_artifact {
+        let f2_stable = artifact.witness.h3_stable.unwrap_or(false);
+        (
+            true,
+            artifact.witness.core_size,
+            artifact.witness.depth,
+            f2_stable,
+            artifact.witness.h3_stable,
+            artifact.witness.h2_bottleneck_distance,
+            artifact.witness.f2_confidence,
+        )
     } else {
-        (0, 0)
-    };
-
-    // Extract homology rank from F2 result if available
-    let f2_homology_rank = if let Some(ref result) = f2_result {
-        result
-            .persistence_diagram
-            .dimensions
-            .iter()
-            .find(|d| d.dimension == 1)
-            .map_or(0, |d| d.betti_number)
-    } else {
-        0
+        (false, 0, 0, false, None, None, None)
     };
 
     // Flatten response format to match API specification and indexer contract
     let response = serde_json::json!({
         "message_id": id,
-        "f1_finalized": f1_artifact.is_some(),
+        "f1_finalized": f1_finalized,
         "f1_k_core": f1_k_core,
         "f1_depth": f1_depth,
-        "f2_stabilized": f2_result.as_ref().is_some_and(|r| !r.finalized_messages.is_empty()),
-        "f2_homology_rank": f2_homology_rank,
+        "f2_stabilized": f2_stabilized,
+        "f2_h3_stable": f2_h3_stable,
+        "f2_bottleneck_distance": f2_bottleneck,
+        "f2_confidence": f2_confidence,
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
 
