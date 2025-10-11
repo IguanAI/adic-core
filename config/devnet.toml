@@ -1,0 +1,131 @@
+# ============================================
+# ADIC-DAG Devnet Configuration
+# ============================================
+# Local development configuration with relaxed parameters for rapid iteration.
+# NEVER use this configuration in production!
+
+[network]
+name = "devnet"
+chain_id = "adic-devnet"
+
+# Network topology (local only)
+p2p_port = 9944
+quic_port = 9945
+max_peers = 10
+
+# No DNS seeds for local development
+dns_seeds = []
+bootstrap_peers = []
+
+# TLS disabled for local development
+use_production_tls = false
+ca_cert_path = ""
+node_cert_path = ""
+node_key_path = ""
+
+auto_update = false  # No auto-updates in dev
+
+[consensus]
+# ============================================
+# Core p-adic DAG Parameters
+# ============================================
+# Keep same structure but use minimal values for fast testing
+
+p = 3
+d = 3
+rho = [2, 2, 1]  # Keep same radii for structural compatibility
+q = 2            # Reduced diversity requirement for faster tip selection
+
+# ============================================
+# Finality Parameters
+# ============================================
+# Significantly reduced for rapid finality in development
+
+k = 2               # Minimal k-core for fast finality
+depth_star = 2      # Minimal depth requirement
+r_min = 0.1         # Very low reputation threshold
+r_sum_min = 0.5     # Low sum requirement
+delta = 3           # Smaller homology window
+epsilon = 0.2       # More relaxed bottleneck threshold
+
+# ============================================
+# Economic Parameters
+# ============================================
+
+deposit = 0.01      # Reduced deposit for dev testing
+lambda = 1.0
+beta = 1.0
+mu = 1.0
+gamma = 0.9
+
+alpha = 1.0
+beta_adm = 1.0
+
+[api]
+enabled = true
+host = "0.0.0.0"  # Bind to all interfaces for Docker/VM access
+port = 3030       # Different port to avoid conflicts
+max_connections = 50
+rate_limit_requests_per_minute = 1000  # No throttling in dev
+
+[storage]
+backend = "rocksdb"
+cache_size = 1000
+snapshot_interval = 100  # Frequent snapshots for testing recovery
+max_snapshots = 5
+
+[logging]
+level = "debug"     # Verbose logging for development
+format = "pretty"
+use_emojis = true
+show_fields_at = "always"  # Always show structured fields
+show_boot_banner = true
+show_emoji_legend = true
+file_rotation_size_mb = 50
+
+[genesis]
+# ============================================
+# Development Genesis Configuration
+# ============================================
+# Small test allocations for rapid testing
+
+timestamp = "2025-01-01T00:00:00Z"
+deposit_amount = 0.01
+
+# Minimal genesis validators for quick startup
+genesis_identities = ["dev0", "dev1"]
+
+# Development allocations (tiny amounts for fast testing)
+allocations = [
+    ["0100000000000000000000000000000000000000000000000000000000000000", 1_000],       # Treasury
+    ["c1403f4763367340178077be2ab3144af2b9065901232335f960a9910bb9ab1b", 1_000],       # dev-node-1
+    ["2f89601b32149388d38652ac432307bf183eb97de87b5599cb76d256fd7a7f89", 1_000],       # dev-node-2
+    ["52ba18a771da5f8ebfb7e0eb88a229b748637c8041e0ddf06271b0511e67a5d4", 10_000],      # dev-faucet
+]
+
+[genesis.parameters]
+# Devnet genesis parameters match reduced finality requirements
+p = 3
+d = 3
+rho = [2, 2, 1]
+q = 2
+k = 2
+depth_star = 2
+homology_window = 3
+alpha = 1.0
+beta = 1.0
+
+[node]
+data_dir = "./data/devnet"
+validator = true
+bootstrap = true  # First dev node acts as bootstrap
+name = "dev-node"
+
+# ============================================
+# DEVELOPMENT NOTES
+# ============================================
+# - Use this config only for local development
+# - Finality achieves in seconds instead of minutes
+# - Perfect for rapid iteration and testing
+# - Run multiple nodes by changing ports in .env overrides
+# - Example: API_PORT=3031 P2P_PORT=9946 ./adic start --network devnet

@@ -1,0 +1,156 @@
+# ============================================
+# ADIC-DAG Mainnet Configuration
+# ============================================
+# This is the authoritative configuration for the ADIC mainnet.
+# All consensus parameters match the ADIC-DAG White Paper and Yellow Paper specifications.
+
+[network]
+name = "mainnet"
+chain_id = "adic-dag-v1"
+
+# Network topology
+p2p_port = 9000
+quic_port = 9001
+max_peers = 200
+
+# DNS seed discovery for automatic peer connection
+dns_seeds = ["_seeds.adicl1.com"]
+bootstrap_peers = []
+
+# TLS configuration (production-grade)
+use_production_tls = true
+ca_cert_path = "/data/certs/ca-cert.pem"
+node_cert_path = "/data/certs/node-cert.pem"
+node_key_path = "/data/certs/node-key.pem"
+
+[consensus]
+# ============================================
+# Core p-adic DAG Parameters
+# ============================================
+# Per ADIC-DAG White Paper Section 3
+
+# Prime modulus for p-adic ultrametric
+p = 3
+
+# Dimension (d+1 parents per message, creating d-simplices)
+d = 3
+
+# p-adic precision radii per axis: ρ = (ρ₀, ρ₁, ρ₂, ρ₃)
+# Controls strictness of proximity constraints on each axis
+rho = [2, 2, 1]
+
+# Diversity threshold: minimum distinct p-adic balls required per axis
+q = 3
+
+# ============================================
+# Finality Parameters
+# ============================================
+# Per ADIC-DAG White Paper Section 8
+
+# F1 (k-core) finality parameters
+k = 20              # Minimum k-core size for F1 finality
+depth_star = 12     # Minimum depth D* for F1 finality
+r_min = 1.0         # Minimum individual reputation
+r_sum_min = 4.0     # Minimum sum reputation across witnesses
+
+# F2 (persistent homology) finality parameters
+delta = 5           # Window size Δ for homology stabilization
+epsilon = 0.1       # Bottleneck distance threshold ε for H_{d-1} stabilization
+
+# ============================================
+# Economic Parameters
+# ============================================
+# Per ADIC-DAG White Paper Section 5
+
+# Anti-spam deposit (refunded at finality)
+deposit = 0.1  # 0.1 ADIC
+
+# Conflict resolution and reputation parameters
+lambda = 1.0    # Energy descent rate λ
+beta = 0.5      # Conflict penalty coefficient β
+mu = 1.0        # Energy computation coefficient μ
+gamma = 0.9     # Reputation decay factor γ (exponential smoothing)
+
+# ============================================
+# Message Admissibility Parameters
+# ============================================
+# These control the admissibility score S(x; A) computation
+# Score threshold is d = 3 (must equal dimension)
+
+alpha = 1.0     # Proximity weighting factor
+beta_adm = 1.0  # Additional admissibility coefficient (if needed)
+
+[api]
+enabled = true
+host = "0.0.0.0"
+port = 8080
+max_connections = 100
+
+# Rate limiting (requests per minute per IP)
+rate_limit_requests_per_minute = 60
+
+[storage]
+backend = "rocksdb"
+cache_size = 10000          # Number of recent messages to cache
+snapshot_interval = 3600     # Create snapshot every N seconds
+max_snapshots = 10           # Keep last N snapshots
+
+[logging]
+level = "info"
+format = "pretty"
+use_emojis = false
+show_fields_at = "debug"
+show_boot_banner = true
+show_emoji_legend = false
+file_rotation_size_mb = 100
+
+[genesis]
+# ============================================
+# Genesis Configuration
+# ============================================
+# Per ADIC-DAG White Paper Section 6.2
+# Total genesis mint: 300,400,000 ADIC (excluding 10M faucet minted by economics layer)
+
+timestamp = "2025-01-01T00:00:00Z"
+deposit_amount = 0.1
+
+# Genesis validator identities (bootstrap nodes)
+genesis_identities = ["g0", "g1", "g2", "g3"]
+
+# Genesis allocations: [address_hex, amount_in_adic]
+# Distribution per paper:
+# - Treasury: 20% = 60M ADIC
+# - Liquidity Pool: 15% = 45M ADIC
+# - Community Fund: 15% = 45M ADIC
+# - Genesis Pool: 50% = 150M ADIC
+# - Genesis validators: 100K ADIC each (4 validators = 400K total)
+allocations = [
+    ["0100000000000000000000000000000000000000000000000000000000000000", 60_000_000],    # Treasury
+    ["c1403f4763367340178077be2ab3144af2b9065901232335f960a9910bb9ab1b", 45_000_000],    # Liquidity Pool
+    ["2f89601b32149388d38652ac432307bf183eb97de87b5599cb76d256fd7a7f89", 45_000_000],    # Community Fund
+    ["98831caf9b0861ec6eba3072275efc0de1557062043d317ba5f218361e028441", 150_000_000],   # Genesis Pool
+    ["52ba18a771da5f8ebfb7e0eb88a229b748637c8041e0ddf06271b0511e67a5d4", 100_000],       # g0
+    ["39abcb02b715f742149a698dcfd534884b8696d07d3d40afd83a0ebd5dcfa3e8", 100_000],       # g1
+    ["fd2401601d44dd03cfe585782b48bf2f5681ac3264975ab43a4fea2d0089a543", 100_000],       # g2
+    ["d5828a126c990608a0d385cb31dcc818fcef5bdf64a2315481f7f656d42e53af", 100_000],       # g3
+]
+
+[genesis.parameters]
+# These parameters are embedded in the genesis block
+# They must match the consensus parameters above
+p = 3
+d = 3
+rho = [2, 2, 1]
+q = 3
+k = 20
+depth_star = 12
+homology_window = 5
+alpha = 1.0
+beta = 1.0
+
+[node]
+# Default node settings (can be overridden by environment variables or CLI flags)
+data_dir = "./data"
+validator = false
+bootstrap = false
+name = ""  # Auto-generated if not set

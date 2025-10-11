@@ -1,0 +1,205 @@
+# Example Logging Configuration for ADIC Node
+# This file demonstrates various logging configurations for different use cases
+
+# =============================================================================
+# DEVELOPMENT CONFIGURATION
+# =============================================================================
+[logging.development]
+# Verbose logging for development and debugging
+level = "debug"                    # Show all debug messages
+format = "pretty"                   # Human-readable format with colors
+use_emojis = true                  # Enable emoji indicators
+show_fields_at = "debug"           # Show structured fields at debug level
+show_boot_banner = true            # Display ASCII art on startup
+show_emoji_legend = true           # Show emoji meanings on startup
+
+# Module-specific overrides for development
+[logging.development.module_filters]
+adic_network = "trace"             # Extra verbose for network debugging
+adic_consensus = "debug"           # Detailed consensus operations
+adic_economics = "info"            # Less verbose for economics
+adic_storage = "debug"             # Storage operations
+libp2p = "warn"                    # Reduce noise from libp2p
+
+# Field filters - choose which fields to display
+[logging.development.field_filters]
+peer_id = true                     # Always show peer IDs
+message_id = true                  # Always show message IDs
+balance_before = true              # Show balance changes
+balance_after = true
+reputation_before = true           # Show reputation changes
+reputation_after = true
+
+# =============================================================================
+# PRODUCTION CONFIGURATION
+# =============================================================================
+[logging.production]
+# Optimized for production environments
+level = "info"                     # Only important events
+format = "json"                    # Machine-parsable JSON
+use_emojis = false                 # No emojis in production
+show_fields_at = "debug"           # Fields only when debugging
+file_output = "/var/log/adic/node.log"
+file_rotation_size_mb = 100        # Rotate at 100MB
+show_boot_banner = false           # No banner in production
+show_emoji_legend = false          # No legend in production
+
+[logging.production.module_filters]
+adic_network = "info"
+adic_consensus = "info"
+adic_economics = "warn"            # Only warnings and errors
+adic_storage = "info"
+libp2p = "error"                   # Only errors from libp2p
+
+# =============================================================================
+# MONITORING CONFIGURATION
+# =============================================================================
+[logging.monitoring]
+# Optimized for metrics and monitoring systems
+level = "info"
+format = "json"                    # JSON for log aggregators
+use_emojis = false
+show_fields_at = "always"          # Always include fields for metrics
+file_output = "/var/log/adic/metrics.log"
+file_rotation_size_mb = 50
+
+# Focus on performance metrics
+[logging.monitoring.field_filters]
+duration_ms = true                 # Operation timings
+throughput_msg_per_sec = true      # Message throughput
+connections_count = true           # Connection metrics
+peer_count = true                  # Network size
+balance_after = true               # Final states only
+reputation_after = true
+cache_hit = true                   # Cache performance
+routes_examined = true             # Routing efficiency
+
+# =============================================================================
+# TROUBLESHOOTING CONFIGURATION
+# =============================================================================
+[logging.troubleshooting]
+# Maximum verbosity for debugging issues
+level = "trace"                    # Everything including trace
+format = "pretty"                  # Human-readable
+use_emojis = true                  # Visual indicators
+show_fields_at = "always"          # Always show all fields
+file_output = "/tmp/adic-debug.log"
+file_rotation_size_mb = 500        # Large file for full traces
+show_boot_banner = true
+show_emoji_legend = true
+
+[logging.troubleshooting.module_filters]
+# All modules at maximum verbosity
+adic_network = "trace"
+adic_consensus = "trace"
+adic_economics = "trace"
+adic_storage = "trace"
+adic_crypto = "trace"
+adic_math = "trace"
+libp2p = "debug"
+quinn = "debug"
+tokio = "debug"
+
+# =============================================================================
+# AUDIT CONFIGURATION
+# =============================================================================
+[logging.audit]
+# Security and compliance audit logging
+level = "info"
+format = "json"                    # Structured for audit tools
+use_emojis = false
+show_fields_at = "always"          # All context for audit trail
+file_output = "/var/log/adic/audit.log"
+file_rotation_size_mb = 200        # Keep more history
+show_boot_banner = false
+show_emoji_legend = false
+
+# Focus on security-relevant events
+[logging.audit.module_filters]
+adic_economics = "info"            # All financial operations
+adic_consensus = "info"            # Consensus decisions
+adic_network = "info"              # Network connections
+adic_crypto = "debug"              # Crypto operations
+
+[logging.audit.field_filters]
+# Audit trail requirements
+address = true                     # Account addresses
+amount = true                      # Transaction amounts
+balance_before = true              # State changes
+balance_after = true
+reputation_before = true
+reputation_after = true
+peer_id = true                     # Network participants
+message_id = true                  # Message tracking
+tx_hash = true                     # Transaction hashes
+status = true                      # Operation results
+error = true                       # Failure reasons
+proposer = true                    # Action initiators
+approver = true                    # Action approvers
+
+# =============================================================================
+# PERFORMANCE CONFIGURATION
+# =============================================================================
+[logging.performance]
+# Minimal logging for maximum performance
+level = "warn"                     # Only problems
+format = "compact"                 # Minimal format
+use_emojis = false
+show_fields_at = "never"           # No fields for speed
+show_boot_banner = false
+show_emoji_legend = false
+
+[logging.performance.module_filters]
+# Silence everything except critical errors
+adic_network = "error"
+adic_consensus = "error"
+adic_economics = "error"
+adic_storage = "error"
+libp2p = "off"                     # Completely disable
+tokio = "off"
+
+# =============================================================================
+# TESTING CONFIGURATION
+# =============================================================================
+[logging.testing]
+# Configuration for test environments
+level = "debug"
+format = "pretty"
+use_emojis = true
+show_fields_at = "debug"
+file_output = "./test-logs/test.log"
+file_rotation_size_mb = 10         # Small files for tests
+show_boot_banner = false           # No banner in tests
+show_emoji_legend = false
+
+[logging.testing.module_filters]
+# Verbose for code under test, quiet for infrastructure
+adic_network = "debug"
+adic_consensus = "debug"
+adic_economics = "debug"
+adic_storage = "debug"
+test_utils = "trace"               # Test utilities
+libp2p = "off"                     # Disable in tests
+tokio = "warn"
+
+# =============================================================================
+# Usage Examples
+# =============================================================================
+#
+# 1. Use development configuration:
+#    cargo run --bin adic -- --log-config ./config/logging-example.toml --log-profile development
+#
+# 2. Use production configuration:
+#    cargo run --bin adic -- --log-config ./config/logging-example.toml --log-profile production
+#
+# 3. Override configuration via environment:
+#    RUST_LOG=debug cargo run --bin adic
+#
+# 4. Mix configurations:
+#    Start with production profile, then override specific modules:
+#    RUST_LOG=adic_consensus=debug cargo run --bin adic -- --log-profile production
+#
+# 5. Output to file and console:
+#    cargo run --bin adic -- --log-file /var/log/adic/node.log --log-console
+#
+# =============================================================================
