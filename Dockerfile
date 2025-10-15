@@ -17,6 +17,7 @@ WORKDIR /usr/src/adic-core
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
+COPY config/ ./config/
 
 # Build in release mode
 RUN cargo build --release --bin adic
