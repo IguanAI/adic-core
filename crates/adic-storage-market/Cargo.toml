@@ -1,0 +1,47 @@
+[package]
+name = "adic-storage-market"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# ADIC crates
+adic-types = { path = "../adic-types" }
+adic-crypto = { path = "../adic-crypto" }
+adic-economics = { path = "../adic-economics" }
+adic-consensus = { path = "../adic-consensus" }
+adic-finality = { path = "../adic-finality" }
+adic-app-common = { path = "../adic-app-common" }
+adic-vrf = { path = "../adic-vrf" }
+adic-quorum = { path = "../adic-quorum" }
+adic-challenges = { path = "../adic-challenges" }
+adic-mrw = { path = "../adic-mrw" }
+adic-storage = { path = "../adic-storage" }
+
+# Async
+tokio.workspace = true
+async-trait.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Cryptography
+blake3.workspace = true
+hex.workspace = true
+
+# Utilities
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[features]
+default = []
+# SECURITY: Allow deterministic challenge fallback when VRF unavailable (NOT for production)
+allow-deterministic-challenges = []

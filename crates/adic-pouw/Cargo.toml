@@ -1,0 +1,67 @@
+[package]
+name = "adic-pouw"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Proof of Useful Work (PoUW) framework for ADIC-DAG protocol"
+
+[dependencies]
+# Core ADIC dependencies
+adic-types = { path = "../adic-types" }
+adic-economics = { path = "../adic-economics" }
+adic-consensus = { path = "../adic-consensus" }
+adic-crypto = { path = "../adic-crypto" }
+adic-vrf = { path = "../adic-vrf" }
+adic-quorum = { path = "../adic-quorum" }
+adic-challenges = { path = "../adic-challenges" }
+adic-app-common = { path = "../adic-app-common" }
+adic-network = { path = "../adic-network" }
+adic-storage = { path = "../adic-storage" }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = "1.3"
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Cryptography
+blake3 = { workspace = true }
+hex = { workspace = true }
+threshold_crypto = "0.4"
+
+# Network
+libp2p = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[features]
+default = []
+
+# Enable placeholder implementations for development/testing
+# WARNING: Do NOT enable in production - placeholder ZK verifier accepts any proof > 64 bytes
+dev-placeholders = []
+
+# Enable ML inference task type (experimental)
+# WARNING: Do NOT enable in production - uses placeholder implementation
+# Real ML inference requires integration with ONNX Runtime, TensorFlow Lite, or similar
+ml-inference = []
+
+# SECURITY: Allow weak validation without re-execution (H5)
+# WARNING: Do NOT enable in production - bypasses deterministic re-execution security
+# This allows proof-based verification when TaskExecutor/TaskStore/InputStore unavailable
+# Only for development/testing or emergency scenarios
+allow-weak-validation = []

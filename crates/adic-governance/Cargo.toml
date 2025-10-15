@@ -1,0 +1,49 @@
+[package]
+name = "adic-governance"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "On-chain governance for ADIC-DAG protocol with Rep-based voting"
+
+[dependencies]
+# Core ADIC dependencies
+adic-types = { path = "../adic-types" }
+adic-economics = { path = "../adic-economics" }
+adic-consensus = { path = "../adic-consensus" }
+adic-crypto = { path = "../adic-crypto" }
+adic-finality = { path = "../adic-finality" }
+adic-app-common = { path = "../adic-app-common" }
+adic-quorum = { path = "../adic-quorum" }
+adic-challenges = { path = "../adic-challenges" }
+adic-pouw = { path = "../adic-pouw" }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Cryptography
+blake3 = { workspace = true }
+hex = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Metrics
+prometheus = { workspace = true }
+once_cell = "1.20"
+
+# Utilities
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+adic-storage = { path = "../adic-storage" }
+tempfile = "3.23"

@@ -1,0 +1,52 @@
+[package]
+name = "adic-app-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared application layer primitives for ADIC-DAG applications (Storage, PoUW, Governance)"
+
+[dependencies]
+# Core ADIC dependencies
+adic-types = { path = "../adic-types" }
+adic-crypto = { path = "../adic-crypto" }
+adic-economics = { path = "../adic-economics" }
+adic-finality = { path = "../adic-finality" }
+adic-consensus = { path = "../adic-consensus" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Cryptography
+blake3 = "1.5"
+hex = "0.4"
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+
+# Logging
+tracing = "0.1"
+
+# Utilities
+chrono = "0.4"
+
+# HTTP client for metadata fetching (using rustls to avoid OpenSSL dependency)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
+rustls = { version = "0.23", features = ["ring"], optional = true }
+rustls-native-certs = { version = "0.7", optional = true }
+rustls-pki-types = { version = "1", optional = true }
+webpki-roots = { version = "0.26", optional = true }
+
+[features]
+default = ["http-metadata"]
+http-metadata = ["reqwest", "rustls", "rustls-native-certs", "rustls-pki-types", "webpki-roots"]
+
+[dev-dependencies]
+tokio-test = "0.4"
