@@ -19,8 +19,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 COPY config/ ./config/
 
-# Build in release mode
-RUN cargo build --release --bin adic
+# Build in debug mode for testnet (allows use_production_tls=false for self-signed certs)
+# For production/mainnet, change this to: cargo build --release --bin adic
+RUN cargo build --bin adic
 
 # Runtime stage
 FROM debian:trixie-slim
@@ -40,8 +41,8 @@ RUN apt-get update && apt-get install -y \
 # Create non-root user
 RUN useradd -m -u 1000 adic
 
-# Copy binary from builder
-COPY --from=builder /usr/src/adic-core/target/release/adic /usr/local/bin/adic
+# Copy binary from builder (debug mode for testnet)
+COPY --from=builder /usr/src/adic-core/target/debug/adic /usr/local/bin/adic
 
 # Create data directory
 RUN mkdir -p /data && chown adic:adic /data
