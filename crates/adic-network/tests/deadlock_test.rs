@@ -30,11 +30,14 @@ async fn test_network_creation_deadlock() {
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
 
     println!("DEADLOCK TEST - Creating finality");
-    let finality = Arc::new(FinalityEngine::new(
-        FinalityConfig::from(&params),
-        consensus.clone(),
-        storage.clone(),
-    ));
+    let finality = Arc::new(
+        FinalityEngine::new(
+            FinalityConfig::from(&params),
+            consensus.clone(),
+            storage.clone(),
+        )
+        .await,
+    );
 
     println!("DEADLOCK TEST - Creating config");
     let config = NetworkConfig {
@@ -59,12 +62,14 @@ async fn test_network_creation_deadlock() {
     )
     .await;
 
+    // Assert that we did not hit a timeout and creation succeeded
     match result {
-        Ok(Ok(_)) => println!("DEADLOCK TEST - NetworkEngine created successfully"),
-        Ok(Err(e)) => println!("DEADLOCK TEST - NetworkEngine creation failed: {}", e),
-        Err(_) => {
-            println!("DEADLOCK TEST - TIMEOUT! NetworkEngine creation took more than 5 seconds")
+        Ok(Ok(_)) => {
+            println!("DEADLOCK TEST - NetworkEngine created successfully");
+            assert!(true);
         }
+        Ok(Err(e)) => panic!("NetworkEngine creation failed: {}", e),
+        Err(_) => panic!("TIMEOUT! NetworkEngine creation took more than 5 seconds"),
     }
 
     println!("DEADLOCK TEST - Complete");

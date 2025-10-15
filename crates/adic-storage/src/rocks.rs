@@ -3,9 +3,10 @@ use rocksdb::{IteratorMode, Options, WriteBatch, DB};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
 use crate::backend::StorageStats;
+use crate::key_prefix::*;
 use crate::{StorageBackend, StorageError};
 use adic_types::{AdicMessage, MessageId, PublicKey};
 
@@ -19,7 +20,10 @@ impl RocksBackend {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(true);
+
+        // Compression: LZ4 for upper levels (speed), Zstd for bottommost (space savings)
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+        opts.set_bottommost_compression_type(rocksdb::DBCompressionType::Zstd);
 
         // Performance optimizations for range queries
         opts.set_write_buffer_size(128 * 1024 * 1024); // 128MB
@@ -28,8 +32,8 @@ impl RocksBackend {
         opts.set_max_background_jobs(4);
         opts.set_level_compaction_dynamic_level_bytes(true);
 
-        // Optimize for time-series data and range scans
-        opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(10));
+        // Prefix extractor for 10-byte hashed prefixes (enables bloom filter optimization)
+        opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(PREFIX_LEN));
         opts.set_memtable_prefix_bloom_ratio(0.2);
 
         // Block cache for frequently accessed data
@@ -66,63 +70,99 @@ impl RocksBackend {
     }
 
     fn message_key(id: &MessageId) -> Vec<u8> {
-        format!("msg:{}", id).into_bytes()
+        let mut key = Vec::with_capacity(PREFIX_LEN + 32);
+        key.extend_from_slice(&*PREFIX_MSG);
+        key.extend_from_slice(id.as_bytes());
+        key
     }
 
     fn parent_child_key(parent: &MessageId, child: &MessageId) -> Vec<u8> {
-        format!("pc:{}:{}", parent, child).into_bytes()
+        let mut key = Vec::with_capacity(PREFIX_LEN + 64);
+        key.extend_from_slice(&*PREFIX_PC);
+        key.extend_from_slice(parent.as_bytes());
+        key.extend_from_slice(child.as_bytes());
+        key
     }
 
     fn child_parent_key(child: &MessageId, parent: &MessageId) -> Vec<u8> {
-        format!("cp:{}:{}", child, parent).into_bytes()
+        let mut key = Vec::with_capacity(PREFIX_LEN + 64);
+        key.extend_from_slice(&*PREFIX_CP);
+        key.extend_from_slice(child.as_bytes());
+        key.extend_from_slice(parent.as_bytes());
+        key
     }
 
     fn tip_key(id: &MessageId) -> Vec<u8> {
-        format!("tip:{}", id).into_bytes()
+        let mut key = Vec::with_capacity(PREFIX_LEN + 32);
+        key.extend_from_slice(&*PREFIX_TIP);
+        key.extend_from_slice(id.as_bytes());
+        key
     }
 
-    fn metadata_key(id: &MessageId, key: &str) -> Vec<u8> {
-        format!("meta:{}:{}", id, key).into_bytes()
+    fn metadata_key(id: &MessageId, meta_key: &str) -> Vec<u8> {
+        let mut key = Vec::with_capacity(PREFIX_LEN + 32 + meta_key.len());
+        key.extend_from_slice(&*PREFIX_META);
+        key.extend_from_slice(id.as_bytes());
+        key.extend_from_slice(meta_key.as_bytes());
+        key
     }
 
     fn reputation_key(pubkey: &PublicKey) -> Vec<u8> {
-        format!("rep:{:?}", pubkey.as_bytes()).into_bytes()
+        let mut key = Vec::with_capacity(PREFIX_LEN + 32);
+        key.extend_from_slice(&*PREFIX_REP);
+        key.extend_from_slice(pubkey.as_bytes());
+        key
     }
 
     fn finality_key(id: &MessageId) -> Vec<u8> {
-        format!("fin:{}", id).into_bytes()
+        let mut key = Vec::with_capacity(PREFIX_LEN + 32);
+        key.extend_from_slice(&*PREFIX_FIN);
+        key.extend_from_slice(id.as_bytes());
+        key
     }
 
     fn finality_artifact_key(id: &MessageId) -> Vec<u8> {
-        format!("fin_art:{}", id).into_bytes()
+        let mut key = Vec::with_capacity(PREFIX_LEN + 32);
+        key.extend_from_slice(&*PREFIX_FIN_ART);
+        key.extend_from_slice(id.as_bytes());
+        key
     }
 
     fn conflict_key(conflict_id: &str, message_id: &MessageId) -> Vec<u8> {
-        format!("conflict:{}:{}", conflict_id, message_id).into_bytes()
+        let mut key = Vec::with_capacity(PREFIX_LEN + conflict_id.len() + 32);
+        key.extend_from_slice(&*PREFIX_CONFLICT);
+        key.extend_from_slice(conflict_id.as_bytes());
+        key.extend_from_slice(message_id.as_bytes());
+        key
     }
 
     fn ball_index_key(axis: u32, ball_id: &[u8], message_id: &MessageId) -> Vec<u8> {
-        let ball_id_hex = hex::encode(ball_id);
-        format!("ball:{}:{}:{}", axis, ball_id_hex, message_id).into_bytes()
+        let mut key = Vec::with_capacity(PREFIX_LEN + 4 + ball_id.len() + 32);
+        key.extend_from_slice(&*PREFIX_BALL);
+        key.extend_from_slice(&axis.to_be_bytes());
+        key.extend_from_slice(ball_id);
+        key.extend_from_slice(message_id.as_bytes());
+        key
     }
 
     fn message_by_time_key(timestamp_millis: i64, message_id: &MessageId) -> Vec<u8> {
-        // Use zero-padded timestamp for proper lexicographic ordering
-        format!("msg_by_time:{:020}:{}", timestamp_millis, message_id).into_bytes()
+        let mut key = Vec::with_capacity(PREFIX_LEN + 8 + 32);
+        key.extend_from_slice(&*PREFIX_MSG_BY_TIME);
+        key.extend_from_slice(&timestamp_millis.to_be_bytes());
+        key.extend_from_slice(message_id.as_bytes());
+        key
     }
 
     // Helper function for transaction indexing - kept for future transaction support in storage module
     // Currently, transaction storage is handled by adic-economics module which uses the same format
     #[allow(dead_code)]
     fn tx_by_addr_time_key(address: &[u8], timestamp_millis: i64, tx_hash: &str) -> Vec<u8> {
-        // Use zero-padded timestamp for proper ordering
-        format!(
-            "tx_by_addr:{}:{:020}:{}",
-            hex::encode(address),
-            timestamp_millis,
-            tx_hash
-        )
-        .into_bytes()
+        let mut key = Vec::with_capacity(PREFIX_LEN + address.len() + 8 + tx_hash.len());
+        key.extend_from_slice(&*PREFIX_TX_BY_ADDR);
+        key.extend_from_slice(address);
+        key.extend_from_slice(&timestamp_millis.to_be_bytes());
+        key.extend_from_slice(tx_hash.as_bytes());
+        key
     }
 }
 
@@ -220,28 +260,24 @@ impl StorageBackend for RocksBackend {
         // Get both stored messages and tips
         let mut message_ids = Vec::new();
 
-        // First get all messages with "msg:" prefix
-        let msg_prefix = b"msg:";
+        // First get all messages with binary prefix
         let msg_iter = self
             .db
-            .iterator(IteratorMode::From(msg_prefix, rocksdb::Direction::Forward));
+            .iterator(IteratorMode::From(&*PREFIX_MSG, rocksdb::Direction::Forward));
 
         for item in msg_iter {
             let (key, _) =
                 item.map_err(|e| StorageError::BackendError(format!("Iterator error: {}", e)))?;
 
-            if !key.starts_with(msg_prefix) {
+            if !key.starts_with(&*PREFIX_MSG) {
                 break;
             }
 
-            // Extract message ID from key
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                if let Some(id_str) = key_str.strip_prefix("msg:") {
-                    // Parse MessageId from hex string representation
-                    if let Ok(id) = MessageId::from_hex(id_str) {
-                        message_ids.push(id);
-                    }
-                }
+            // Extract message ID from binary key (skip 10-byte prefix)
+            if key.len() >= PREFIX_LEN + 32 {
+                let id_bytes: [u8; 32] = key[PREFIX_LEN..PREFIX_LEN + 32].try_into().unwrap();
+                let id = MessageId::from_bytes(id_bytes);
+                message_ids.push(id);
             }
         }
 
@@ -278,7 +314,11 @@ impl StorageBackend for RocksBackend {
     }
 
     async fn get_children(&self, parent: &MessageId) -> Result<Vec<MessageId>> {
-        let prefix = format!("pc:{}:", parent).into_bytes();
+        // Build prefix: PREFIX_PC + parent_id
+        let mut prefix = Vec::with_capacity(PREFIX_LEN + 32);
+        prefix.extend_from_slice(&*PREFIX_PC);
+        prefix.extend_from_slice(parent.as_bytes());
+
         let iter = self
             .db
             .iterator(IteratorMode::From(&prefix, rocksdb::Direction::Forward));
@@ -292,13 +332,12 @@ impl StorageBackend for RocksBackend {
                 break;
             }
 
-            // Extract child ID from key
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                if let Some(suffix) = key_str.strip_prefix(&format!("pc:{}:", parent)) {
-                    if let Ok(child) = MessageId::from_hex(suffix) {
-                        children.push(child);
-                    }
-                }
+            // Extract child ID from binary key (skip prefix + parent_id)
+            let child_offset = PREFIX_LEN + 32;
+            if key.len() >= child_offset + 32 {
+                let child_bytes: [u8; 32] = key[child_offset..child_offset + 32].try_into().unwrap();
+                let child = MessageId::from_bytes(child_bytes);
+                children.push(child);
             }
         }
 
@@ -306,7 +345,11 @@ impl StorageBackend for RocksBackend {
     }
 
     async fn get_parents(&self, child: &MessageId) -> Result<Vec<MessageId>> {
-        let prefix = format!("cp:{}:", child).into_bytes();
+        // Build prefix: PREFIX_CP + child_id
+        let mut prefix = Vec::with_capacity(PREFIX_LEN + 32);
+        prefix.extend_from_slice(&*PREFIX_CP);
+        prefix.extend_from_slice(child.as_bytes());
+
         let iter = self
             .db
             .iterator(IteratorMode::From(&prefix, rocksdb::Direction::Forward));
@@ -320,13 +363,12 @@ impl StorageBackend for RocksBackend {
                 break;
             }
 
-            // Extract parent ID from key
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                if let Some(suffix) = key_str.strip_prefix(&format!("cp:{}:", child)) {
-                    if let Ok(parent) = MessageId::from_hex(suffix) {
-                        parents.push(parent);
-                    }
-                }
+            // Extract parent ID from binary key (skip prefix + child_id)
+            let parent_offset = PREFIX_LEN + 32;
+            if key.len() >= parent_offset + 32 {
+                let parent_bytes: [u8; 32] = key[parent_offset..parent_offset + 32].try_into().unwrap();
+                let parent = MessageId::from_bytes(parent_bytes);
+                parents.push(parent);
             }
         }
 
@@ -348,27 +390,24 @@ impl StorageBackend for RocksBackend {
     }
 
     async fn get_tips(&self) -> Result<Vec<MessageId>> {
-        let prefix = b"tip:";
         let iter = self
             .db
-            .iterator(IteratorMode::From(prefix, rocksdb::Direction::Forward));
+            .iterator(IteratorMode::From(&*PREFIX_TIP, rocksdb::Direction::Forward));
         let mut tips = Vec::new();
 
         for item in iter {
             let (key, _) =
                 item.map_err(|e| StorageError::BackendError(format!("Iterator error: {}", e)))?;
 
-            if !key.starts_with(prefix) {
+            if !key.starts_with(&*PREFIX_TIP) {
                 break;
             }
 
-            // Extract tip ID from key
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                if let Some(id_str) = key_str.strip_prefix("tip:") {
-                    if let Ok(id) = MessageId::from_hex(id_str) {
-                        tips.push(id);
-                    }
-                }
+            // Extract tip ID from binary key (skip 10-byte prefix)
+            if key.len() >= PREFIX_LEN + 32 {
+                let id_bytes: [u8; 32] = key[PREFIX_LEN..PREFIX_LEN + 32].try_into().unwrap();
+                let id = MessageId::from_bytes(id_bytes);
+                tips.push(id);
             }
         }
 
@@ -466,7 +505,11 @@ impl StorageBackend for RocksBackend {
     }
 
     async fn get_conflict_set(&self, conflict_id: &str) -> Result<Vec<MessageId>> {
-        let prefix = format!("conflict:{}:", conflict_id).into_bytes();
+        // Build prefix: PREFIX_CONFLICT + conflict_id
+        let mut prefix = Vec::with_capacity(PREFIX_LEN + conflict_id.len());
+        prefix.extend_from_slice(&*PREFIX_CONFLICT);
+        prefix.extend_from_slice(conflict_id.as_bytes());
+
         let iter = self
             .db
             .iterator(IteratorMode::From(&prefix, rocksdb::Direction::Forward));
@@ -480,13 +523,12 @@ impl StorageBackend for RocksBackend {
                 break;
             }
 
-            // Extract message ID from key
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                if let Some(suffix) = key_str.strip_prefix(&format!("conflict:{}:", conflict_id)) {
-                    if let Ok(id) = MessageId::from_hex(suffix) {
-                        messages.push(id);
-                    }
-                }
+            // Extract message ID from binary key (skip prefix + conflict_id)
+            let msg_offset = PREFIX_LEN + conflict_id.len();
+            if key.len() >= msg_offset + 32 {
+                let msg_bytes: [u8; 32] = key[msg_offset..msg_offset + 32].try_into().unwrap();
+                let id = MessageId::from_bytes(msg_bytes);
+                messages.push(id);
             }
         }
 
@@ -506,8 +548,12 @@ impl StorageBackend for RocksBackend {
     }
 
     async fn get_ball_members(&self, axis: u32, ball_id: &[u8]) -> Result<Vec<MessageId>> {
-        let ball_id_hex = hex::encode(ball_id);
-        let prefix = format!("ball:{}:{}:", axis, ball_id_hex).into_bytes();
+        // Build prefix: PREFIX_BALL + axis + ball_id
+        let mut prefix = Vec::with_capacity(PREFIX_LEN + 4 + ball_id.len());
+        prefix.extend_from_slice(&*PREFIX_BALL);
+        prefix.extend_from_slice(&axis.to_be_bytes());
+        prefix.extend_from_slice(ball_id);
+
         let iter = self
             .db
             .iterator(IteratorMode::From(&prefix, rocksdb::Direction::Forward));
@@ -521,15 +567,12 @@ impl StorageBackend for RocksBackend {
                 break;
             }
 
-            // Extract message ID from key
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                if let Some(suffix) =
-                    key_str.strip_prefix(&format!("ball:{}:{}:", axis, ball_id_hex))
-                {
-                    if let Ok(id) = MessageId::from_hex(suffix) {
-                        messages.push(id);
-                    }
-                }
+            // Extract message ID from binary key (skip prefix + axis + ball_id)
+            let msg_offset = PREFIX_LEN + 4 + ball_id.len();
+            if key.len() >= msg_offset + 32 {
+                let msg_bytes: [u8; 32] = key[msg_offset..msg_offset + 32].try_into().unwrap();
+                let id = MessageId::from_bytes(msg_bytes);
+                messages.push(id);
             }
         }
 
@@ -563,56 +606,57 @@ impl StorageBackend for RocksBackend {
         let tip_count = self.get_tips().await?.len();
 
         // Count finalized messages
-        let prefix = b"fin:";
         let iter = self
             .db
-            .iterator(IteratorMode::From(prefix, rocksdb::Direction::Forward));
+            .iterator(IteratorMode::From(&*PREFIX_FIN, rocksdb::Direction::Forward));
         let mut finalized_count = 0;
 
         for item in iter {
             let (key, _) =
                 item.map_err(|e| StorageError::BackendError(format!("Iterator error: {}", e)))?;
-            if !key.starts_with(prefix) {
+            if !key.starts_with(&*PREFIX_FIN) {
                 break;
             }
             finalized_count += 1;
         }
 
         // Count reputation entries
-        let prefix = b"rep:";
         let iter = self
             .db
-            .iterator(IteratorMode::From(prefix, rocksdb::Direction::Forward));
+            .iterator(IteratorMode::From(&*PREFIX_REP, rocksdb::Direction::Forward));
         let mut reputation_entries = 0;
 
         for item in iter {
             let (key, _) =
                 item.map_err(|e| StorageError::BackendError(format!("Iterator error: {}", e)))?;
-            if !key.starts_with(prefix) {
+            if !key.starts_with(&*PREFIX_REP) {
                 break;
             }
             reputation_entries += 1;
         }
 
         // Count conflict sets (unique conflict IDs)
-        let prefix = b"conflict:";
         let iter = self
             .db
-            .iterator(IteratorMode::From(prefix, rocksdb::Direction::Forward));
+            .iterator(IteratorMode::From(&*PREFIX_CONFLICT, rocksdb::Direction::Forward));
         let mut conflict_ids = std::collections::HashSet::new();
 
         for item in iter {
             let (key, _) =
                 item.map_err(|e| StorageError::BackendError(format!("Iterator error: {}", e)))?;
-            if !key.starts_with(prefix) {
+            if !key.starts_with(&*PREFIX_CONFLICT) {
                 break;
             }
 
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                if let Some(suffix) = key_str.strip_prefix("conflict:") {
-                    if let Some(conflict_id) = suffix.split(':').next() {
-                        conflict_ids.insert(conflict_id.to_string());
-                    }
+            // Extract conflict ID from binary key
+            // Key format: PREFIX_CONFLICT + conflict_id + message_id
+            // We need to find where conflict_id ends (before the 32-byte message_id at the end)
+            if key.len() >= PREFIX_LEN + 33 {
+                // At least: prefix + 1-char conflict_id + message_id
+                let conflict_id_end = key.len() - 32;
+                let conflict_id_bytes = &key[PREFIX_LEN..conflict_id_end];
+                if let Ok(conflict_id) = std::str::from_utf8(conflict_id_bytes) {
+                    conflict_ids.insert(conflict_id.to_string());
                 }
             }
         }
@@ -628,10 +672,9 @@ impl StorageBackend for RocksBackend {
     }
 
     async fn get_recently_finalized(&self, limit: usize) -> Result<Vec<MessageId>> {
-        let prefix = b"fin:";
         let iter = self
             .db
-            .iterator(IteratorMode::From(prefix, rocksdb::Direction::Forward));
+            .iterator(IteratorMode::From(&*PREFIX_FIN, rocksdb::Direction::Forward));
         let mut finalized_ids = Vec::new();
 
         for item in iter {
@@ -641,17 +684,15 @@ impl StorageBackend for RocksBackend {
 
             let (key, _) =
                 item.map_err(|e| StorageError::BackendError(format!("Iterator error: {}", e)))?;
-            if !key.starts_with(prefix) {
+            if !key.starts_with(&*PREFIX_FIN) {
                 break;
             }
 
-            // Extract MessageId from key (format: "fin:<message_id_hex>")
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                if let Some(id_hex) = key_str.strip_prefix("fin:") {
-                    if let Ok(msg_id) = MessageId::from_hex(id_hex) {
-                        finalized_ids.push(msg_id);
-                    }
-                }
+            // Extract MessageId from binary key (skip 10-byte prefix)
+            if key.len() >= PREFIX_LEN + 32 {
+                let id_bytes: [u8; 32] = key[PREFIX_LEN..PREFIX_LEN + 32].try_into().unwrap();
+                let msg_id = MessageId::from_bytes(id_bytes);
+                finalized_ids.push(msg_id);
             }
         }
 
@@ -667,7 +708,7 @@ impl StorageBackend for RocksBackend {
         let start_time = Instant::now();
         let mut message_ids = Vec::new();
 
-        info!(
+        tracing::debug!(
             operation = "query_time_range",
             start_ts = start_timestamp_millis,
             end_ts = ?end_timestamp_millis,
@@ -675,14 +716,13 @@ impl StorageBackend for RocksBackend {
             "🔍 Starting timestamp range query"
         );
 
-        // Use zero-padded timestamp for proper ordering
-        let start_key = format!("msg_by_time:{:020}", start_timestamp_millis).into_bytes();
-        let end_prefix = if let Some(end_ts) = end_timestamp_millis {
-            format!("msg_by_time:{:020}", end_ts)
-        } else {
-            // If no end timestamp, use a far future timestamp
-            format!("msg_by_time:{:020}", i64::MAX)
-        };
+        // Build start key: PREFIX_MSG_BY_TIME + timestamp
+        let mut start_key = Vec::with_capacity(PREFIX_LEN + 8);
+        start_key.extend_from_slice(&*PREFIX_MSG_BY_TIME);
+        start_key.extend_from_slice(&start_timestamp_millis.to_be_bytes());
+
+        // Build end timestamp for comparison
+        let end_timestamp = end_timestamp_millis.unwrap_or(i64::MAX);
 
         let iter = self
             .db
@@ -701,25 +741,28 @@ impl StorageBackend for RocksBackend {
                 );
                 StorageError::BackendError(format!("Iterator error: {}", e))
             })?;
-            let key_str = String::from_utf8_lossy(&key);
-
-            // Check if we've passed the end timestamp
-            if key_str.as_ref() >= end_prefix.as_str() {
-                break;
-            }
 
             // Check if this is still a timestamp index key
-            if !key_str.starts_with("msg_by_time:") {
+            if !key.starts_with(&*PREFIX_MSG_BY_TIME) {
                 break;
             }
 
-            // Extract MessageId from key (format: "msg_by_time:{timestamp}:{message_id}")
-            if let Some(parts) = key_str.strip_prefix("msg_by_time:") {
-                if let Some((_, id_str)) = parts.split_once(':') {
-                    if let Ok(msg_id) = MessageId::from_hex(id_str) {
-                        message_ids.push(msg_id);
-                    }
+            // Extract timestamp and message ID from binary key
+            // Key format: PREFIX_MSG_BY_TIME (10) + timestamp (8) + message_id (32)
+            if key.len() >= PREFIX_LEN + 8 + 32 {
+                // Extract timestamp (big-endian i64)
+                let ts_bytes = &key[PREFIX_LEN..PREFIX_LEN + 8];
+                let timestamp = i64::from_be_bytes(ts_bytes.try_into().unwrap());
+
+                // Check if we've passed the end timestamp
+                if timestamp >= end_timestamp {
+                    break;
                 }
+
+                // Extract message ID
+                let id_bytes: [u8; 32] = key[PREFIX_LEN + 8..PREFIX_LEN + 8 + 32].try_into().unwrap();
+                let msg_id = MessageId::from_bytes(id_bytes);
+                message_ids.push(msg_id);
             }
         }
 
@@ -736,7 +779,7 @@ impl StorageBackend for RocksBackend {
                 "⚠️ Slow query detected: timestamp range query"
             );
         } else {
-            info!(
+            tracing::debug!(
                 operation = "query_time_range",
                 start_ts = start_timestamp_millis,
                 end_ts = ?end_timestamp_millis,
@@ -756,7 +799,7 @@ impl StorageBackend for RocksBackend {
     ) -> Result<Vec<MessageId>> {
         let start_time = Instant::now();
 
-        info!(
+        tracing::debug!(
             operation = "query_after_timestamp",
             after_ts = timestamp_millis,
             limit = limit,
@@ -771,7 +814,7 @@ impl StorageBackend for RocksBackend {
         match &result {
             Ok(messages) => {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
-                info!(
+                tracing::debug!(
                     operation = "query_after_timestamp",
                     after_ts = timestamp_millis,
                     result_count = messages.len(),

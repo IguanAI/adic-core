@@ -51,6 +51,7 @@ pub struct SyncState {
     pub verified_checkpoints: HashMap<u64, Checkpoint>,
     pub sync_start_time: Option<Instant>,
     pub is_syncing: bool,
+    pub sync_peer: Option<PeerId>,
 }
 
 impl SyncState {
@@ -63,6 +64,7 @@ impl SyncState {
             verified_checkpoints: HashMap::new(),
             sync_start_time: None,
             is_syncing: false,
+            sync_peer: None,
         }
     }
 
@@ -123,6 +125,7 @@ impl StateSync {
         state.is_syncing = true;
         state.target_height = target_height;
         state.sync_start_time = Some(Instant::now());
+        state.sync_peer = Some(peer);
 
         self.event_sender
             .send(SyncEvent::SyncStarted(peer, target_height))
@@ -223,15 +226,35 @@ impl StateSync {
         let batch_count = (total_messages + self.config.batch_size - 1) / self.config.batch_size;
 
         let permits = self.download_semaphore.clone();
+        let storage = self.storage.clone();
         let mut handles = Vec::new();
 
         for batch in message_ids.chunks(self.config.batch_size) {
-            let _batch = batch.to_vec();
+            let batch = batch.to_vec();
             let permit = permits.clone().acquire_owned().await.unwrap();
+            let storage_clone = storage.clone();
 
             handles.push(tokio::spawn(async move {
-                // In real implementation, download from network
-                let messages = Vec::new(); // Placeholder
+                let mut messages = Vec::new();
+
+                // Fetch messages from local storage
+                for message_id in batch {
+                    match storage_clone.get_message(&message_id).await {
+                        Ok(Some(msg)) => messages.push(msg),
+                        Ok(None) => {
+                            // Message not in local storage - would need network download
+                            // This should be handled by the network layer's sync protocol
+                        }
+                        Err(e) => {
+                            warn!(
+                                message_id = %message_id,
+                                error = %e,
+                                "Failed to retrieve message from storage"
+                            );
+                        }
+                    }
+                }
+
                 drop(permit);
                 messages
             }));
@@ -247,14 +270,21 @@ impl StateSync {
         }
 
         let elapsed = start_time.elapsed();
+        let missing_count = total_messages.saturating_sub(all_messages.len());
+
         info!(
             requested_messages = total_messages,
-            downloaded_messages = all_messages.len(),
+            retrieved_messages = all_messages.len(),
+            missing_messages = missing_count,
             batch_count = batch_count,
             failed_batches = failed_batches,
             duration_ms = elapsed.as_millis(),
-            throughput_msg_per_sec = (all_messages.len() as f64 / elapsed.as_secs_f64()),
-            "📦 Messages downloaded"
+            throughput_msg_per_sec = if elapsed.as_secs_f64() > 0.0 {
+                all_messages.len() as f64 / elapsed.as_secs_f64()
+            } else {
+                0.0
+            },
+            "📦 Messages retrieved from local storage"
         );
 
         self.event_sender
@@ -393,16 +423,16 @@ impl StateSync {
         let progress = state.progress();
         let synced_messages = state.synced_messages;
 
-        // Emit progress event with placeholder peer_id
-        // In real implementation, peer_id would be tracked per sync session
-        let placeholder_peer = PeerId::random();
-        self.event_sender
-            .send(SyncEvent::SyncProgress(
-                placeholder_peer,
-                synced_messages,
-                progress,
-            ))
-            .ok();
+        // Emit progress event with tracked peer
+        if let Some(peer) = state.sync_peer {
+            self.event_sender
+                .send(SyncEvent::SyncProgress(
+                    peer,
+                    synced_messages,
+                    progress,
+                ))
+                .ok();
+        }
 
         info!(
             "Applied checkpoint at height {} ({:.1}% complete)",
@@ -431,14 +461,12 @@ impl StateSync {
                     .get_message(&msg_id)
                     .await
                     .map_err(|e| AdicError::Storage(format!("Failed to get message: {}", e)))?;
-                if let Some(msg) = msg_result {
-                    // Use timestamp as a proxy for height
-                    // In production, you'd have proper height tracking
-                    // Convert height to timestamp (assuming height represents seconds since epoch)
-                    let height_timestamp = chrono::DateTime::from_timestamp(height as i64, 0)
-                        .unwrap_or_else(chrono::Utc::now);
-                    if msg.meta.timestamp <= height_timestamp {
-                        finalized.push(msg_id);
+                if let Some(_msg) = msg_result {
+                    // Check if message height is at or below checkpoint height
+                    if let Ok(Some(msg_height)) = self.storage.get_message_height(&msg_id).await {
+                        if msg_height <= height {
+                            finalized.push(msg_id);
+                        }
                     }
                 }
             }

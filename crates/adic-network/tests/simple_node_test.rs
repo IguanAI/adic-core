@@ -39,11 +39,14 @@ async fn test_single_node_creation() {
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
 
     info!("Creating finality engine...");
-    let finality = Arc::new(FinalityEngine::new(
-        FinalityConfig::from(&params),
-        consensus.clone(),
-        storage.clone(),
-    ));
+    let finality = Arc::new(
+        FinalityEngine::new(
+            FinalityConfig::from(&params),
+            consensus.clone(),
+            storage.clone(),
+        )
+        .await,
+    );
 
     info!("Creating network config...");
     let config = NetworkConfig {
@@ -62,13 +65,15 @@ async fn test_single_node_creation() {
     info!("Creating NetworkEngine...");
     let network = NetworkEngine::new(config, keypair, storage, consensus, finality).await;
 
-    info!("NetworkEngine creation result: {:?}", network.is_ok());
+    // Assert engine constructed successfully
+    assert!(network.is_ok(), "NetworkEngine should be created successfully");
 
     if let Ok(net) = network {
         let net = Arc::new(net);
         info!("Starting network engine...");
         let start_result = net.start().await;
         info!("Start result: {:?}", start_result.is_ok());
+        assert!(start_result.is_ok(), "NetworkEngine should start successfully");
 
         if start_result.is_ok() {
             info!("Network started successfully");
@@ -76,6 +81,12 @@ async fn test_single_node_creation() {
             // Get some basic stats
             let stats = net.get_network_stats().await;
             info!("Network stats: {:?}", stats);
+            // Basic invariants we can rely on in this simple single-node test
+            assert!(stats.peer_count >= stats.connected_peers);
+            assert_eq!(stats.messages_sent, 0);
+            assert_eq!(stats.messages_received, 0);
+            assert_eq!(stats.bytes_sent, 0);
+            assert_eq!(stats.bytes_received, 0);
         }
     }
 

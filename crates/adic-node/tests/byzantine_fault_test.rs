@@ -6,8 +6,13 @@ use chrono::Utc;
 use std::sync::Arc;
 
 /// Helper to create a test node with in-memory storage
-async fn create_test_node(_node_id: u8) -> Arc<AdicNode> {
+async fn create_test_node(node_id: u8) -> Arc<AdicNode> {
+    use tempfile::tempdir;
+
+    let temp_dir = tempdir().unwrap();
     let mut config = NodeConfig::default();
+    config.node.data_dir = temp_dir.path().to_path_buf();
+    config.node.name = format!("byzantine_test_node_{}", node_id);
     config.node.bootstrap = Some(true); // Set as bootstrap node for tests
     config.consensus.q = 1; // Minimal diversity for testing
     config.consensus.rho = vec![1, 1, 1]; // Lower radii

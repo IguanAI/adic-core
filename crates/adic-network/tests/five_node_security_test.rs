@@ -26,6 +26,7 @@ fn create_five_node_params() -> AdicParams {
         r_min: 0.3,
         r_sum_min: 0.5,
         lambda: 0.1,
+        alpha: 1.0,    // MRW reputation exponent
         beta: 0.05,
         mu: 0.02,
         gamma: 0.9,
@@ -89,11 +90,14 @@ async fn create_secure_node(
         "create_secure_node - Creating finality engine for node {}",
         node_id
     );
-    let finality = Arc::new(FinalityEngine::new(
-        FinalityConfig::from(&params),
-        consensus.clone(),
-        storage.clone(),
-    ));
+    let finality = Arc::new(
+        FinalityEngine::new(
+            FinalityConfig::from(&params),
+            consensus.clone(),
+            storage.clone(),
+        )
+        .await,
+    );
 
     // Use dynamic ports based on base_port to avoid conflicts
     let tcp_port = base_port + (node_id as u16 * 2);

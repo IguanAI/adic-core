@@ -28,11 +28,14 @@ async fn test_network_engine_creation() {
     let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
     let params = AdicParams::default();
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
-    let finality = Arc::new(FinalityEngine::new(
-        FinalityConfig::from(&params),
-        consensus.clone(),
-        storage.clone(),
-    ));
+    let finality = Arc::new(
+        FinalityEngine::new(
+            FinalityConfig::from(&params),
+            consensus.clone(),
+            storage.clone(),
+        )
+        .await,
+    );
 
     // Create network configuration with random port (0 = auto-assign)
     let config = NetworkConfig {
@@ -75,11 +78,14 @@ async fn test_network_start() {
     let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
     let params = AdicParams::default();
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
-    let finality = Arc::new(FinalityEngine::new(
-        FinalityConfig::from(&params),
-        consensus.clone(),
-        storage.clone(),
-    ));
+    let finality = Arc::new(
+        FinalityEngine::new(
+            FinalityConfig::from(&params),
+            consensus.clone(),
+            storage.clone(),
+        )
+        .await,
+    );
 
     // Create network configuration with random port (0 = auto-assign)
     let config = NetworkConfig {
@@ -129,11 +135,14 @@ async fn test_message_broadcast() {
     let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
     let params = AdicParams::default();
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
-    let finality = Arc::new(FinalityEngine::new(
-        FinalityConfig::from(&params),
-        consensus.clone(),
-        storage.clone(),
-    ));
+    let finality = Arc::new(
+        FinalityEngine::new(
+            FinalityConfig::from(&params),
+            consensus.clone(),
+            storage.clone(),
+        )
+        .await,
+    );
 
     // Create network configuration with random port (0 = auto-assign)
     let config = NetworkConfig {

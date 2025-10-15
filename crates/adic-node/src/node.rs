@@ -3,11 +3,12 @@ use crate::events::{
     AxisData, BalanceChangeType, EventBus, FinalityType, NodeEvent, RejectionType,
 };
 use crate::genesis::{account_address_from_hex, GenesisManifest};
+use crate::metrics::Metrics;
 use crate::update_manager;
 use crate::wallet::NodeWallet;
 use crate::wallet_registry::WalletRegistry;
 use adic_consensus::{ConsensusEngine, ReputationChangeEvent};
-use adic_crypto::Keypair;
+use adic_crypto::{BLSThresholdSigner, Keypair, ThresholdConfig};
 use adic_economics::balance::{BalanceChangeEvent, BalanceChangeTypeEvent};
 use adic_economics::{AccountAddress, AdicAmount, EconomicsEngine};
 use adic_finality::{FinalityConfig, FinalityEngine};
@@ -15,19 +16,22 @@ use adic_mrw::MrwEngine;
 use adic_network::peer::PeerEvent;
 use adic_network::sync::SyncEvent;
 use adic_network::{NetworkConfig, NetworkEngine};
+use adic_pouw::{BLSCoordinator, BLSCoordinatorConfig, DKGManager, DKGOrchestrator, DKGOrchestratorConfig};
 use adic_storage::store::BackendType;
 use adic_storage::{MessageIndex, StorageConfig, StorageEngine, TipManager};
 use adic_types::{
     AdicFeatures, AdicMessage, AdicMeta, AxisId, AxisPhi, EncoderData, EncoderSet, MessageId,
     PublicKey, QpDigits,
 };
+use adic_vrf::{VRFService, VRFConfig};
+use adic_app_common::{NetworkMetadataRegistry, ParameterStore};
 use anyhow::Result;
 use chrono::Utc;
 use libp2p::identity::Keypair as LibP2pKeypair;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct AdicNode {
     config: NodeConfig,
@@ -42,11 +46,36 @@ pub struct AdicNode {
     pub network: Option<Arc<RwLock<NetworkEngine>>>,
     pub update_manager: Option<Arc<update_manager::UpdateManager>>,
     pub event_bus: Arc<EventBus>,
+    pub vrf_service: Arc<VRFService>,
+    pub quorum_selector: Arc<adic_quorum::QuorumSelector>,
+    pub parameter_store: Option<Arc<ParameterStore>>,
+    pub metrics: Arc<Metrics>,
+    /// Network metadata registry for node ASN/region tracking
+    pub network_metadata: Arc<NetworkMetadataRegistry>,
+    /// DKG manager for distributed key generation
+    pub dkg_manager: Option<Arc<DKGManager>>,
+    /// BLS coordinator for threshold signatures
+    pub bls_coordinator: Option<Arc<BLSCoordinator>>,
+    /// DKG orchestrator for network-aware DKG ceremonies
+    pub dkg_orchestrator: Option<Arc<DKGOrchestrator>>,
+
+    // ========== Application Layer ==========
+    /// PoUW task manager for useful work coordination
+    pub task_manager: Option<Arc<adic_pouw::TaskManager>>,
+    /// Governance lifecycle manager for proposals and voting
+    pub governance_manager: Option<Arc<adic_governance::ProposalLifecycleManager>>,
+    /// Governance network protocol handler
+    pub governance_protocol: Option<Arc<adic_network::protocol::GovernanceProtocol>>,
+    /// Storage market coordinator for decentralized storage deals
+    pub storage_market: Option<Arc<adic_storage_market::StorageMarketCoordinator>>,
+
     index: Arc<MessageIndex>,
     tip_manager: Arc<TipManager>,
     running: Arc<RwLock<bool>>,
     /// Feature encoders for all 4 axes per ADIC-DAG paper Appendix A
     encoders: Arc<EncoderSet>,
+    /// Current epoch for VRF commit-reveal protocol
+    current_epoch: Arc<RwLock<u64>>,
 }
 
 impl AdicNode {
@@ -67,8 +96,14 @@ impl AdicNode {
             "🔐 Node wallet loaded"
         );
 
+        // Initialize metrics
+        let metrics = Arc::new(Metrics::new());
+        info!("📊 Metrics initialized for Prometheus");
+
         // Initialize event bus early for real-time event streaming
-        let event_bus = Arc::new(EventBus::new());
+        let mut event_bus_instance = EventBus::new();
+        event_bus_instance.set_metrics(Arc::new(metrics.events_emitted_total.clone()));
+        let event_bus = Arc::new(event_bus_instance);
         info!("📡 Event bus initialized for WebSocket/SSE streaming");
 
         // Create storage engine using configured backend
@@ -115,7 +150,33 @@ impl AdicNode {
 
         // Create consensus engine
         let adic_params = config.adic_params();
-        let consensus = Arc::new(ConsensusEngine::new(adic_params.clone(), storage.clone()));
+        let mut consensus_engine = ConsensusEngine::new(adic_params.clone(), storage.clone());
+
+        // Wire metrics to deposit manager
+        consensus_engine.deposits.set_metrics(
+            Arc::new(metrics.escrow_locks_total.clone()),
+            Arc::new(metrics.escrow_releases_total.clone()),
+            Arc::new(metrics.escrow_slashes_total.clone()),
+            Arc::new(metrics.escrow_refunds_total.clone()),
+            Arc::new(metrics.escrow_lock_duration.clone()),
+            Arc::new(metrics.escrow_locked_amount.clone()),
+        );
+
+        // Wire metrics to admissibility checker
+        consensus_engine.admissibility.set_metrics(
+            Arc::new(metrics.admissibility_checks_total.clone()),
+            Arc::new(metrics.admissibility_s_failures.clone()),
+            Arc::new(metrics.admissibility_c2_failures.clone()),
+            Arc::new(metrics.admissibility_c3_failures.clone()),
+        );
+
+        // Wire metrics to message validator
+        consensus_engine.validator.set_metrics(
+            Arc::new(metrics.signature_verifications.clone()),
+            Arc::new(metrics.signature_failures.clone()),
+        );
+
+        let consensus = Arc::new(consensus_engine);
 
         // Register reputation event callback to bridge consensus events to node events
         {
@@ -137,15 +198,82 @@ impl AdicNode {
         }
 
         // Create MRW engine
-        let mrw = Arc::new(MrwEngine::new(adic_params.clone()));
+        let mut mrw_engine = MrwEngine::new(adic_params.clone());
+
+        // Wire metrics to MRW engine
+        mrw_engine.set_metrics(
+            Arc::new(metrics.mrw_attempts_total.clone()),
+            Arc::new(metrics.mrw_widens_total.clone()),
+            Arc::new(metrics.mrw_selection_duration.clone()),
+        );
+
+        let mrw = Arc::new(mrw_engine);
 
         // Create finality engine
         let finality_config = FinalityConfig::from(&adic_params);
-        let finality = Arc::new(FinalityEngine::new(
+        let mut finality_engine = FinalityEngine::new(
             finality_config,
             consensus.clone(),
             storage.clone(),
-        ));
+        ).await;
+
+        // Wire metrics to finality engine
+        finality_engine.set_metrics(
+            Arc::new(metrics.finalizations_total.clone()),
+            Arc::new(metrics.kcore_size.clone()),
+            Arc::new(metrics.finality_depth.clone()),
+            Arc::new(metrics.f2_computation_time.clone()),
+            Arc::new(metrics.f2_timeout_count.clone()),
+            Arc::new(metrics.f1_fallback_count.clone()),
+            Arc::new(metrics.finality_method_used.clone()),
+        );
+
+        let finality = Arc::new(finality_engine);
+
+        // Create VRF service for commit-reveal protocol
+        let reveal_depth = (adic_params.depth_star + 5) as u64; // D* + δ
+
+        // Derive genesis root deterministically from chain ID
+        // This provides a canonical root for VRF commit-reveal protocol
+        // In production with persistent storage, this could be loaded from genesis config
+        let genesis_root = *blake3::hash(b"adic-dag-genesis-v1").as_bytes();
+
+        let vrf_config = VRFConfig {
+            min_committer_reputation: 50.0,
+            reveal_depth,
+            genesis_root,
+        };
+        let mut vrf_service_instance = VRFService::new(
+            vrf_config,
+            Arc::new(consensus.reputation.clone()),
+        );
+        vrf_service_instance.set_metrics(
+            Arc::new(metrics.vrf_commits_total.clone()),
+            Arc::new(metrics.vrf_reveals_total.clone()),
+            Arc::new(metrics.vrf_finalizations_total.clone()),
+            Arc::new(metrics.vrf_commit_duration.clone()),
+            Arc::new(metrics.vrf_reveal_duration.clone()),
+            Arc::new(metrics.vrf_finalize_duration.clone()),
+        );
+        let vrf_service = Arc::new(vrf_service_instance);
+        info!("🎲 VRF service initialized with reveal depth {}", reveal_depth);
+
+        // Create quorum selector for VRF-based committee selection
+        let mut quorum_selector_instance = adic_quorum::QuorumSelector::new(
+            Arc::clone(&vrf_service),
+            Arc::new(consensus.reputation.clone()),
+        );
+        quorum_selector_instance.set_metrics(
+            Arc::new(metrics.quorum_selections_total.clone()),
+            Arc::new(metrics.quorum_selection_duration.clone()),
+            Arc::new(metrics.quorum_committee_size.clone()),
+        );
+        let quorum_selector = Arc::new(quorum_selector_instance);
+        info!("🗳️ Quorum selector initialized");
+
+        // Create network metadata registry for tracking node ASN/region
+        let network_metadata = Arc::new(NetworkMetadataRegistry::new());
+        info!("🌐 Network metadata registry initialized");
 
         // Create wallet registry
         let wallet_registry = Arc::new(WalletRegistry::new(storage.clone()));
@@ -270,23 +398,66 @@ impl AdicNode {
                 // Use genesis from config if provided, otherwise use default
                 let genesis_config = config.genesis.clone().unwrap_or_default();
 
-                // Verify genesis config
-                genesis_config
-                    .verify()
-                    .map_err(|e| anyhow::anyhow!("Invalid genesis config: {}", e))?;
+                // Get network type for security logging
+                let network_type = genesis_config.network_type();
 
-                // Calculate genesis hash for consistency
+                // SECURITY: Use enhanced validation with canonical hash enforcement
+                // This prevents the attack where someone modifies TOML allocations or uses
+                // a different chain_id to bypass canonical hash validation
+                genesis_config
+                    .verify_with_canonical(true) // true = is_bootstrap
+                    .map_err(|e| anyhow::anyhow!("Genesis validation failed: {}", e))?;
+
+                // Calculate genesis hash for logging
                 let genesis_hash = genesis_config.calculate_hash();
 
-                // Verify against canonical hash for mainnet
-                if genesis_config.chain_id == "adic-dag-v1" {
-                    let canonical_hash = GenesisManifest::canonical_hash();
-                    if genesis_hash != canonical_hash {
-                        return Err(anyhow::anyhow!(
-                            "Genesis hash mismatch for mainnet (adic-dag-v1). Expected canonical hash {}, got {}",
-                            canonical_hash,
-                            genesis_hash
-                        ));
+                // Log security information
+                match network_type {
+                    crate::genesis::NetworkType::Mainnet => {
+                        info!(
+                            "🔒 MAINNET bootstrap: Using canonical genesis (hash verified)"
+                        );
+                    }
+                    crate::genesis::NetworkType::Testnet => {
+                        info!("🧪 TESTNET bootstrap: Using custom genesis configuration");
+
+                        // Production guard: Block testnet in release builds
+                        #[cfg(all(not(debug_assertions), not(test)))]
+                        {
+                            anyhow::bail!(
+                                "PRODUCTION ERROR: Cannot run TESTNET in release builds. \
+                                Use mainnet genesis or build in debug mode for testing."
+                            );
+                        }
+                    }
+                    crate::genesis::NetworkType::Devnet => {
+                        info!("🛠️  DEVNET bootstrap: Using custom genesis configuration");
+
+                        // Production guard: Block devnet in release builds
+                        #[cfg(all(not(debug_assertions), not(test)))]
+                        {
+                            anyhow::bail!(
+                                "PRODUCTION ERROR: Cannot run DEVNET in release builds. \
+                                Use mainnet genesis or build in debug mode for development."
+                            );
+                        }
+                    }
+                    crate::genesis::NetworkType::Custom => {
+                        warn!(
+                            "⚠️  CUSTOM NETWORK bootstrap: Using non-standard chain_id '{}'. \
+                             This network will not be compatible with official ADIC networks.",
+                            genesis_config.chain_id
+                        );
+
+                        // Production guard: Warn strongly about custom networks in release builds
+                        #[cfg(all(not(debug_assertions), not(test)))]
+                        {
+                            error!(
+                                "⚠️  WARNING: Running CUSTOM NETWORK '{}' in production release build! \
+                                This is not a standard ADIC network and may not be compatible with official infrastructure.",
+                                genesis_config.chain_id
+                            );
+                        }
                     }
                 }
 
@@ -380,23 +551,38 @@ impl AdicNode {
                 .verify()
                 .map_err(|e| anyhow::anyhow!("Invalid genesis manifest: {}", e))?;
 
-            // Verify against canonical hash for mainnet
-            if genesis_manifest.config.chain_id == "adic-dag-v1" {
-                let canonical_hash = GenesisManifest::canonical_hash();
-                if genesis_manifest.hash != canonical_hash {
-                    return Err(anyhow::anyhow!(
-                        "Genesis hash mismatch for mainnet (adic-dag-v1). Expected canonical hash {}, got {}",
-                        canonical_hash,
-                        genesis_manifest.hash
-                    ));
+            // SECURITY: Use enhanced validation with canonical hash enforcement
+            genesis_manifest.config
+                .verify_with_canonical(false) // false = not bootstrap
+                .map_err(|e| anyhow::anyhow!("Genesis validation failed: {}", e))?;
+
+            // Get network type for logging
+            let network_type = genesis_manifest.config.network_type();
+
+            match network_type {
+                crate::genesis::NetworkType::Mainnet => {
+                    info!(
+                        genesis_hash = %genesis_manifest.hash,
+                        chain_id = %genesis_manifest.config.chain_id,
+                        "✅ Genesis loaded, verified against canonical hash"
+                    );
+                }
+                crate::genesis::NetworkType::Custom => {
+                    warn!(
+                        genesis_hash = %genesis_manifest.hash,
+                        chain_id = %genesis_manifest.config.chain_id,
+                        "⚠️  Joining CUSTOM network with non-standard chain_id. \
+                         Ensure this is intentional."
+                    );
+                }
+                _ => {
+                    info!(
+                        genesis_hash = %genesis_manifest.hash,
+                        chain_id = %genesis_manifest.config.chain_id,
+                        "✅ Genesis loaded and verified"
+                    );
                 }
             }
-
-            info!(
-                genesis_hash = %genesis_manifest.hash,
-                chain_id = %genesis_manifest.config.chain_id,
-                "✅ Genesis loaded, verified, and matches canonical hash"
-            );
 
             // Emit genesis loaded event
             event_bus.emit(NodeEvent::GenesisLoaded {
@@ -515,6 +701,8 @@ impl AdicNode {
                     node_key_path: config.network.node_key_path.clone(),
                     ..Default::default()
                 },
+                asn: config.network.asn,
+                region: config.network.region.clone(),
                 ..Default::default()
             };
 
@@ -534,10 +722,11 @@ impl AdicNode {
             // Initialize update manager if network is available
             let network_arc = Arc::new(RwLock::new(network));
 
-            // Bridge P2P peer events to node events
+            // Bridge P2P peer events to node events and register nodes
             {
                 let event_bus_clone = event_bus.clone();
                 let network_clone = network_arc.clone();
+                let _metadata_registry = network_metadata.clone();
                 tokio::spawn(async move {
                     let net = network_clone.read().await;
                     let peer_stream = net.peer_manager().event_stream();
@@ -553,21 +742,31 @@ impl AdicNode {
                             Some(peer_event) => {
                                 match peer_event {
                                     PeerEvent::PeerConnected(peer_id) => {
-                                        // Get peer info to extract address
-                                        let address = {
+                                        // Get peer info to extract address and public key
+                                        let (address, public_key_opt) = {
                                             let net = network_clone.read().await;
                                             if let Some(peer_info) =
                                                 net.peer_manager().get_peer(&peer_id).await
                                             {
-                                                peer_info
+                                                let addr = peer_info
                                                     .addresses
                                                     .first()
                                                     .map(|addr| addr.to_string())
-                                                    .unwrap_or_else(|| "unknown".to_string())
+                                                    .unwrap_or_else(|| "unknown".to_string());
+                                                (addr, Some(peer_info.public_key))
                                             } else {
-                                                "unknown".to_string()
+                                                ("unknown".to_string(), None)
                                             }
                                         };
+
+                                        // Node metadata (ASN/region) will be received via handshake
+                                        // and registered when the handshake is processed
+                                        if public_key_opt.is_some() {
+                                            debug!(
+                                                peer_id = %peer_id,
+                                                "✅ Peer connected, awaiting handshake metadata"
+                                            );
+                                        }
 
                                         event_bus_clone.emit(NodeEvent::PeerConnected {
                                             peer_id: peer_id.to_string(),
@@ -682,9 +881,107 @@ impl AdicNode {
             (None, None)
         };
 
+        // Initialize DKG components if network is enabled
+        let (dkg_manager, bls_coordinator, dkg_orchestrator) = if network.is_some() {
+            info!("🔐 Initializing DKG components for committee key generation...");
+
+            // Create DKG manager
+            let dkg_manager = Arc::new(DKGManager::new());
+
+            // Create BLS coordinator (default committee size 15, threshold 10)
+            let bls_config = BLSCoordinatorConfig::default();
+            let threshold_config = ThresholdConfig::new(
+                bls_config.total_members,
+                bls_config.threshold,
+            ).expect("Valid threshold config");
+            let bls_signer = Arc::new(BLSThresholdSigner::new(threshold_config));
+            let bls_coordinator = Arc::new(BLSCoordinator::with_dkg(
+                bls_config,
+                bls_signer,
+                dkg_manager.clone(),
+            ));
+
+            // Create DKG orchestrator
+            let orchestrator_config = DKGOrchestratorConfig {
+                our_public_key: PublicKey::from_bytes(*wallet.public_key().as_bytes()),
+            };
+            let dkg_orchestrator = Arc::new(DKGOrchestrator::new(
+                orchestrator_config,
+                dkg_manager.clone(),
+                bls_coordinator.clone(),
+            ));
+
+            info!("✅ DKG components initialized (BLS threshold 10-of-15)");
+
+            // Start DKG message handling background task
+            if let Some(ref _network_arc) = network {
+                let _orchestrator_clone = dkg_orchestrator.clone();
+                tokio::spawn(async move {
+                    info!("🔐 DKG message handler started");
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                        // Check for DKG messages via the network's DKG protocol
+                        // In production, this would be event-driven via the DKG protocol handler
+                        // For now, this is a placeholder for the message handling loop
+
+                        // The actual message handling is done through NetworkEngine's
+                        // handle_dkg_message() which is called when DKG messages arrive
+                    }
+                });
+            }
+
+            (Some(dkg_manager), Some(bls_coordinator), Some(dkg_orchestrator))
+        } else {
+            info!("DKG components disabled (network not enabled)");
+            (None, None, None)
+        };
+
         // Initialize encoder set with all 4 axes
         let encoders = Arc::new(EncoderSet::default_full());
         info!("📊 Initialized encoder set: Time, Topic, Region, StakeTier");
+
+        // Initialize parameter store for governance hot-reload
+        let parameter_store = Arc::new(ParameterStore::new());
+        info!("📝 Parameter store initialized for governance integration");
+
+        // Bridge ParameterStore changes to EventBus for external subscribers
+        {
+            let event_bus_clone = event_bus.clone();
+            let param_store_clone = parameter_store.clone();
+            tokio::spawn(async move {
+                let mut rx = param_store_clone.subscribe();
+                loop {
+                    match rx.recv().await {
+                        Ok(change) => {
+                            debug!(
+                                key = %change.key,
+                                old_value = %change.old_value,
+                                new_value = %change.new_value,
+                                "📝 Parameter change detected, emitting to EventBus"
+                            );
+                            event_bus_clone.emit(NodeEvent::ParameterChanged {
+                                proposal_id: change.proposal_id
+                                    .map(|id| hex::encode(&id[..8]))
+                                    .unwrap_or_else(|| "direct".to_string()),
+                                parameter_key: change.key.clone(),
+                                old_value: change.old_value.to_string(),
+                                new_value: change.new_value.to_string(),
+                                timestamp: Utc::now(),
+                            });
+                        }
+                        Err(e) => {
+                            // Channel closed or lagged
+                            if matches!(e, tokio::sync::broadcast::error::RecvError::Closed) {
+                                debug!("ParameterStore channel closed, stopping event bridge");
+                                break;
+                            }
+                            // Lagged error - subscriber fell behind, continue
+                        }
+                    }
+                }
+            });
+        }
 
         let node = Self {
             config,
@@ -699,10 +996,24 @@ impl AdicNode {
             network,
             update_manager,
             event_bus,
+            vrf_service,
+            quorum_selector,
+            parameter_store: Some(parameter_store),
+            metrics,
+            network_metadata,
+            dkg_manager,
+            bls_coordinator,
+            dkg_orchestrator,
+            // Application layer managers (initialized to None, configured later)
+            task_manager: None,
+            governance_manager: None,
+            governance_protocol: None,
+            storage_market: None,
             index,
             tip_manager,
             running: Arc::new(RwLock::new(false)),
             encoders,
+            current_epoch: Arc::new(RwLock::new(0)),
         };
 
         // Perform cache warmup
@@ -716,6 +1027,176 @@ impl AdicNode {
         });
 
         Ok(node)
+    }
+
+    // ========== Application Layer Configuration ==========
+
+    /// Configure PoUW TaskManager
+    ///
+    /// Requires EscrowManager (built from economics) and ReputationTracker (from consensus).
+    #[allow(dead_code)] // Used in tests and available for runtime configuration
+    pub fn with_task_manager(
+        mut self,
+        config: adic_pouw::TaskManagerConfig,
+    ) -> Result<Self> {
+        use adic_app_common::EscrowManager;
+
+        // Create EscrowManager using economics balance manager
+        let escrow_mgr = Arc::new(EscrowManager::new(Arc::clone(&self.economics.balances)));
+
+        // Create TaskManager using consensus reputation tracker
+        let task_manager = Arc::new(adic_pouw::TaskManager::new(
+            escrow_mgr,
+            Arc::new(self.consensus.reputation.clone()),
+            config,
+        ));
+
+        self.task_manager = Some(task_manager);
+        info!("✅ TaskManager configured");
+
+        Ok(self)
+    }
+
+    /// Configure Governance ProposalLifecycleManager
+    ///
+    /// Requires ReputationTracker, and optionally FinalityAdapter, QuorumSelector,
+    /// BLS components for threshold signatures.
+    pub fn with_governance_manager(
+        mut self,
+        lifecycle_config: adic_governance::LifecycleConfig,
+        protocol_config: adic_network::protocol::GovernanceConfig,
+    ) -> Result<Self> {
+        use adic_app_common::FinalityAdapter;
+
+        // Create base manager with reputation tracker
+        let mut manager = adic_governance::ProposalLifecycleManager::new(
+            lifecycle_config,
+            Arc::new(self.consensus.reputation.clone()),
+        );
+
+        // Wire finality adapter
+        let finality_adapter = Arc::new(FinalityAdapter::with_defaults(
+            Arc::clone(&self.finality),
+        ));
+        manager = manager.with_finality_adapter(finality_adapter);
+
+        // Wire parameter store if available
+        if let Some(ref param_store) = self.parameter_store {
+            manager = manager.with_parameter_store(Arc::clone(param_store));
+        }
+
+        // Wire BLS coordinator if available
+        if let Some(ref bls_coord) = self.bls_coordinator {
+            manager = manager.with_bls_coordinator(Arc::clone(bls_coord));
+        }
+
+        // Create treasury executor for grant execution
+        let treasury_executor = Arc::new(adic_governance::TreasuryExecutor::new(
+            Arc::clone(&self.economics.balances),
+            adic_economics::AccountAddress::treasury(),
+        ));
+        manager = manager.with_treasury_executor(treasury_executor);
+
+        // Create governance network protocol
+        let governance_protocol = Arc::new(adic_network::protocol::GovernanceProtocol::new(
+            protocol_config,
+        ));
+
+        self.governance_manager = Some(Arc::new(manager));
+        self.governance_protocol = Some(governance_protocol);
+        info!("✅ Governance ProposalLifecycleManager, treasury executor, and protocol configured");
+
+        Ok(self)
+    }
+
+    /// Configure StorageMarketCoordinator
+    ///
+    /// Requires multiple sub-managers for intent matching, JITCA compilation,
+    /// proof verification, and balance management.
+    #[allow(dead_code)] // Used in tests and available for runtime configuration
+    pub fn with_storage_market(
+        mut self,
+        config: adic_storage_market::MarketConfig,
+        intent_config: adic_storage_market::IntentConfig,
+        jitca_config: adic_storage_market::JitcaConfig,
+        proof_config: adic_storage_market::ProofCycleConfig,
+        challenge_config: adic_challenges::ChallengeConfig,
+    ) -> Result<Self> {
+        use adic_challenges::ChallengeWindowManager;
+        use adic_storage_market::{
+            IntentManager, JitcaCompiler, ProofCycleManager, StorageMarketCoordinator,
+        };
+
+        // Create sub-managers with proper dependencies
+        let intent_manager = Arc::new(IntentManager::new(
+            intent_config,
+            Arc::clone(&self.economics.balances),
+            Arc::new(self.consensus.reputation.clone()),
+        ));
+
+        let jitca_compiler = Arc::new(JitcaCompiler::new(
+            jitca_config,
+            Arc::clone(&self.economics.balances),
+        ));
+
+        // Create challenge window manager
+        let mut challenge_manager_instance = ChallengeWindowManager::new(challenge_config);
+        challenge_manager_instance.set_metrics(
+            Arc::new(self.metrics.challenge_windows_opened.clone()),
+            Arc::new(self.metrics.challenges_submitted.clone()),
+            Arc::new(self.metrics.challenge_windows_active.clone()),
+        );
+        let challenge_manager = Arc::new(challenge_manager_instance);
+
+        // Create dispute adjudicator with metrics
+        let quorum_selector = Arc::new(adic_quorum::QuorumSelector::new(
+            Arc::clone(&self.vrf_service),
+            Arc::new(self.consensus.reputation.clone()),
+        ));
+        let mut dispute_adjudicator_instance = adic_challenges::DisputeAdjudicator::new(
+            quorum_selector,
+            adic_challenges::AdjudicationConfig::default(),
+        );
+        dispute_adjudicator_instance.set_metrics(
+            Arc::new(self.metrics.fraud_proofs_submitted.clone()),
+            Arc::new(self.metrics.fraud_proofs_verified.clone()),
+            Arc::new(self.metrics.fraud_proofs_rejected.clone()),
+            Arc::new(self.metrics.arbitrations_started.clone()),
+            Arc::new(self.metrics.arbitrations_completed.clone()),
+            Arc::new(self.metrics.quorum_votes_total.clone()),
+            Arc::new(self.metrics.quorum_votes_passed.clone()),
+            Arc::new(self.metrics.quorum_votes_failed.clone()),
+            Arc::new(self.metrics.quorum_vote_duration.clone()),
+        );
+        let dispute_adjudicator = Arc::new(dispute_adjudicator_instance);
+
+        // Build ProofCycleManager and wire FinalityAdapter for production finality checks
+        let proof_manager = {
+            let base = ProofCycleManager::new(
+                proof_config,
+                Arc::clone(&self.economics.balances),
+                challenge_manager,
+                Arc::clone(&self.vrf_service),
+                dispute_adjudicator,
+            );
+            // Inject finality adapter so storage proofs wait on F1 (operational signals)
+            let adapter = adic_app_common::FinalityAdapter::with_defaults(Arc::clone(&self.finality));
+            Arc::new(base.with_finality_adapter(Arc::new(adapter)))
+        };
+
+        // Create coordinator
+        let coordinator = Arc::new(StorageMarketCoordinator::new(
+            config,
+            intent_manager,
+            jitca_compiler,
+            proof_manager,
+            Arc::clone(&self.economics.balances),
+        ));
+
+        self.storage_market = Some(coordinator);
+        info!("✅ StorageMarketCoordinator configured");
+
+        Ok(self)
     }
 
     pub fn node_id(&self) -> String {
@@ -744,13 +1225,235 @@ impl AdicNode {
         &self.wallet
     }
 
+    /// Sync peer network metadata from PeerManager to NetworkMetadataRegistry
+    ///
+    /// Should be called periodically or when peers update to ensure registry
+    /// has current ASN/region information for quorum selection.
+    pub async fn sync_peer_metadata_to_registry(&self) -> anyhow::Result<()> {
+        let network = match &self.network {
+            Some(net) => net,
+            None => return Ok(()), // No network, nothing to sync
+        };
+
+        let net = network.read().await;
+        let peers = net.get_all_peers_info().await;
+
+        for peer_info in peers {
+            if peer_info.asn.is_some() || peer_info.region.is_some() {
+                let metadata = adic_app_common::NodeNetworkInfo {
+                    asn: peer_info.asn.unwrap_or(0),
+                    region: peer_info.region.clone().unwrap_or_else(|| "unknown".to_string()),
+                    metadata: std::collections::HashMap::new(),
+                };
+
+                self.network_metadata
+                    .register(peer_info.public_key, metadata)
+                    .await;
+
+                debug!(
+                    peer = ?peer_info.peer_id,
+                    asn = ?peer_info.asn,
+                    region = ?peer_info.region,
+                    "Synced peer metadata to registry"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get all eligible nodes for quorum selection from connected peers
+    ///
+    /// Returns nodes with their metadata (ASN, region, reputation) for use
+    /// in quorum selection. Only includes peers that:
+    /// - Are alive (connected and seen within last 5 minutes)
+    /// - Have network metadata (ASN, region)
+    /// - Meet minimum reputation threshold from consensus
+    pub async fn get_eligible_quorum_nodes(
+        &self,
+    ) -> anyhow::Result<Vec<adic_quorum::NodeInfo>> {
+        let network = match &self.network {
+            Some(net) => net,
+            None => return Ok(Vec::new()), // No network, no peers
+        };
+
+        let net = network.read().await;
+
+        // Get alive peers with metadata (filters by liveness and metadata presence)
+        let max_age = std::time::Duration::from_secs(300); // 5 minutes
+        let alive_peers = net.peer_manager().get_alive_peers_with_metadata(max_age).await;
+
+        let mut eligible_nodes = Vec::new();
+
+        for peer_info in alive_peers {
+            // unwrap is safe because get_alive_peers_with_metadata filters for Some
+            let asn = peer_info.asn.unwrap();
+            let region = peer_info.region.clone().unwrap();
+
+            let node = adic_quorum::NodeInfo {
+                public_key: peer_info.public_key,
+                reputation: peer_info.reputation_score,
+                asn: Some(asn),
+                region: Some(region),
+                axis_balls: vec![], // p-adic balls computed by QuorumSelector
+            };
+            eligible_nodes.push(node);
+        }
+
+        Ok(eligible_nodes)
+    }
+
+    /// Start parameter hot-reload listener
+    ///
+    /// Subscribes to ParameterStore changes and automatically updates
+    /// ConsensusEngine, MrwEngine, and FinalityEngine when operational
+    /// parameters change via governance.
+    async fn start_parameter_reload_listener(&self) {
+        let Some(param_store) = self.parameter_store.as_ref() else {
+            info!("⚙️  Parameter store not configured, hot-reload disabled");
+            return;
+        };
+
+        let mut rx = param_store.subscribe();
+        let consensus = Arc::clone(&self.consensus);
+        let mrw = Arc::clone(&self.mrw);
+        let finality = Arc::clone(&self.finality);
+        let param_store = Arc::clone(param_store);
+
+        tokio::spawn(async move {
+            info!("🔄 Parameter hot-reload listener started");
+
+            while let Ok(change) = rx.recv().await {
+                info!(
+                    param = %change.key,
+                    old = %change.old_value,
+                    new = %change.new_value,
+                    epoch = change.applied_at_epoch,
+                    "📝 Parameter changed, reloading engines"
+                );
+
+                // Build updated params from store
+                match param_store.build_adic_params().await {
+                    Ok(new_params) => {
+                        // Update ConsensusEngine operational params
+                        consensus.update_operational_params(&new_params).await;
+
+                        // Update MrwEngine params
+                        mrw.update_params(&new_params).await;
+
+                        // Update FinalityEngine params
+                        // Note: F2 params (max_betti, min_persistence) use defaults for now
+                        finality.update_params(&new_params, 2, 0.01).await;
+
+                        info!("✅ All engines updated with new parameters");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to build AdicParams from store");
+                    }
+                }
+            }
+
+            info!("🔄 Parameter hot-reload listener stopped");
+        });
+    }
+
+    /// Validate production readiness
+    ///
+    /// Checks that critical infrastructure components are configured
+    /// and warns about missing optional components.
+    ///
+    /// This should be called before starting the node to ensure
+    /// production-critical features are available.
+    pub fn validate_production_readiness(&self) -> Result<()> {
+        info!("🔍 Validating node production readiness...");
+
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
+
+        // Check DKG manager (required for committee operations)
+        if self.dkg_manager.is_none() {
+            warnings.push("DKG manager not configured - distributed key generation disabled");
+        }
+
+        // Check BLS coordinator (required for governance threshold signatures)
+        if self.bls_coordinator.is_none() {
+            // If governance manager is enabled, missing BLS coordinator is a hard error
+            if self.governance_manager.is_some() {
+                errors.push("BLS coordinator not configured but governance is enabled - threshold receipt signatures required");
+            } else {
+                warnings.push("BLS coordinator not configured - threshold signatures disabled");
+            }
+        }
+
+        // Check DKG orchestrator (required for network-wide DKG ceremonies)
+        if self.dkg_orchestrator.is_none() {
+            warnings.push("DKG orchestrator not configured - committee key generation disabled");
+        }
+
+        // Check parameter store (required for governance parameter updates)
+        if self.parameter_store.is_none() {
+            warnings.push("Parameter store not configured - dynamic parameter updates disabled");
+        }
+
+        // Check network engine (required for p2p communication)
+        if self.network.is_none() {
+            errors.push("Network engine not configured - node cannot communicate with peers");
+        }
+
+        // Check application layer managers (optional but recommended)
+        if self.task_manager.is_none() {
+            warnings.push("TaskManager not configured - PoUW functionality disabled");
+        }
+
+        if self.governance_manager.is_none() {
+            warnings.push("GovernanceManager not configured - on-chain governance disabled");
+        }
+
+        if self.storage_market.is_none() {
+            warnings.push("StorageMarket not configured - decentralized storage disabled");
+        }
+
+        // Log warnings
+        for warning in &warnings {
+            warn!("⚠️ {}", warning);
+        }
+
+        // Fail on errors
+        if !errors.is_empty() {
+            for error in &errors {
+                error!("❌ {}", error);
+            }
+            return Err(anyhow::anyhow!(
+                "Production readiness validation failed: {}",
+                errors.join(", ")
+            ));
+        }
+
+        if warnings.is_empty() {
+            info!("✅ Production readiness validation passed - all components configured");
+        } else {
+            warn!(
+                "⚠️ Production readiness validation passed with {} warnings",
+                warnings.len()
+            );
+        }
+
+        Ok(())
+    }
+
     pub async fn run(&self) -> Result<()> {
+        // Validate production readiness before starting
+        self.validate_production_readiness()?;
+
         {
             let mut running = self.running.write().await;
             *running = true;
         }
 
         info!("Node started and running");
+
+        // Start parameter hot-reload listener
+        self.start_parameter_reload_listener().await;
 
         // Start network engine if enabled
         if let Some(ref network) = self.network {
@@ -812,6 +1515,9 @@ impl AdicNode {
             // Check for finalized messages
             self.check_finality().await?;
 
+            // Check for epoch transitions (VRF finalization)
+            self.check_epoch_transition().await?;
+
             // Update tips
             self.update_tips().await?;
 
@@ -823,8 +1529,8 @@ impl AdicNode {
             // Cleanup old conflicts
             if self.should_cleanup_conflicts() {
                 self.consensus
-                    .conflicts()
-                    .cleanup_resolved(0.5, 86400)
+                    .energy_tracker()
+                    .cleanup_resolved(86400)
                     .await; // 1 day old conflicts
             }
 
@@ -836,6 +1542,26 @@ impl AdicNode {
             // Emit admissibility metrics periodically
             if self.should_emit_admissibility_metrics() {
                 self.emit_admissibility_event().await;
+            }
+
+            // Update DAG state metrics (tips and messages count)
+            self.update_dag_metrics().await;
+
+            // Sync peer metadata to registry for quorum selection
+            if let Err(e) = self.sync_peer_metadata_to_registry().await {
+                warn!("Failed to sync peer metadata to registry: {}", e);
+            }
+
+            // Periodically cleanup stale peers (every 60 seconds)
+            if self.should_cleanup_stale_peers() {
+                if let Some(ref network) = self.network {
+                    let net = network.read().await;
+                    let stale_age = std::time::Duration::from_secs(600); // 10 minutes
+                    let removed = net.peer_manager().remove_stale_peers(stale_age).await;
+                    if removed > 0 {
+                        info!("🧹 Cleaned up {} stale peers", removed);
+                    }
+                }
             }
 
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -955,8 +1681,7 @@ impl AdicNode {
                 &features,
                 &tips,
                 &self.storage,
-                self.consensus.conflicts(),
-                &self.consensus.reputation,
+                &self.consensus,
             )
             .await?;
 
@@ -994,7 +1719,7 @@ impl AdicNode {
 
         // 4. Escrow deposit
         let proposer_pk = *self.keypair.public_key();
-        let deposit_amount = self.consensus.deposits.get_deposit_amount();
+        let deposit_amount = self.consensus.deposits.get_deposit_amount().await;
         self.consensus
             .deposits
             .escrow(message.id, proposer_pk)
@@ -1258,9 +1983,7 @@ impl AdicNode {
                 let mut new_features = Vec::new();
 
                 // For each axis, generate a feature that is close to ALL parents
-                for axis_idx in 0..3 {
-                    let radius = params.rho.get(axis_idx).copied().unwrap_or(2) as usize;
-
+                for axis_idx in 0..params.d {
                     // Collect features from all parents for this axis
                     let parent_axis_features: Vec<&QpDigits> = all_parent_features
                         .iter()
@@ -1270,97 +1993,28 @@ impl AdicNode {
                         .collect();
 
                     if !parent_axis_features.is_empty() {
-                        // Strategy: Find the common p-adic ball that contains all parents
-                        // Use the first parent as a base, but ensure compatibility with all others
-                        let base_feature = &parent_axis_features[0];
-                        let mut new_digits = base_feature.digits.clone();
+                        // New strategy: Find the geometric median of the parent features on this axis.
+                        // This ensures the new feature is centrally located with respect to all parents.
+                        let max_digits = parent_axis_features.iter().map(|d| d.digits.len()).max().unwrap_or(0);
+                        let mut new_digits = Vec::with_capacity(max_digits);
 
-                        // Ensure we have enough digits for the ball radius
-                        while new_digits.len() <= radius {
-                            new_digits.push(0);
+                        for i in 0..max_digits {
+                            let mut digits_at_pos: Vec<u8> = parent_axis_features.iter()
+                                .map(|d| d.digits.get(i).copied().unwrap_or(0))
+                                .collect();
+                            digits_at_pos.sort();
+                            let median = digits_at_pos[digits_at_pos.len() / 2];
+                            new_digits.push(median);
                         }
-
-                        // For p-adic closeness to ALL parents:
-                        // 1. Keep the first 'radius' digits to ensure we're in the same balls
-                        // 2. Only modify digits beyond position 'radius'
-
-                        // Check if all parents share the same ball (same first 'radius' digits)
-                        let mut all_in_same_ball = true;
-                        let check_len = radius.min(new_digits.len());
-                        for parent_feature in &parent_axis_features {
-                            let cmp_len = check_len.min(parent_feature.digits.len());
-                            if parent_feature.digits[..cmp_len] != new_digits[..cmp_len] {
-                                all_in_same_ball = false;
-                                break;
-                            }
-                        }
-
-                        if all_in_same_ball {
-                            // All parents are in the same ball - safe to modify beyond radius
-                            if new_digits.len() > radius {
-                                let modify_pos = radius;
-                                let old_digit = new_digits[modify_pos];
-                                new_digits[modify_pos] = (new_digits[modify_pos] + 1) % 3;
-                                log::debug!("Axis {}: Modified digit beyond radius at pos {} from {} to {} (radius={})", 
-                                    axis_idx, modify_pos, old_digit, new_digits[modify_pos], radius);
-                            }
-                        } else {
-                            // Parents are in different balls - use conservative approach
-                            // Find the longest common prefix among all parents
-                            let mut common_prefix_len = 0;
-                            let max_check_len = parent_axis_features
-                                .iter()
-                                .map(|pf| pf.digits.len())
-                                .min()
-                                .unwrap_or(0);
-
-                            for pos in 0..max_check_len {
-                                let first_digit = parent_axis_features[0].digits[pos];
-                                let all_same = parent_axis_features
-                                    .iter()
-                                    .all(|pf| pf.digits.get(pos) == Some(&first_digit));
-
-                                if all_same {
-                                    common_prefix_len = pos + 1;
-                                } else {
-                                    break;
-                                }
-                            }
-
-                            // Use the common prefix, then add variation beyond it
-                            new_digits = parent_axis_features[0].digits
-                                [..common_prefix_len.min(new_digits.len())]
-                                .to_vec();
-
-                            // Ensure we have enough length and add variation safely
-                            while new_digits.len() <= common_prefix_len {
-                                new_digits.push(0);
-                            }
-
-                            if new_digits.len() > common_prefix_len {
-                                let modify_pos = common_prefix_len;
-                                new_digits[modify_pos] =
-                                    (new_digits[modify_pos] + axis_idx as u8) % 3;
-                                log::debug!("Axis {}: Used common prefix len={}, modified pos {} to {} for diversity", 
-                                    axis_idx, common_prefix_len, modify_pos, new_digits[modify_pos]);
-                            }
-                        }
-
-                        log::debug!(
-                            "Axis {}: Generated digits={:?} (first 5) from {} parents",
-                            axis_idx,
-                            &new_digits[..5.min(new_digits.len())],
-                            parent_axis_features.len()
-                        );
 
                         let new_qp = QpDigits {
                             digits: new_digits,
-                            p: base_feature.p,
+                            p: parent_axis_features[0].p,
                         };
                         new_features.push(AxisPhi::new(axis_idx as u32, new_qp));
                     } else {
                         // Fallback if no parent features found for this axis
-                        let default_qp = QpDigits::from_u64(1 + axis_idx as u64, 3, 10);
+                        let default_qp = QpDigits::from_u64(1 + axis_idx as u64, params.p, 10);
                         new_features.push(AxisPhi::new(axis_idx as u32, default_qp));
                     }
                 }
@@ -1406,7 +2060,7 @@ impl AdicNode {
 
         // Escrow deposit
         let proposer_pk = *self.keypair.public_key();
-        let deposit_amount = self.consensus.deposits.get_deposit_amount();
+        let deposit_amount = self.consensus.deposits.get_deposit_amount().await;
         self.consensus
             .deposits
             .escrow(message.id, proposer_pk)
@@ -1759,6 +2413,9 @@ impl AdicNode {
                         )
                         .await?;
 
+                    // Process VRF messages (commit-reveal protocol)
+                    self.process_vrf_message(&msg).await;
+
                     // Broadcast to other peers
                     network.read().await.broadcast_message(msg).await?;
                 } else {
@@ -1768,6 +2425,136 @@ impl AdicNode {
                     );
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    /// Process VRF commit and reveal messages
+    async fn process_vrf_message(&self, msg: &adic_types::AdicMessage) {
+        use adic_vrf::{VRFCommit, VRFOpen};
+
+        // Try to deserialize as VRFCommit
+        if let Ok(vrf_commit) = serde_json::from_slice::<VRFCommit>(&msg.data) {
+            match self.vrf_service.submit_commit(vrf_commit.clone()).await {
+                Ok(()) => {
+                    // Emit VRFCommitSubmitted event
+                    self.event_bus.emit(NodeEvent::VRFCommitSubmitted {
+                        commit_id: hex::encode(vrf_commit.id().as_bytes()),
+                        committer: hex::encode(vrf_commit.committer.as_bytes()),
+                        target_epoch: vrf_commit.target_epoch,
+                        commitment_hash: hex::encode(vrf_commit.commitment),
+                        committer_reputation: vrf_commit.committer_reputation,
+                        timestamp: Utc::now(),
+                    });
+                }
+                Err(e) => {
+                    debug!(
+                        message_id = %hex::encode(msg.id.as_bytes()),
+                        error = %e,
+                        "VRF commit rejected"
+                    );
+                }
+            }
+            return;
+        }
+
+        // Try to deserialize as VRFOpen
+        if let Ok(vrf_reveal) = serde_json::from_slice::<VRFOpen>(&msg.data) {
+            // Get current epoch
+            let current_epoch = *self.current_epoch.read().await;
+
+            match self
+                .vrf_service
+                .submit_reveal(vrf_reveal.clone(), current_epoch)
+                .await
+            {
+                Ok(()) => {
+                    // Emit VRFRevealOpened event
+                    self.event_bus.emit(NodeEvent::VRFRevealOpened {
+                        reveal_id: hex::encode(vrf_reveal.id().as_bytes()),
+                        revealer: hex::encode(vrf_reveal.public_key.as_bytes()),
+                        commit_id: hex::encode(vrf_reveal.ref_commit.as_bytes()),
+                        target_epoch: vrf_reveal.target_epoch,
+                        vrf_proof_hash: hex::encode(
+                            blake3::hash(&vrf_reveal.vrf_proof).as_bytes(),
+                        ),
+                        timestamp: Utc::now(),
+                    });
+                }
+                Err(e) => {
+                    debug!(
+                        message_id = %hex::encode(msg.id.as_bytes()),
+                        error = %e,
+                        "VRF reveal rejected"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Check for epoch transitions and finalize VRF randomness
+    async fn check_epoch_transition(&self) -> Result<()> {
+        // Determine new epoch based on checkpoint height
+        // Each checkpoint represents a new epoch
+        let new_epoch = if let Some(checkpoint) = self.finality.get_latest_checkpoint().await {
+            checkpoint.height
+        } else {
+            0
+        };
+
+        let mut current_epoch = self.current_epoch.write().await;
+
+        // Check if we've advanced to a new epoch
+        if new_epoch > *current_epoch {
+            let old_epoch = *current_epoch;
+
+            info!(
+                old_epoch = old_epoch,
+                new_epoch = new_epoch,
+                "📅 Epoch transition detected (checkpoint-based)"
+            );
+
+            // Finalize VRF for the completed epoch
+            match self.vrf_service.finalize_epoch(old_epoch, new_epoch).await {
+                Ok(randomness) => {
+                    // Get actual contributor count from VRF service
+                    let contributor_count = self.vrf_service.get_reveal_count(old_epoch).await;
+
+                    // Emit VRFRandomnessFinalized event
+                    self.event_bus.emit(NodeEvent::VRFRandomnessFinalized {
+                        epoch: old_epoch,
+                        randomness_hash: hex::encode(blake3::hash(&randomness).as_bytes()),
+                        contributor_count,
+                        timestamp: Utc::now(),
+                    });
+
+                    info!(
+                        epoch = old_epoch,
+                        randomness_hash = hex::encode(&randomness[..8]),
+                        "✨ VRF randomness finalized for epoch"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        epoch = old_epoch,
+                        error = %e,
+                        "Failed to finalize VRF for epoch (this is expected if no reveals)"
+                    );
+                }
+            }
+
+            // Initialize DKG ceremony for new epoch (if enabled)
+            if let Err(e) = self.initiate_dkg_ceremony(new_epoch).await {
+                warn!(
+                    epoch = new_epoch,
+                    error = %e,
+                    "Failed to initiate DKG ceremony for new epoch"
+                );
+            }
+
+            // Update current epoch
+            *current_epoch = new_epoch;
         }
 
         Ok(())
@@ -1787,7 +2574,7 @@ impl AdicNode {
                 match artifact.gate {
                     FinalityGate::F1KCore => FinalityType::KCore,
                     FinalityGate::F2PersistentHomology => FinalityType::Homology,
-                    FinalityGate::SSF => FinalityType::KCore,
+                    FinalityGate::F1AndF2Composite => FinalityType::Composite,
                 }
             } else {
                 // If no artifact found, default to KCore as that's what check_finality uses
@@ -1800,6 +2587,29 @@ impl AdicNode {
                 finality_type,
                 timestamp: Utc::now(),
             });
+
+            // CRITICAL: Broadcast finality artifact to network
+            // This ensures all peers learn about finality for consensus verification
+            if let Some(artifact) = self.finality.get_artifact(&msg_id).await {
+                if let Some(ref network) = self.network {
+                    let network_guard = network.read().await;
+                    let transport = network_guard.transport().await;
+                    let gate = artifact.gate.clone();
+                    if let Err(e) = transport.broadcast_finality_artifact(artifact).await {
+                        warn!(
+                            message_id = %hex::encode(msg_id.as_bytes()),
+                            error = %e,
+                            "Failed to broadcast finality artifact to network"
+                        );
+                    } else {
+                        info!(
+                            message_id = %hex::encode(msg_id.as_bytes()),
+                            gate = ?gate,
+                            "✅ Broadcast finality artifact to network"
+                        );
+                    }
+                }
+            }
 
             // Execute transfer if present (only on finality for safety)
             if let Ok(Some(message)) = self.storage.get_message(&msg_id).await {
@@ -1904,7 +2714,7 @@ impl AdicNode {
         use adic_math::ball_id;
         use std::collections::HashSet;
 
-        let params = self.consensus.params();
+        let params = self.consensus.params().await;
         let mut axes_data = Vec::new();
 
         // Calculate diversity for each axis
@@ -1951,7 +2761,7 @@ impl AdicNode {
     /// Emit k-core finality metrics event
     async fn emit_kcore_event(&self) {
         let finality_stats = self.finality.get_stats().await;
-        let params = self.consensus.params();
+        let params = self.consensus.params().await;
 
         self.event_bus.emit(NodeEvent::KCoreUpdated {
             finalized_count: finality_stats.finalized_count as u32,
@@ -2003,6 +2813,22 @@ impl AdicNode {
 
         if now - last > 600 {
             LAST_CLEANUP.store(now, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn should_cleanup_stale_peers(&self) -> bool {
+        // Cleanup stale peers every 60 seconds
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_PEER_CLEANUP: AtomicU64 = AtomicU64::new(0);
+
+        let now = chrono::Utc::now().timestamp() as u64;
+        let last = LAST_PEER_CLEANUP.load(Ordering::Relaxed);
+
+        if now - last > 60 {
+            LAST_PEER_CLEANUP.store(now, Ordering::Relaxed);
             true
         } else {
             false
@@ -2166,6 +2992,653 @@ impl AdicNode {
             });
         }
     }
+
+    /// Update DAG state metrics (tips count and total messages count)
+    async fn update_dag_metrics(&self) {
+        // Get storage stats to update both tips and messages count
+        if let Ok(stats) = self.storage.get_stats().await {
+            self.metrics.current_tips.set(stats.tip_count as i64);
+            self.metrics.dag_messages.set(stats.message_count as i64);
+        }
+    }
+
+    // ========== Governance Methods ==========
+
+    /// Submit a governance proposal
+    ///
+    /// Creates a proposal message and submits it to the network.
+    /// Requires governance_manager and governance_protocol to be configured.
+    pub async fn submit_governance_proposal(
+        &self,
+        param_keys: Vec<String>,
+        new_values: serde_json::Value,
+        class: adic_types::ProposalClass,
+        rationale_cid: String,
+        enact_epoch: u64,
+    ) -> Result<([u8; 32], MessageId)> {
+        let gov_manager = self
+            .governance_manager
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Governance manager not configured"))?;
+
+        let gov_protocol = self
+            .governance_protocol
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Governance protocol not configured"))?;
+
+        // Convert adic_types::ProposalClass to adic_governance::types::ProposalClass
+        let gov_class = match class {
+            adic_types::ProposalClass::Constitutional => adic_governance::types::ProposalClass::Constitutional,
+            adic_types::ProposalClass::Operational => adic_governance::types::ProposalClass::Operational,
+        };
+
+        // Compute proposal ID using canonical JSON for deterministic hashing
+        use adic_types::canonical_hash;
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct ProposalCanonical<'a> {
+            proposer_pk: &'a [u8; 32],
+            param_keys: &'a [String],
+            new_values: &'a serde_json::Value,
+            class: &'a str,
+            enact_epoch: u64,
+            rationale_cid: &'a str,
+        }
+
+        let canonical = ProposalCanonical {
+            proposer_pk: self.keypair.public_key().as_bytes(),
+            param_keys: &param_keys,
+            new_values: &new_values,
+            class: match class {
+                adic_types::ProposalClass::Constitutional => "constitutional",
+                adic_types::ProposalClass::Operational => "operational",
+            },
+            enact_epoch,
+            rationale_cid: &rationale_cid,
+        };
+
+        let proposal_id = canonical_hash(&canonical)
+            .map_err(|e| anyhow::anyhow!("Failed to compute proposal ID: {}", e))?;
+
+        // Calculate voting end timestamp (voting_duration from config)
+        let voting_duration = std::time::Duration::from_secs(7 * 24 * 3600); // 7 days
+        let voting_end_timestamp = chrono::Utc::now() + chrono::Duration::from_std(voting_duration)?;
+
+        // Create proposal struct
+        let proposal = adic_governance::types::GovernanceProposal {
+            proposal_id,
+            class: gov_class,
+            proposer_pk: *self.keypair.public_key(),
+            param_keys: param_keys.clone(),
+            new_values: new_values.clone(),
+            axis_changes: None, // AxisCatalogChange type
+            treasury_grant: None,
+            enact_epoch,
+            rationale_cid: rationale_cid.clone(),
+            creation_timestamp: chrono::Utc::now(),
+            voting_end_timestamp,
+            status: adic_governance::types::ProposalStatus::Voting,
+            tally_yes: 0.0,
+            tally_no: 0.0,
+            tally_abstain: 0.0,
+        };
+
+        // Submit to governance manager
+        gov_manager.submit_proposal(proposal.clone()).await?;
+
+        // Serialize proposal to MessageContent
+        use adic_types::{GovernanceProposalContent, MessageContent};
+        let content = MessageContent::GovernanceProposal(Box::new(GovernanceProposalContent {
+            proposal_id,
+            class, // Use original adic_types::ProposalClass
+            param_keys: param_keys.clone(),
+            new_values: proposal.new_values.clone(),
+            axis_changes: None, // TODO: convert AxisCatalogChange if needed
+            enact_epoch,
+            rationale_cid: proposal.rationale_cid.clone(),
+            submitter_pk: *self.keypair.public_key(),
+        }));
+
+        let content_bytes = content.to_bytes()?;
+
+        // Submit message to DAG
+        let message_id = self.submit_message(content_bytes).await?;
+
+        // Track proposal in protocol
+        let gov_message = adic_network::protocol::GovernanceMessage::Proposal {
+            message_id,
+            proposal_id,
+            submitter: *self.keypair.public_key(),
+            class: format!("{:?}", class),
+            param_keys: param_keys.clone(),
+            timestamp: chrono::Utc::now().timestamp() as u64,
+        };
+
+        gov_protocol.handle_message(gov_message).await?;
+
+        // Get proposer reputation for event
+        let proposer_reputation = self
+            .consensus
+            .reputation
+            .get_reputation(&self.keypair.public_key())
+            .await;
+
+        // Emit event
+        self.event_bus.emit(NodeEvent::ProposalSubmitted {
+            proposal_id: hex::encode(&proposal_id[..8]),
+            proposer: hex::encode(self.keypair.public_key().as_bytes()),
+            proposal_class: format!("{:?}", class),
+            param_keys: param_keys.clone(),
+            enact_epoch,
+            proposer_reputation,
+            timestamp: Utc::now(),
+        });
+
+        info!(
+            proposal_id = hex::encode(&proposal_id[..8]),
+            "📋 Governance proposal submitted"
+        );
+
+        Ok((proposal_id, message_id))
+    }
+
+    /// Cast a vote on a governance proposal
+    pub async fn vote_on_proposal(
+        &self,
+        proposal_id: [u8; 32],
+        ballot: adic_types::Ballot,
+    ) -> Result<MessageId> {
+        let gov_manager = self
+            .governance_manager
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Governance manager not configured"))?;
+
+        let gov_protocol = self
+            .governance_protocol
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Governance protocol not configured"))?;
+
+        // Get reputation to compute voting credits
+        let reputation = self
+            .consensus
+            .reputation
+            .get_reputation(&self.keypair.public_key())
+            .await;
+
+        // Compute voting credits (w(P) = sqrt(min(R(P), Rmax)))
+        let rmax = 100_000.0; // Should come from config
+        let credits = (reputation.min(rmax)).sqrt();
+
+        // Convert adic_types::Ballot to adic_governance::types::Ballot
+        let gov_ballot = match ballot {
+            adic_types::Ballot::Yes => adic_governance::types::Ballot::Yes,
+            adic_types::Ballot::No => adic_governance::types::Ballot::No,
+            adic_types::Ballot::Abstain => adic_governance::types::Ballot::Abstain,
+        };
+
+        // Create vote struct
+        let vote = adic_governance::types::GovernanceVote {
+            proposal_id,
+            voter_pk: *self.keypair.public_key(),
+            credits,
+            ballot: gov_ballot,
+            timestamp: chrono::Utc::now(),
+        };
+
+        // Submit vote to governance manager
+        gov_manager.cast_vote(vote.clone()).await?;
+
+        // Serialize vote to MessageContent
+        use adic_types::{GovernanceVoteContent, MessageContent};
+        let content = MessageContent::GovernanceVote(Box::new(GovernanceVoteContent {
+            proposal_id,
+            voter_pk: *self.keypair.public_key(),
+            credits,
+            ballot,
+            epoch: *self.current_epoch.read().await,
+        }));
+
+        let content_bytes = content.to_bytes()?;
+
+        // Submit message to DAG
+        let message_id = self.submit_message(content_bytes).await?;
+
+        // Track vote in protocol
+        let gov_message = adic_network::protocol::GovernanceMessage::Vote {
+            message_id,
+            proposal_id,
+            voter: *self.keypair.public_key(),
+            ballot: format!("{:?}", ballot),
+            credits,
+            timestamp: chrono::Utc::now().timestamp() as u64,
+        };
+
+        gov_protocol.handle_message(gov_message).await?;
+
+        // Emit event
+        self.event_bus.emit(NodeEvent::VoteCast {
+            proposal_id: hex::encode(&proposal_id[..8]),
+            voter: hex::encode(self.keypair.public_key().as_bytes()),
+            vote_credits: credits,
+            ballot: format!("{:?}", ballot),
+            voter_reputation: reputation,
+            timestamp: Utc::now(),
+        });
+
+        info!(
+            proposal_id = hex::encode(&proposal_id[..8]),
+            ballot = ?ballot,
+            credits = credits,
+            "🗳️ Vote cast on proposal"
+        );
+
+        Ok(message_id)
+    }
+
+    /// Finalize governance voting and emit receipt to DAG
+    ///
+    /// This method handles the full workflow:
+    /// 1. Finalize voting via lifecycle manager (tallies votes, creates BLS-signed receipt)
+    /// 2. Retrieve the created receipt
+    /// 3. Emit receipt to DAG as governance message
+    /// 4. Track receipt in governance protocol
+    ///
+    /// Returns the vote result and the receipt message ID
+    #[allow(dead_code)] // Used in tests and available for governance operations
+    pub async fn finalize_governance_voting(
+        &self,
+        proposal_id: &[u8; 32],
+    ) -> Result<(adic_governance::types::VoteResult, MessageId)> {
+        // Get governance manager
+        let manager = self
+            .governance_manager
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Governance not enabled"))?;
+
+        // Finalize voting (this creates the receipt with BLS signature)
+        let result = manager.finalize_voting(proposal_id).await?;
+
+        // Get the created receipt
+        let receipts = manager.get_receipts(proposal_id).await;
+        let receipt = receipts
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("Receipt not found after finalization"))?;
+
+        // Get current epoch from finality engine
+        let current_epoch = self.finality.current_epoch().await;
+
+        // Emit receipt to DAG
+        let message_id = self.emit_governance_receipt(receipt, current_epoch).await?;
+
+        info!(
+            proposal_id = hex::encode(&proposal_id[..8]),
+            result = ?result,
+            message_id = ?message_id,
+            "✅ Governance voting finalized and receipt emitted"
+        );
+
+        Ok((result, message_id))
+    }
+
+    /// Emit governance receipt to DAG with BLS signature
+    #[allow(dead_code)] // Used by finalize_governance_voting
+    pub async fn emit_governance_receipt(
+        &self,
+        receipt: &adic_governance::types::GovernanceReceipt,
+        finalized_epoch: u64,
+    ) -> Result<MessageId> {
+        use adic_types::{GovernanceReceiptContent, MessageContent, QuorumStats as TypesQuorumStats, VoteResult as TypesVoteResult};
+
+        // Convert BLS signature to bytes
+        let threshold_bls_sig = receipt
+            .quorum_signature
+            .as_ref()
+            .map(|sig| hex::decode(sig.as_hex()).unwrap_or_default())
+            .unwrap_or_default();
+
+        // Create MessageContent for receipt
+        let content = MessageContent::GovernanceReceipt(Box::new(GovernanceReceiptContent {
+            proposal_id: receipt.proposal_id,
+            quorum_stats: TypesQuorumStats {
+                total_eligible_credits: 0.0, // TODO: Track this in governance
+                credits_voted: receipt.quorum_stats.total_participation,
+                credits_yes: receipt.quorum_stats.yes,
+                credits_no: receipt.quorum_stats.no,
+                credits_abstain: receipt.quorum_stats.abstain,
+                participation_rate: 0.0, // Will be calculated from credits_voted/total_eligible
+            },
+            result: match receipt.result {
+                adic_governance::types::VoteResult::Pass => TypesVoteResult::Pass,
+                adic_governance::types::VoteResult::Fail => TypesVoteResult::Fail,
+            },
+            receipt_seq: receipt.receipt_seq,
+            prev_receipt_hash: receipt.prev_receipt_hash,
+            threshold_bls_sig: threshold_bls_sig.clone(),
+            finalized_epoch,
+        }));
+
+        let content_bytes = content.to_bytes()?;
+
+        // Submit receipt message to DAG
+        let message_id = self.submit_message(content_bytes).await?;
+
+        // Track receipt in governance protocol
+        if let Some(ref gov_protocol) = self.governance_protocol {
+            let gov_message = adic_network::protocol::GovernanceMessage::Receipt {
+                message_id,
+                proposal_id: receipt.proposal_id,
+                result: format!("{:?}", receipt.result).to_lowercase(),
+                credits_yes: receipt.quorum_stats.yes,
+                credits_no: receipt.quorum_stats.no,
+                threshold_sig: threshold_bls_sig,
+                timestamp: receipt.timestamp.timestamp() as u64,
+            };
+
+            gov_protocol.handle_message(gov_message).await?;
+        }
+
+        // Emit event
+        self.event_bus.emit(NodeEvent::GovernanceReceiptEmitted {
+            proposal_id: hex::encode(&receipt.proposal_id[..8]),
+            result: format!("{:?}", receipt.result),
+            quorum_yes: receipt.quorum_stats.yes,
+            quorum_no: receipt.quorum_stats.no,
+            quorum_abstain: receipt.quorum_stats.abstain,
+            has_bls_signature: receipt.quorum_signature.is_some(),
+            committee_size: receipt.committee_members.len(),
+            timestamp: Utc::now(),
+        });
+
+        info!(
+            proposal_id = hex::encode(&receipt.proposal_id[..8]),
+            result = ?receipt.result,
+            has_bls = receipt.quorum_signature.is_some(),
+            committee_members = receipt.committee_members.len(),
+            "📜 Governance receipt emitted to DAG"
+        );
+
+        Ok(message_id)
+    }
+
+    /// Initiate DKG ceremony for a new epoch
+    ///
+    /// Determines committee membership, starts the ceremony via DKG orchestrator,
+    /// and broadcasts commitment messages to committee members via gossip.
+    async fn initiate_dkg_ceremony(&self, epoch_id: u64) -> Result<()> {
+        // Check if DKG orchestrator is configured
+        let dkg_orchestrator = match &self.dkg_orchestrator {
+            Some(orchestrator) => orchestrator,
+            None => {
+                debug!("DKG orchestrator not configured, skipping ceremony initialization");
+                return Ok(());
+            }
+        };
+
+        // Check if network is enabled for message propagation
+        let network = match &self.network {
+            Some(net) => net,
+            None => {
+                warn!("Network not configured, cannot run DKG ceremony");
+                return Ok(());
+            }
+        };
+
+        // Select committee members using VRF-based quorum selection
+        // This provides unpredictable, reputation-weighted committee formation
+        // with diversity enforcement (ASN/region caps)
+
+        // Get eligible nodes from network with metadata
+        let eligible_nodes = match self.get_eligible_quorum_nodes().await {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                warn!(epoch_id, error = %e, "Failed to get eligible nodes for committee");
+                return Ok(());
+            }
+        };
+
+        if eligible_nodes.is_empty() {
+            debug!(epoch_id, "No eligible nodes available for DKG committee");
+            return Ok(());
+        }
+
+        // Configure committee selection parameters
+        let config = adic_quorum::QuorumConfig {
+            min_reputation: 50.0,      // Minimum reputation for eligibility
+            members_per_axis: 5,       // 5 members per axis (3 axes = 15 total)
+            total_size: 15,            // DKG committee size
+            max_per_asn: 2,            // Max 2 members from same ASN
+            max_per_region: 3,         // Max 3 members from same region
+            domain_separator: "dkg_committee".to_string(),
+            num_axes: 3,               // 3-axis selection per ADIC-DAG
+        };
+
+        // Use VRF-based selection for unpredictable, fair committee formation
+        let quorum_result = match self.quorum_selector.select_committee(
+            epoch_id,
+            &config,
+            eligible_nodes,
+        ).await {
+            Ok(result) => result,
+            Err(e) => {
+                warn!(
+                    epoch_id,
+                    error = %e,
+                    "Failed to select committee via VRF - skipping DKG ceremony"
+                );
+                return Ok(());
+            }
+        };
+
+        // Extract PublicKeys for DKG ceremony
+        let committee_members: Vec<PublicKey> = quorum_result
+            .members
+            .iter()
+            .map(|m| m.public_key)
+            .collect();
+
+        if committee_members.is_empty() {
+            debug!(epoch_id, "No committee members selected after diversity enforcement");
+            return Ok(());
+        }
+
+        info!(
+            epoch_id,
+            committee_size = committee_members.len(),
+            "🔐 Initiating DKG ceremony for new epoch"
+        );
+
+        // Start DKG ceremony via orchestrator
+        let dkg_messages = dkg_orchestrator
+            .start_ceremony(epoch_id, committee_members)
+            .await?;
+
+        if dkg_messages.is_empty() {
+            debug!(epoch_id, "Not a committee member, no DKG messages to send");
+            return Ok(());
+        }
+
+        // Broadcast DKG commitment via gossip protocol
+        let network_guard = network.read().await;
+        let gossip = network_guard.get_gossip_protocol();
+        for (_peer_id, dkg_msg) in dkg_messages {
+            // Use gossip broadcast instead of direct peer messaging
+            if let Err(e) = gossip.broadcast_dkg_message(dkg_msg).await {
+                warn!(
+                    epoch_id,
+                    error = %e,
+                    "Failed to broadcast DKG message"
+                );
+            }
+        }
+
+        info!(
+            epoch_id,
+            "📤 DKG commitment broadcasted via gossip"
+        );
+
+        Ok(())
+    }
+
+    /// Handle incoming governance message from network
+    #[allow(dead_code)] // Used in tests and available for governance protocol
+    pub async fn handle_governance_message(
+        &self,
+        content: adic_types::MessageContent,
+        message_id: MessageId,
+    ) -> Result<()> {
+        let gov_protocol = self
+            .governance_protocol
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Governance protocol not configured"))?;
+
+        match content {
+            adic_types::MessageContent::GovernanceProposal(proposal) => {
+                let gov_message = adic_network::protocol::GovernanceMessage::Proposal {
+                    message_id,
+                    proposal_id: proposal.proposal_id,
+                    submitter: proposal.submitter_pk,
+                    class: format!("{:?}", proposal.class),
+                    param_keys: proposal.param_keys,
+                    timestamp: chrono::Utc::now().timestamp() as u64,
+                };
+                gov_protocol.handle_message(gov_message).await?;
+            }
+            adic_types::MessageContent::GovernanceVote(vote) => {
+                let gov_message = adic_network::protocol::GovernanceMessage::Vote {
+                    message_id,
+                    proposal_id: vote.proposal_id,
+                    voter: vote.voter_pk,
+                    ballot: format!("{:?}", vote.ballot),
+                    credits: vote.credits,
+                    timestamp: vote.epoch,
+                };
+                gov_protocol.handle_message(gov_message).await?;
+            }
+            adic_types::MessageContent::GovernanceReceipt(receipt) => {
+                let gov_message = adic_network::protocol::GovernanceMessage::Receipt {
+                    message_id,
+                    proposal_id: receipt.proposal_id,
+                    result: format!("{:?}", receipt.result),
+                    credits_yes: receipt.quorum_stats.credits_yes,
+                    credits_no: receipt.quorum_stats.credits_no,
+                    threshold_sig: receipt.threshold_bls_sig,
+                    timestamp: receipt.finalized_epoch,
+                };
+                gov_protocol.handle_message(gov_message).await?;
+            }
+            _ => {
+                warn!("Unexpected governance message type");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle incoming DKG message from gossip protocol
+    ///
+    /// Routes DKG messages (commitments, shares, completion) to the DKG orchestrator,
+    /// which manages the distributed key generation ceremony lifecycle.
+    #[allow(dead_code)] // Used in tests and available for DKG protocol
+    pub async fn handle_dkg_message(
+        &self,
+        dkg_msg: adic_network::protocol::DKGMessage,
+        from_peer: libp2p::PeerId,
+    ) -> Result<()> {
+        let dkg_orchestrator = match &self.dkg_orchestrator {
+            Some(orchestrator) => orchestrator,
+            None => {
+                debug!("DKG orchestrator not configured, ignoring DKG message");
+                return Ok(());
+            }
+        };
+
+        let network = match &self.network {
+            Some(net) => net,
+            None => {
+                warn!("Network not configured, cannot propagate DKG responses");
+                return Ok(());
+            }
+        };
+
+        match dkg_msg {
+            adic_network::protocol::DKGMessage::Commitment { epoch_id, commitment } => {
+                debug!(
+                    epoch_id,
+                    participant_id = commitment.participant_id,
+                    from_peer = %from_peer,
+                    "🔐 Processing DKG commitment"
+                );
+
+                // Handle commitment and get response messages (if ready for share exchange)
+                let response_messages = dkg_orchestrator
+                    .handle_commitment(epoch_id, commitment, from_peer)
+                    .await?;
+
+                // Broadcast share messages via gossip
+                if !response_messages.is_empty() {
+                    let network_guard = network.read().await;
+                    let gossip = network_guard.get_gossip_protocol();
+                    for (_peer_id, dkg_msg) in response_messages {
+                        if let Err(e) = gossip.broadcast_dkg_message(dkg_msg).await {
+                            warn!(
+                                epoch_id,
+                                error = %e,
+                                "Failed to broadcast DKG share"
+                            );
+                        }
+                    }
+                }
+            }
+            adic_network::protocol::DKGMessage::Share { epoch_id, share } => {
+                debug!(
+                    epoch_id,
+                    from_participant = share.from,
+                    to_participant = share.to,
+                    from_peer = %from_peer,
+                    "🔐 Processing DKG share"
+                );
+
+                // Handle share and get completion messages (if ceremony is done)
+                if let Some(completion_messages) = dkg_orchestrator
+                    .handle_share(epoch_id, share, from_peer)
+                    .await?
+                {
+                    // Broadcast completion messages via gossip
+                    let network_guard = network.read().await;
+                    let gossip = network_guard.get_gossip_protocol();
+                    for (_peer_id, dkg_msg) in completion_messages {
+                        if let Err(e) = gossip.broadcast_dkg_message(dkg_msg).await {
+                            warn!(
+                                epoch_id,
+                                error = %e,
+                                "Failed to broadcast DKG completion"
+                            );
+                        }
+                    }
+
+                    info!(epoch_id, "✨ DKG ceremony completed successfully");
+                }
+            }
+            adic_network::protocol::DKGMessage::Complete {
+                epoch_id,
+                participant_id,
+            } => {
+                debug!(
+                    epoch_id,
+                    participant_id,
+                    from_peer = %from_peer,
+                    "✅ DKG completion notification received"
+                );
+
+                dkg_orchestrator
+                    .handle_complete(epoch_id, participant_id, from_peer)
+                    .await;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Clone for AdicNode {
@@ -2183,10 +3656,23 @@ impl Clone for AdicNode {
             economics: Arc::clone(&self.economics),
             network: self.network.as_ref().map(Arc::clone),
             update_manager: self.update_manager.as_ref().map(Arc::clone),
+            vrf_service: Arc::clone(&self.vrf_service),
+            quorum_selector: Arc::clone(&self.quorum_selector),
+            parameter_store: self.parameter_store.as_ref().map(Arc::clone),
+            metrics: Arc::clone(&self.metrics),
+            network_metadata: Arc::clone(&self.network_metadata),
+            dkg_manager: self.dkg_manager.as_ref().map(Arc::clone),
+            bls_coordinator: self.bls_coordinator.as_ref().map(Arc::clone),
+            dkg_orchestrator: self.dkg_orchestrator.as_ref().map(Arc::clone),
+            task_manager: self.task_manager.as_ref().map(Arc::clone),
+            governance_manager: self.governance_manager.as_ref().map(Arc::clone),
+            governance_protocol: self.governance_protocol.as_ref().map(Arc::clone),
+            storage_market: self.storage_market.as_ref().map(Arc::clone),
             index: Arc::clone(&self.index),
             tip_manager: Arc::clone(&self.tip_manager),
             running: Arc::clone(&self.running),
             encoders: Arc::clone(&self.encoders),
+            current_epoch: Arc::clone(&self.current_epoch),
         }
     }
 }

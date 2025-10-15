@@ -11,7 +11,7 @@ pub use selector::{MrwSelector, ParentCandidate, SelectionParams};
 pub use trace::{MrwTrace, SelectionStep};
 pub use weights::{MrwWeights, WeightCalculator};
 
-use adic_consensus::{ConflictResolver, ReputationTracker};
+use adic_consensus::ConsensusEngine;
 use adic_storage::StorageEngine;
 use adic_types::{AdicFeatures, AdicParams, MessageId, QpDigits};
 use anyhow::Result;
@@ -20,29 +20,65 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub struct MrwEngine {
-    _params: AdicParams,
-    selector: MrwSelector,
-    weight_calc: WeightCalculator,
+    _params: Arc<RwLock<AdicParams>>,
+    selector: Arc<RwLock<MrwSelector>>,
+    weight_calc: Arc<RwLock<WeightCalculator>>,
     traces: Arc<RwLock<HashMap<String, MrwTrace>>>,
+    // Metrics counters - updated externally by incrementing directly
+    pub mrw_attempts_total: Option<Arc<prometheus::IntCounter>>,
+    pub mrw_widens_total: Option<Arc<prometheus::IntCounter>>,
+    pub mrw_selection_duration: Option<Arc<prometheus::Histogram>>,
 }
 
 impl MrwEngine {
     pub fn new(params: AdicParams) -> Self {
         let selection_params = SelectionParams::from_adic_params(&params);
         Self {
-            _params: params.clone(),
-            selector: MrwSelector::new(selection_params),
-            weight_calc: WeightCalculator::new(params.lambda, params.beta, params.mu),
+            _params: Arc::new(RwLock::new(params.clone())),
+            selector: Arc::new(RwLock::new(MrwSelector::new(selection_params))),
+            weight_calc: Arc::new(RwLock::new(WeightCalculator::new_with_alpha(
+                params.lambda,
+                params.alpha,
+                params.beta,
+                params.mu,
+            ))),
             traces: Arc::new(RwLock::new(HashMap::new())),
+            mrw_attempts_total: None,
+            mrw_widens_total: None,
+            mrw_selection_duration: None,
         }
     }
 
-    pub fn selector(&self) -> &MrwSelector {
-        &self.selector
+    /// Set metrics for MRW tracking
+    pub fn set_metrics(
+        &mut self,
+        mrw_attempts_total: Arc<prometheus::IntCounter>,
+        mrw_widens_total: Arc<prometheus::IntCounter>,
+        mrw_selection_duration: Arc<prometheus::Histogram>,
+    ) {
+        self.mrw_attempts_total = Some(mrw_attempts_total);
+        self.mrw_widens_total = Some(mrw_widens_total);
+        self.mrw_selection_duration = Some(mrw_selection_duration);
     }
 
-    pub fn weight_calculator(&self) -> &WeightCalculator {
-        &self.weight_calc
+    /// Update MRW parameters for hot-reload support
+    pub async fn update_params(&self, new_params: &AdicParams) {
+        *self._params.write().await = new_params.clone();
+        *self.weight_calc.write().await = WeightCalculator::new_with_alpha(
+            new_params.lambda,
+            new_params.alpha,
+            new_params.beta,
+            new_params.mu,
+        );
+        let selection_params = SelectionParams::from_adic_params(new_params);
+        *self.selector.write().await = MrwSelector::new(selection_params);
+        tracing::info!(
+            lambda = new_params.lambda,
+            alpha = new_params.alpha,
+            beta = new_params.beta,
+            mu = new_params.mu,
+            "✅ MRW parameters updated"
+        );
     }
 
     /// Select parents from the current tips using MRW algorithm
@@ -51,9 +87,15 @@ impl MrwEngine {
         features: &AdicFeatures,
         tips: &[MessageId],
         storage: &StorageEngine,
-        conflict_resolver: &ConflictResolver,
-        reputation_tracker: &ReputationTracker,
+        consensus: &ConsensusEngine,
     ) -> Result<Vec<MessageId>> {
+        let start = std::time::Instant::now();
+
+        // Update metrics - MRW selection attempt
+        if let Some(ref counter) = self.mrw_attempts_total {
+            counter.inc();
+        }
+
         // Build parent candidates from tips
         let mut candidates = Vec::new();
 
@@ -64,7 +106,7 @@ impl MrwEngine {
             match storage.get_message(tip_id).await {
                 Ok(Some(tip_msg)) => {
                     // Get LIVE reputation for the tip proposer
-                    let reputation = reputation_tracker
+                    let reputation = consensus.reputation
                         .get_reputation(&tip_msg.proposer_pk)
                         .await;
                     tracing::debug!(
@@ -73,10 +115,10 @@ impl MrwEngine {
                         reputation
                     );
 
-                    // Calculate conflict penalty
+                    // Calculate conflict penalty using paper-accurate energy descent
                     let conflict_penalty = if !tip_msg.meta.conflict.is_none() {
-                        conflict_resolver
-                            .get_penalty(tip_id, &tip_msg.meta.conflict)
+                        consensus
+                            .get_conflict_penalty(tip_id, &tip_msg.meta.conflict)
                             .await
                     } else {
                         0.0
@@ -134,13 +176,18 @@ impl MrwEngine {
         }
 
         // Select parents using MRW
-        let (selected, trace) = self
-            .selector
-            .select_parents(features, candidates, &self.weight_calc)
+        let selector = self.selector.read().await;
+        let weight_calc = self.weight_calc.read().await;
+        let (selected, trace) = selector
+            .select_parents(features, candidates, &*weight_calc)
             .await?;
 
         // Store the trace for debugging
         let trace_id = format!("mrw_{}", chrono::Utc::now().timestamp_millis());
+
+        // Track widens from trace
+        let widen_count = trace.widen_count;
+
         {
             let mut traces = self.traces.write().await;
             traces.insert(trace_id.clone(), trace);
@@ -150,6 +197,16 @@ impl MrwEngine {
                 let oldest_key = traces.keys().min().unwrap().clone();
                 traces.remove(&oldest_key);
             }
+        }
+
+        // Update metrics - widens and duration
+        if widen_count > 0 {
+            if let Some(ref counter) = self.mrw_widens_total {
+                counter.inc_by(widen_count as u64);
+            }
+        }
+        if let Some(ref histogram) = self.mrw_selection_duration {
+            histogram.observe(start.elapsed().as_secs_f64());
         }
 
         tracing::debug!("MRW selection completed, trace stored: {}", trace_id);
@@ -199,7 +256,7 @@ mod tests {
         let engine = MrwEngine::new(params.clone());
 
         // Prepare in-memory storage with candidate tip messages
-        let storage = StorageEngine::new(StorageConfig::default()).unwrap();
+        let storage = std::sync::Arc::new(StorageEngine::new(StorageConfig::default()).unwrap());
 
         let mut tips: Vec<MessageId> = Vec::new();
         for i in 0..10u64 {
@@ -225,10 +282,9 @@ mod tests {
             AxisPhi::new(2, QpDigits::from_u64(15, 3, 10)),
         ]);
 
-        let resolver = adic_consensus::ConflictResolver::new();
-        let reputation = adic_consensus::ReputationTracker::new(0.9);
+        let consensus = adic_consensus::ConsensusEngine::new(params.clone(), storage.clone());
         let selected = engine
-            .select_parents(&features, &tips, &storage, &resolver, &reputation)
+            .select_parents(&features, &tips, &storage, &consensus)
             .await
             .expect("selection should succeed");
 

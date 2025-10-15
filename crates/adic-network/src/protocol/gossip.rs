@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 
-use crate::protocol::AxisOverlay;
+use crate::protocol::{AxisOverlay, DKGMessage};
 use adic_types::{AdicError, AdicMessage, AxisPhi, MessageId, Result};
 
 #[derive(Debug, Clone)]
@@ -34,17 +34,38 @@ pub struct GossipConfig {
 
 impl Default for GossipConfig {
     fn default() -> Self {
+        // SECURITY: Hardened gossipsub parameters to resist eclipse and Sybil attacks
+        // See libp2p gossipsub spec: https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/gossipsub-v1.1.md
         Self {
-            mesh_n: 8,
-            mesh_n_low: 6,
-            mesh_n_high: 12,
-            mesh_outbound_min: 4,
+            // SECURITY: Increased mesh_n from 8 to 12 to make eclipse attacks harder
+            // Eclipse attack requires controlling ALL mesh peers to isolate a victim
+            // Higher mesh_n exponentially increases attack difficulty
+            mesh_n: 12,
+
+            // SECURITY: Increased mesh_n_low from 6 to 8
+            // Lower bound before triggering GRAFT to add more peers
+            // Higher value maintains stronger mesh connectivity
+            mesh_n_low: 8,
+
+            // SECURITY: Increased mesh_n_high from 12 to 16
+            // Upper bound before triggering PRUNE to remove peers
+            // Allows temporary overprovisioning during network churn
+            mesh_n_high: 16,
+
+            // SECURITY: Increased mesh_outbound_min from 4 to 6
+            // Minimum outbound connections (peers we dialed, not who dialed us)
+            // Prevents attacks where adversary dials us with many malicious inbound connections
+            mesh_outbound_min: 6,
+
             gossip_lazy: 6,
             gossip_factor: 0.25,
             heartbeat_interval: Duration::from_secs(1),
             fanout_ttl: Duration::from_secs(60),
             max_transmit_size: 65536,
             duplicate_cache_time: Duration::from_secs(120),
+
+            // SECURITY: Strict validation mode - reject messages that fail validation
+            // Prevents propagation of invalid messages
             validation_mode: ValidationMode::Strict,
         }
     }
@@ -58,6 +79,7 @@ pub enum GossipMessage {
     FinalityUpdate(MessageId, u64), // message_id, k-core value
     ConflictAnnouncement(String, Vec<MessageId>), // conflict_id, involved messages
     PeerAnnouncement(String, Vec<String>), // peer_id as string, multiaddrs
+    DKG(DKGMessage), // DKG ceremony messages (commitments, shares, completion)
 }
 
 pub struct GossipProtocol {
@@ -348,6 +370,27 @@ impl GossipProtocol {
         .await
     }
 
+    /// Broadcast DKG message to all committee members
+    /// Uses dedicated DKG topic for epoch-based routing
+    pub async fn broadcast_dkg_message(&self, dkg_msg: DKGMessage) -> Result<()> {
+        // Publish to global DKG topic
+        self.publish_message(
+            GossipMessage::DKG(dkg_msg.clone()),
+            "adic/dkg",
+        )
+        .await?;
+
+        // Also publish to epoch-specific topic for better routing
+        let epoch_id = match &dkg_msg {
+            DKGMessage::Commitment { epoch_id, .. } => *epoch_id,
+            DKGMessage::Share { epoch_id, .. } => *epoch_id,
+            DKGMessage::Complete { epoch_id, .. } => *epoch_id,
+        };
+        let epoch_topic = format!("adic/dkg/{}", epoch_id);
+        self.publish_message(GossipMessage::DKG(dkg_msg), &epoch_topic)
+            .await
+    }
+
     pub async fn handle_gossip_event(&self, event: GossipsubEvent) {
         match event {
             GossipsubEvent::Message {
@@ -375,7 +418,7 @@ impl GossipProtocol {
     }
 
     async fn handle_received_message(&self, message: GossipMessage, source: PeerId) {
-        match message {
+        match &message {
             GossipMessage::Message(adic_msg) => {
                 // Check cache for duplicates
                 let mut cache = self.message_cache.write().await;
@@ -390,6 +433,25 @@ impl GossipProtocol {
                         warn!("Validation queue full, dropping message {}", adic_msg.id);
                     }
                 }
+            }
+            GossipMessage::DKG(dkg_msg) => {
+                // Log DKG message receipt
+                match dkg_msg {
+                    DKGMessage::Commitment { epoch_id, .. } => {
+                        debug!(epoch_id, from_peer = %source, "📨 Received DKG commitment via gossip");
+                    }
+                    DKGMessage::Share { epoch_id, .. } => {
+                        debug!(epoch_id, from_peer = %source, "📨 Received DKG share via gossip");
+                    }
+                    DKGMessage::Complete { epoch_id, .. } => {
+                        debug!(epoch_id, from_peer = %source, "📨 Received DKG completion via gossip");
+                    }
+                }
+
+                // Forward to event stream for DKGProtocol to handle
+                self.event_sender
+                    .send(GossipEvent::MessageReceived(Box::new(message), source))
+                    .ok();
             }
             _ => {
                 self.event_sender

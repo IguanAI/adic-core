@@ -178,3 +178,152 @@ fn test_genesis_manifest_verify() {
         "Genesis with invalid config should fail verification"
     );
 }
+
+/// SECURITY TEST: Custom network with custom genesis should be allowed (but warned)
+#[test]
+fn test_custom_network_allowed() {
+    // Someone creates a custom network (not claiming to be mainnet)
+    // This is allowed for private networks, testing, etc.
+    let mut custom_config = GenesisConfig::default();
+    custom_config.chain_id = "my-custom-network".to_string(); // Not "adic-dag-v1"
+    custom_config.allocations[0].1 = 200_000_000; // Custom allocations
+
+    // This should SUCCEED - custom networks can have custom genesis
+    let result = custom_config.verify_with_canonical(true); // true = bootstrap
+    assert!(
+        result.is_ok(),
+        "Custom network bootstrap should be allowed with custom genesis: {:?}",
+        result
+    );
+}
+
+/// SECURITY TEST: Using canonical genesis with wrong chain_id should fail
+#[test]
+fn test_canonical_genesis_requires_correct_chain_id() {
+    // Attacker tries to use canonical mainnet genesis but with different chain_id
+    // to confuse users into thinking it's mainnet
+    let mut sneaky_config = GenesisConfig::default(); // Default = canonical mainnet
+    sneaky_config.chain_id = "adic-mainnet-v1".to_string(); // Wrong chain_id!
+
+    // This should FAIL - if you use canonical genesis, must use correct chain_id
+    let result = sneaky_config.verify_with_canonical(true); // true = bootstrap
+    assert!(
+        result.is_err(),
+        "Bootstrap with canonical genesis but wrong chain_id should fail"
+    );
+
+    if let Err(e) = result {
+        assert!(
+            e.contains("SECURITY") || e.contains("chain_id"),
+            "Error should mention security/chain_id issue, got: {}",
+            e
+        );
+    }
+}
+
+/// SECURITY TEST: Attempt to use mainnet chain_id with manipulated allocations
+#[test]
+fn test_bypass_attempt_mainnet_manipulated() {
+    // Attacker modifies genesis allocations but keeps mainnet chain_id
+    let mut malicious_config = GenesisConfig::default();
+    malicious_config.chain_id = "adic-dag-v1".to_string(); // Correct mainnet chain_id
+    malicious_config.allocations[0].1 = 999_999_999; // Manipulated allocation
+
+    // This should FAIL because hash won't match canonical
+    let result = malicious_config.verify_with_canonical(true); // true = bootstrap
+    assert!(
+        result.is_err(),
+        "Bootstrap node should reject manipulated mainnet genesis"
+    );
+
+    // Error should mention hash mismatch
+    if let Err(e) = result {
+        assert!(
+            e.contains("hash") || e.contains("canonical"),
+            "Error should mention hash/canonical mismatch, got: {}",
+            e
+        );
+    }
+}
+
+/// SECURITY TEST: Verify testnet allows custom genesis (not mainnet)
+#[test]
+fn test_testnet_allows_custom_genesis() {
+    // Testnet should allow custom allocations (for testing)
+    let mut testnet_config = GenesisConfig::default();
+    testnet_config.chain_id = "adic-testnet".to_string();
+    testnet_config.allocations[0].1 = 123_456_789; // Custom allocation
+
+    // This should SUCCEED for testnet bootstrap
+    let result = testnet_config.verify_with_canonical(true); // true = bootstrap
+    assert!(
+        result.is_ok(),
+        "Testnet bootstrap should allow custom genesis"
+    );
+}
+
+/// SECURITY TEST: Verify devnet allows custom genesis
+#[test]
+fn test_devnet_allows_custom_genesis() {
+    // Devnet should allow custom allocations (for development)
+    let mut devnet_config = GenesisConfig::default();
+    devnet_config.chain_id = "adic-devnet".to_string();
+    devnet_config.allocations = vec![("test_address".to_string(), 1000)];
+
+    // This should SUCCEED for devnet bootstrap
+    let result = devnet_config.verify_with_canonical(true); // true = bootstrap
+    assert!(result.is_ok(), "Devnet bootstrap should allow custom genesis");
+}
+
+/// SECURITY TEST: Canonical mainnet genesis should always validate
+#[test]
+fn test_canonical_mainnet_validates() {
+    // The default genesis config is the canonical mainnet config
+    let mainnet_config = GenesisConfig::default();
+
+    // Should validate successfully for bootstrap
+    let result = mainnet_config.verify_with_canonical(true);
+    assert!(
+        result.is_ok(),
+        "Canonical mainnet genesis should validate: {:?}",
+        result
+    );
+
+    // Should validate successfully for non-bootstrap
+    let result = mainnet_config.verify_with_canonical(false);
+    assert!(
+        result.is_ok(),
+        "Canonical mainnet genesis should validate for regular nodes: {:?}",
+        result
+    );
+}
+
+/// SECURITY TEST: Verify NetworkType detection
+#[test]
+fn test_network_type_detection() {
+    use adic_node::genesis::NetworkType;
+
+    // Test chain_id detection
+    assert_eq!(
+        NetworkType::from_chain_id("adic-dag-v1"),
+        NetworkType::Mainnet
+    );
+    assert_eq!(
+        NetworkType::from_chain_id("adic-testnet"),
+        NetworkType::Testnet
+    );
+    assert_eq!(
+        NetworkType::from_chain_id("adic-devnet"),
+        NetworkType::Devnet
+    );
+    assert_eq!(
+        NetworkType::from_chain_id("custom-network"),
+        NetworkType::Custom
+    );
+
+    // Test canonical hash requirement
+    assert!(NetworkType::Mainnet.requires_canonical_genesis());
+    assert!(!NetworkType::Testnet.requires_canonical_genesis());
+    assert!(!NetworkType::Devnet.requires_canonical_genesis());
+    assert!(!NetworkType::Custom.requires_canonical_genesis());
+}

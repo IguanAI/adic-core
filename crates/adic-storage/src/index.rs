@@ -1,5 +1,5 @@
 use adic_types::{AdicMessage, MessageId};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -10,8 +10,8 @@ type AxisIndex = HashMap<u32, AxisValueIndex>;
 
 /// Index for efficient message queries
 pub struct MessageIndex {
-    /// Index by timestamp (epoch seconds -> message IDs)
-    by_timestamp: Arc<RwLock<HashMap<i64, MessageIdList>>>,
+    /// Index by timestamp (epoch seconds -> message IDs) - BTreeMap for O(log N + K) range queries
+    by_timestamp: Arc<RwLock<BTreeMap<i64, MessageIdList>>>,
 
     /// Index by author (public key bytes -> message IDs)
     by_author: Arc<RwLock<HashMap<[u8; 32], MessageIdList>>>,
@@ -35,7 +35,7 @@ impl Default for MessageIndex {
 impl MessageIndex {
     pub fn new() -> Self {
         Self {
-            by_timestamp: Arc::new(RwLock::new(HashMap::new())),
+            by_timestamp: Arc::new(RwLock::new(BTreeMap::new())),
             by_author: Arc::new(RwLock::new(HashMap::new())),
             by_axis_value: Arc::new(RwLock::new(HashMap::new())),
             depths: Arc::new(RwLock::new(HashMap::new())),
@@ -143,10 +143,9 @@ impl MessageIndex {
         let by_time = self.by_timestamp.read().await;
         let mut results = Vec::new();
 
-        for (&timestamp, messages) in by_time.iter() {
-            if timestamp >= start && timestamp <= end {
-                results.extend(messages.iter().copied());
-            }
+        // BTreeMap range query: O(log N + K) instead of O(N)
+        for (_timestamp, messages) in by_time.range(start..=end) {
+            results.extend(messages.iter().copied());
         }
 
         results

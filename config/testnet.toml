@@ -1,77 +1,50 @@
 # ============================================
-# ADIC-DAG Testnet Configuration
+# ADIC-DAG Testnet Configuration (Local Node)
 # ============================================
-# Testnet configuration for public testing before mainnet deployment.
-# Uses same consensus parameters as mainnet for realistic testing.
 
 [network]
 name = "testnet"
 chain_id = "adic-testnet"
-
-# Network topology
 p2p_port = 9000
 quic_port = 9001
 max_peers = 50
-
-# DNS seed discovery for automatic peer connection
 dns_seeds = ["_seeds.adicl1.com"]
 bootstrap_peers = []
-
-# TLS configuration (self-signed for testnet)
 use_production_tls = false
 ca_cert_path = ""
 node_cert_path = ""
 node_key_path = ""
-
-# Enable automatic software updates for testnet nodes
 auto_update = true
 
 [consensus]
-# ============================================
-# Core p-adic DAG Parameters
-# ============================================
-# Same as mainnet to ensure realistic testing
-
 p = 3
 d = 3
 rho = [2, 2, 1]
 q = 3
-
-# ============================================
-# Finality Parameters
-# ============================================
-# Same as mainnet for realistic testing
-
 k = 20
 depth_star = 12
-r_min = 0.5           # Slightly lower for easier testnet participation
-r_sum_min = 2.0       # Reduced sum requirement for testnet
+r_min = 0.5
+r_sum_min = 2.0
 delta = 5
 epsilon = 0.1
-
-# ============================================
-# Economic Parameters
-# ============================================
-
 deposit = 0.1
 lambda = 1.0
 beta = 1.0
 mu = 1.0
 gamma = 0.9
-
 alpha = 1.0
 beta_adm = 1.0
 
 [api]
 enabled = true
 host = "127.0.0.1"
-port = 8080
+port = 8081
 max_connections = 100
-rate_limit_requests_per_minute = 100  # Higher limit for testnet
+rate_limit_requests_per_minute = 100
 
 [storage]
 backend = "rocksdb"
-cache_size = 134217728  # 128 MB
+cache_size = 134217728
 snapshot_interval = 1000
 max_snapshots = 10
 
@@ -85,23 +58,15 @@ show_emoji_legend = true
 file_rotation_size_mb = 100
 
 [genesis]
-# ============================================
-# Testnet Genesis Configuration
-# ============================================
-# Smaller allocations for testnet
-
 timestamp = "2025-01-01T00:00:00Z"
 deposit_amount = 0.1
-
 genesis_identities = ["g0", "g1", "g2", "g3"]
-
-# Testnet allocations (smaller amounts)
 allocations = [
-    ["0100000000000000000000000000000000000000000000000000000000000000", 10_000],      # Treasury
-    ["c1403f4763367340178077be2ab3144af2b9065901232335f960a9910bb9ab1b", 1_000],       # node-1
-    ["2f89601b32149388d38652ac432307bf183eb97de87b5599cb76d256fd7a7f89", 1_000],       # node-2
-    ["98831caf9b0861ec6eba3072275efc0de1557062043d317ba5f218361e028441", 1_000],       # node-3
-    ["52ba18a771da5f8ebfb7e0eb88a229b748637c8041e0ddf06271b0511e67a5d4", 10_000],      # faucet
+    ["0100000000000000000000000000000000000000000000000000000000000000", 10_000],
+    ["c1403f4763367340178077be2ab3144af2b9065901232335f960a9910bb9ab1b", 1_000],
+    ["2f89601b32149388d38652ac432307bf183eb97de87b5599cb76d256fd7a7f89", 1_000],
+    ["98831caf9b0861ec6eba3072275efc0de1557062043d317ba5f218361e028441", 1_000],
+    ["8f8a00b4ddfc0c6b277be528e56b2728d6863b04291d2ba5a9d2b8f6b8f81277", 10_000],  # faucet (v4 wallet - Blake3 hashed address)
 ]
 
 [genesis.parameters]

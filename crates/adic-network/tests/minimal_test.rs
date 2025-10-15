@@ -7,7 +7,17 @@ fn test_simple() {
 
 #[tokio::test]
 async fn test_async_simple() {
+    use tokio::sync::oneshot;
     println!("MINIMAL TEST - Running async test");
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    let (tx, rx) = oneshot::channel::<u8>();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let _ = tx.send(42);
+    });
+    let val = tokio::time::timeout(std::time::Duration::from_secs(1), rx)
+        .await
+        .expect("oneshot should complete in time")
+        .expect("sender should send a value");
+    assert_eq!(val, 42);
     println!("MINIMAL TEST - Async test complete");
 }

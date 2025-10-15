@@ -18,6 +18,8 @@ pub struct NodeConfig {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub genesis: Option<GenesisConfig>,
+    #[serde(default)]
+    pub applications: ApplicationsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,9 +45,17 @@ pub struct ConsensusConfig {
     pub r_min: f64,
     pub deposit: f64,
     pub lambda: f64,
+    pub alpha: f64,
     pub beta: f64,
     pub mu: f64,
     pub gamma: f64,
+    /// Epoch duration in seconds (used for governance, PoUW, and time-based operations)
+    #[serde(default = "default_epoch_duration_secs")]
+    pub epoch_duration_secs: u64,
+}
+
+fn default_epoch_duration_secs() -> u64 {
+    3600 // 1 hour epochs by default
 }
 
 impl From<ConsensusConfig> for AdicParams {
@@ -62,6 +72,7 @@ impl From<ConsensusConfig> for AdicParams {
             r_min: config.r_min,
             deposit: config.deposit,
             lambda: config.lambda,
+            alpha: config.alpha,
             beta: config.beta,
             mu: config.mu,
             gamma: config.gamma,
@@ -99,6 +110,14 @@ pub struct NetworkConfig {
     pub node_key_path: Option<String>,
     #[serde(default)]
     pub auto_update: bool,
+    /// Optional self-reported ASN for network diversity
+    /// Nodes voluntarily share for quorum selection diversity caps
+    #[serde(default)]
+    pub asn: Option<u32>,
+    /// Optional self-reported region for network diversity
+    /// ISO 3166-1 alpha-2 code (e.g., "us", "eu") or custom region
+    #[serde(default)]
+    pub region: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,9 +175,11 @@ impl Default for NodeConfig {
                 r_min: 1.0,     // Phase-0 default
                 deposit: 0.1,   // Per whitepaper: refundable anti-spam deposit
                 lambda: 1.0,    // Phase-0 default
+                alpha: 1.0,     // MRW reputation exponent, default per PDF Section 1.2
                 beta: 0.5,      // Phase-0 default
                 mu: 1.0,        // Phase-0 default
                 gamma: 0.9,
+                epoch_duration_secs: default_epoch_duration_secs(),
             },
             storage: StorageConfig {
                 backend: "rocksdb".to_string(),
@@ -179,14 +200,200 @@ impl Default for NodeConfig {
                 bootstrap_peers: vec![],
                 dns_seeds: vec!["_seeds.adicl1.com".to_string()],
                 max_peers: 50,
-                use_production_tls: false,
+                use_production_tls: true,  // Secure by default - use config files to disable for dev
                 ca_cert_path: None,
                 node_cert_path: None,
                 node_key_path: None,
                 auto_update: false,
+                asn: None,
+                region: None,
             },
             logging: LoggingConfig::default(),
             genesis: None,
+            applications: ApplicationsConfig::default(),
+        }
+    }
+}
+
+/// Application layer configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ApplicationsConfig {
+    /// Enable PoUW task management
+    pub pouw: Option<PoUWConfig>,
+    /// Enable governance proposals and voting
+    pub governance: Option<GovernanceAppConfig>,
+    /// Enable decentralized storage market
+    pub storage_market: Option<StorageMarketAppConfig>,
+}
+
+impl Default for ApplicationsConfig {
+    fn default() -> Self {
+        Self {
+            pouw: None,
+            governance: None,
+            storage_market: None,
+        }
+    }
+}
+
+/// PoUW application configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoUWConfig {
+    #[serde(default = "default_min_deposit")]
+    pub min_deposit: f64,
+    #[serde(default = "default_max_task_duration_epochs")]
+    pub max_task_duration_epochs: u64,
+    #[serde(default = "default_min_sponsor_reputation")]
+    pub min_sponsor_reputation: f64,
+    #[serde(default = "default_challenge_window_epochs")]
+    pub challenge_window_epochs: u64,
+    #[serde(default = "default_max_workers_per_task")]
+    pub max_workers_per_task: u8,
+}
+
+fn default_min_deposit() -> f64 {
+    1.0
+}
+fn default_max_task_duration_epochs() -> u64 {
+    100
+}
+fn default_min_sponsor_reputation() -> f64 {
+    100.0
+}
+fn default_challenge_window_epochs() -> u64 {
+    5
+}
+fn default_max_workers_per_task() -> u8 {
+    10
+}
+
+impl Default for PoUWConfig {
+    fn default() -> Self {
+        Self {
+            min_deposit: default_min_deposit(),
+            max_task_duration_epochs: default_max_task_duration_epochs(),
+            min_sponsor_reputation: default_min_sponsor_reputation(),
+            challenge_window_epochs: default_challenge_window_epochs(),
+            max_workers_per_task: default_max_workers_per_task(),
+        }
+    }
+}
+
+/// Governance application configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GovernanceAppConfig {
+    #[serde(default = "default_rmax")]
+    pub rmax: f64,
+    #[serde(default = "default_min_quorum")]
+    pub min_quorum: f64,
+    #[serde(default = "default_voting_period_epochs")]
+    pub voting_period_epochs: u64,
+    #[serde(default = "default_operational_threshold")]
+    pub operational_threshold: f64,
+    #[serde(default = "default_constitutional_threshold")]
+    pub constitutional_threshold: f64,
+}
+
+fn default_rmax() -> f64 {
+    100_000.0
+}
+fn default_min_quorum() -> f64 {
+    0.1
+}
+fn default_voting_period_epochs() -> u64 {
+    10
+}
+fn default_operational_threshold() -> f64 {
+    0.51
+}
+fn default_constitutional_threshold() -> f64 {
+    0.67
+}
+
+impl Default for GovernanceAppConfig {
+    fn default() -> Self {
+        Self {
+            rmax: default_rmax(),
+            min_quorum: default_min_quorum(),
+            voting_period_epochs: default_voting_period_epochs(),
+            operational_threshold: default_operational_threshold(),
+            constitutional_threshold: default_constitutional_threshold(),
+        }
+    }
+}
+
+impl GovernanceAppConfig {
+    /// Convert to adic_governance::LifecycleConfig
+    pub fn to_lifecycle_config(&self, epoch_duration_secs: u64) -> adic_governance::LifecycleConfig {
+        use adic_governance::LifecycleConfig;
+
+        LifecycleConfig {
+            min_proposer_reputation: 100.0, // Reasonable default
+            voting_duration_secs: (self.voting_period_epochs * epoch_duration_secs) as i64,
+            min_quorum: self.min_quorum,
+            rmax: self.rmax,
+            gamma_f1: 1.5, // F1 timelock multiplier
+            gamma_f2: 3.0, // F2 timelock multiplier (stronger for constitutional)
+            min_timelock_secs: 3600.0, // 1 hour minimum
+            committee_size: 100, // Quorum committee size
+            bls_threshold: 67,   // 67-of-100 for BLS signatures
+        }
+    }
+
+    /// Convert to adic_network::protocol::GovernanceConfig
+    pub fn to_protocol_config(&self, epoch_duration_secs: u64) -> adic_network::protocol::GovernanceConfig {
+        use adic_network::protocol::GovernanceConfig;
+        use std::time::Duration;
+
+        GovernanceConfig {
+            voting_period: Duration::from_secs(self.voting_period_epochs * epoch_duration_secs),
+            min_proposal_reputation: 100.0, // Reasonable default
+            min_vote_reputation: 10.0,      // Lower threshold for voting
+            max_concurrent_proposals: 10,   // Reasonable limit
+        }
+    }
+}
+
+/// Storage market application configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageMarketAppConfig {
+    #[serde(default = "default_min_deal_duration")]
+    pub min_deal_duration: u64,
+    #[serde(default = "default_max_deal_duration")]
+    pub max_deal_duration: u64,
+    #[serde(default = "default_proof_window_epochs")]
+    pub proof_window_epochs: u64,
+    #[serde(default = "default_challenge_count")]
+    pub challenge_count: u64,
+    #[serde(default = "default_collateral_multiplier")]
+    pub collateral_multiplier: f64,
+}
+
+fn default_min_deal_duration() -> u64 {
+    10
+}
+fn default_max_deal_duration() -> u64 {
+    1000
+}
+fn default_proof_window_epochs() -> u64 {
+    5
+}
+fn default_challenge_count() -> u64 {
+    10
+}
+fn default_collateral_multiplier() -> f64 {
+    1.5
+}
+
+impl Default for StorageMarketAppConfig {
+    fn default() -> Self {
+        Self {
+            min_deal_duration: default_min_deal_duration(),
+            max_deal_duration: default_max_deal_duration(),
+            proof_window_epochs: default_proof_window_epochs(),
+            challenge_count: default_challenge_count(),
+            collateral_multiplier: default_collateral_multiplier(),
         }
     }
 }

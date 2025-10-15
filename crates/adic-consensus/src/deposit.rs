@@ -49,17 +49,30 @@ pub struct DepositStats {
 }
 
 pub struct DepositManager {
-    deposit_amount: AdicAmount,
+    deposit_amount: Arc<RwLock<AdicAmount>>,
     deposits: Arc<RwLock<HashMap<MessageId, Deposit>>>,
     balance_manager: Option<Arc<BalanceManager>>,
+    // Metrics counters - updated externally by incrementing directly
+    pub escrow_locks_total: Option<Arc<prometheus::IntCounter>>,
+    pub escrow_releases_total: Option<Arc<prometheus::IntCounter>>,
+    pub escrow_slashes_total: Option<Arc<prometheus::IntCounter>>,
+    pub escrow_refunds_total: Option<Arc<prometheus::IntCounter>>,
+    pub escrow_lock_duration: Option<Arc<prometheus::Histogram>>,
+    pub escrow_locked_amount: Option<Arc<prometheus::IntGauge>>,
 }
 
 impl DepositManager {
     pub fn new(deposit_amount: f64) -> Self {
         Self {
-            deposit_amount: AdicAmount::from_adic(deposit_amount),
+            deposit_amount: Arc::new(RwLock::new(AdicAmount::from_adic(deposit_amount))),
             deposits: Arc::new(RwLock::new(HashMap::new())),
             balance_manager: None,
+            escrow_locks_total: None,
+            escrow_releases_total: None,
+            escrow_slashes_total: None,
+            escrow_refunds_total: None,
+            escrow_lock_duration: None,
+            escrow_locked_amount: None,
         }
     }
 
@@ -68,13 +81,45 @@ impl DepositManager {
         balance_manager: Arc<BalanceManager>,
     ) -> Self {
         Self {
-            deposit_amount,
+            deposit_amount: Arc::new(RwLock::new(deposit_amount)),
             deposits: Arc::new(RwLock::new(HashMap::new())),
             balance_manager: Some(balance_manager),
+            escrow_locks_total: None,
+            escrow_releases_total: None,
+            escrow_slashes_total: None,
+            escrow_refunds_total: None,
+            escrow_lock_duration: None,
+            escrow_locked_amount: None,
         }
     }
 
+    /// Set metrics for tracking deposit operations
+    pub fn set_metrics(
+        &mut self,
+        escrow_locks_total: Arc<prometheus::IntCounter>,
+        escrow_releases_total: Arc<prometheus::IntCounter>,
+        escrow_slashes_total: Arc<prometheus::IntCounter>,
+        escrow_refunds_total: Arc<prometheus::IntCounter>,
+        escrow_lock_duration: Arc<prometheus::Histogram>,
+        escrow_locked_amount: Arc<prometheus::IntGauge>,
+    ) {
+        self.escrow_locks_total = Some(escrow_locks_total);
+        self.escrow_releases_total = Some(escrow_releases_total);
+        self.escrow_slashes_total = Some(escrow_slashes_total);
+        self.escrow_refunds_total = Some(escrow_refunds_total);
+        self.escrow_lock_duration = Some(escrow_lock_duration);
+        self.escrow_locked_amount = Some(escrow_locked_amount);
+    }
+
+    /// Update deposit amount for hot-reload support
+    pub async fn update_deposit_amount(&self, new_amount: f64) {
+        *self.deposit_amount.write().await = AdicAmount::from_adic(new_amount);
+        tracing::info!(deposit_amount = new_amount, "✅ Deposit amount updated");
+    }
+
     pub async fn escrow(&self, message_id: MessageId, proposer: PublicKey) -> Result<()> {
+        let deposit_amount = *self.deposit_amount.read().await;
+
         // If we have a balance manager, check and lock balance
         if let Some(ref balance_mgr) = self.balance_manager {
             let proposer_addr = AccountAddress::from_public_key(&proposer);
@@ -87,16 +132,16 @@ impl DepositManager {
                     AdicError::InvalidParameter(format!("Failed to get balance: {}", e))
                 })?;
 
-            if balance < self.deposit_amount {
+            if balance < deposit_amount {
                 return Err(AdicError::InvalidParameter(format!(
                     "Insufficient balance for deposit: has {}, needs {}",
-                    balance, self.deposit_amount
+                    balance, deposit_amount
                 )));
             }
 
             // Lock the deposit amount
             balance_mgr
-                .lock(proposer_addr, self.deposit_amount)
+                .lock(proposer_addr, deposit_amount)
                 .await
                 .map_err(|e| {
                     AdicError::InvalidParameter(format!("Failed to lock deposit: {}", e))
@@ -107,7 +152,7 @@ impl DepositManager {
         let deposit = Deposit {
             message_id,
             proposer_pk: proposer,
-            amount: self.deposit_amount,
+            amount: deposit_amount,
             status: DepositStatus::Escrowed,
             timestamp: chrono::Utc::now().timestamp(),
         };
@@ -123,9 +168,17 @@ impl DepositManager {
             .filter(|d| d.status == DepositStatus::Escrowed)
             .count();
 
+        // Update metrics
+        if let Some(ref counter) = self.escrow_locks_total {
+            counter.inc();
+        }
+        if let Some(ref gauge) = self.escrow_locked_amount {
+            gauge.add(deposit_amount.to_adic() as i64);
+        }
+
         info!(
             message_id = %message_id,
-            amount_adic = self.deposit_amount.to_adic(),
+            amount_adic = deposit_amount.to_adic(),
             proposer = %proposer.to_hex(),
             escrowed_count_before = escrowed_before,
             escrowed_count_after = escrowed_after,
@@ -162,13 +215,30 @@ impl DepositManager {
                 }
 
                 let old_status = deposit.status.clone();
+                let deposit_amount = deposit.amount;
+                let lock_duration = chrono::Utc::now().timestamp() - deposit.timestamp;
                 deposit.status = DepositStatus::Refunded;
                 let proposer = deposit.proposer_pk;
+
+                // Update metrics
+                if let Some(ref counter) = self.escrow_refunds_total {
+                    counter.inc();
+                }
+                if let Some(ref histogram) = self.escrow_lock_duration {
+                    histogram.observe(lock_duration as f64);
+                }
+                if let Some(ref gauge) = self.escrow_locked_amount {
+                    gauge.sub(deposit_amount.to_adic() as i64);
+                }
+                if let Some(ref counter) = self.escrow_releases_total {
+                    counter.inc();
+                }
 
                 info!(
                     message_id = %message_id,
                     proposer = %proposer.to_hex(),
-                    amount_adic = deposit.amount.to_adic(),
+                    amount_adic = deposit_amount.to_adic(),
+                    lock_duration_seconds = lock_duration,
                     status_before = ?old_status,
                     status_after = ?deposit.status,
                     "💰 Deposit refunded"
@@ -225,12 +295,21 @@ impl DepositManager {
 
                 let old_status = deposit.status.clone();
                 let proposer = deposit.proposer_pk;
+                let deposit_amount = deposit.amount;
                 deposit.status = DepositStatus::Slashed;
+
+                // Update metrics
+                if let Some(ref counter) = self.escrow_slashes_total {
+                    counter.inc();
+                }
+                if let Some(ref gauge) = self.escrow_locked_amount {
+                    gauge.sub(deposit_amount.to_adic() as i64);
+                }
 
                 warn!(
                     message_id = %message_id,
                     proposer = %proposer.to_hex(),
-                    amount_adic = deposit.amount.to_adic(),
+                    amount_adic = deposit_amount.to_adic(),
                     status_before = ?old_status,
                     status_after = ?deposit.status,
                     reason = %reason,
@@ -324,9 +403,9 @@ impl DepositManager {
         }
     }
 
-    pub async fn set_deposit_amount(&mut self, amount: AdicAmount) {
-        let old_amount = self.deposit_amount;
-        self.deposit_amount = amount;
+    pub async fn set_deposit_amount(&self, amount: AdicAmount) {
+        let old_amount = *self.deposit_amount.read().await;
+        *self.deposit_amount.write().await = amount;
         info!(
             amount_before = old_amount.to_adic(),
             amount_after = amount.to_adic(),
@@ -335,8 +414,8 @@ impl DepositManager {
         );
     }
 
-    pub fn get_deposit_amount(&self) -> AdicAmount {
-        self.deposit_amount
+    pub async fn get_deposit_amount(&self) -> AdicAmount {
+        *self.deposit_amount.read().await
     }
 
     pub async fn cleanup_old_deposits(&self, older_than_days: i64) {

@@ -6,5 +6,5 @@ pub mod ph;
 
 pub use artifact::{FinalityArtifact, FinalityGate, FinalityParams, FinalityWitness};
 pub use checkpoint::{Checkpoint, F1Metadata, F2Metadata, MerkleTreeBuilder};
-pub use engine::{FinalityConfig, FinalityEngine, KCoreFinalityResult};
+pub use engine::{FinalityConfig, FinalityEngine, FinalityTimingStats, KCoreFinalityResult};
 pub use kcore::{KCoreAnalyzer, KCoreResult};

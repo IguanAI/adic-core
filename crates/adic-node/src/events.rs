@@ -225,6 +225,337 @@ pub enum NodeEvent {
         #[serde(with = "chrono::serde::ts_seconds")]
         timestamp: DateTime<Utc>,
     },
+
+    // VRF Events (High Priority)
+    /// VRF commit submitted for future randomness
+    VRFCommitSubmitted {
+        commit_id: String,
+        committer: String,
+        target_epoch: u64,
+        commitment_hash: String,
+        committer_reputation: f64,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// VRF reveal opened for committed randomness
+    VRFRevealOpened {
+        reveal_id: String,
+        commit_id: String,
+        revealer: String,
+        target_epoch: u64,
+        vrf_proof_hash: String,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Canonical randomness finalized for epoch
+    VRFRandomnessFinalized {
+        epoch: u64,
+        randomness_hash: String,
+        contributor_count: usize,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    // Quorum Events (Medium Priority)
+    /// Quorum committee selected via VRF
+    QuorumSelected {
+        epoch: u64,
+        committee_size: usize,
+        domain: String,
+        axes_covered: usize,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Quorum vote completed
+    QuorumVoteCompleted {
+        vote_id: String,
+        votes_for: usize,
+        votes_against: usize,
+        threshold_met: bool,
+        result: String,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    // Challenge Events (High Priority)
+    /// Challenge window opened for subject
+    ChallengeWindowOpened {
+        subject_id: String,
+        window_expiry_epoch: u64,
+        window_depth: u64,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Challenge submitted against subject
+    ChallengeSubmitted {
+        challenge_id: String,
+        subject_id: String,
+        challenger: String,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Fraud proof submitted with evidence
+    FraudProofSubmitted {
+        proof_id: String,
+        subject_id: String,
+        challenger: String,
+        fraud_type: String,
+        evidence_cid: String,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Fraud proof verified (valid or invalid)
+    FraudProofVerified {
+        proof_id: String,
+        subject_id: String,
+        is_valid: bool,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Arbitration started for fraud proof
+    ArbitrationStarted {
+        arbitration_id: String,
+        proof_id: String,
+        arbitrator_count: usize,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Arbitration completed with ruling
+    ArbitrationCompleted {
+        arbitration_id: String,
+        proof_id: String,
+        ruling: String,
+        votes_for: usize,
+        votes_against: usize,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    // Escrow Events (Medium Priority)
+    /// Funds locked in escrow
+    EscrowLocked {
+        lock_id: String,
+        owner: String,
+        amount_adic: f64,
+        escrow_type: String,
+        balance_before_adic: f64,
+        balance_after_adic: f64,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Escrowed funds released to recipient
+    EscrowReleased {
+        lock_id: String,
+        from: String,
+        to: String,
+        amount_adic: f64,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Escrowed funds slashed to treasury
+    EscrowSlashed {
+        lock_id: String,
+        owner: String,
+        amount_adic: f64,
+        reason: String,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Escrowed funds refunded to owner
+    EscrowRefunded {
+        lock_id: String,
+        owner: String,
+        amount_adic: f64,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    // Governance Events (High Priority)
+    /// Governance proposal submitted
+    ProposalSubmitted {
+        proposal_id: String,
+        proposer: String,
+        proposal_class: String,
+        param_keys: Vec<String>,
+        enact_epoch: u64,
+        proposer_reputation: f64,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Vote cast on governance proposal
+    VoteCast {
+        proposal_id: String,
+        voter: String,
+        vote_credits: f64,
+        ballot: String, // "yes", "no", "abstain"
+        voter_reputation: f64,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Governance receipt emitted with BLS threshold signature
+    GovernanceReceiptEmitted {
+        proposal_id: String,
+        result: String, // "Pass" or "Fail"
+        quorum_yes: f64,
+        quorum_no: f64,
+        quorum_abstain: f64,
+        has_bls_signature: bool,
+        committee_size: usize,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Proposal voting period ended and votes tallied
+    ProposalTallied {
+        proposal_id: String,
+        tally_yes: f64,
+        tally_no: f64,
+        tally_abstain: f64,
+        total_eligible_credits: f64,
+        participation_rate: f64,
+        quorum_met: bool,
+        threshold_met: bool,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Proposal status changed
+    ProposalStatusChanged {
+        proposal_id: String,
+        old_status: String,
+        new_status: String,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Proposal successfully enacted
+    ProposalEnacted {
+        proposal_id: String,
+        enact_epoch: u64,
+        param_changes: Vec<String>,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// System parameter changed via governance
+    ParameterChanged {
+        proposal_id: String,
+        parameter_key: String,
+        old_value: String,
+        new_value: String,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    // Treasury Events (Medium Priority)
+    /// Treasury grant executed
+    TreasuryGrantExecuted {
+        proposal_id: String,
+        recipient: String,
+        amount_adic: f64,
+        milestone: Option<String>,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Treasury milestone completed with verification
+    TreasuryMilestoneCompleted {
+        grant_id: String,
+        milestone_id: u32,
+        amount_adic: f64,
+        verification_scheme: String, // "QuorumAttestation", "AutomatedCheck", "OracleVerification", "PoUWTaskVerification"
+        deliverable_cid: String,
+        is_verified: bool,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Treasury grant clawed back due to failure or fraud
+    TreasuryGrantClawedBack {
+        grant_id: String,
+        clawed_back_amount_adic: f64,
+        reason: String,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    // Committee/PoUW Events (High/Medium Priority)
+    /// ODC Committee certificate generated for epoch
+    CommitteeCertificateGenerated {
+        epoch_id: u64,
+        member_count: usize,
+        diversity_score: f64,
+        axes_covered: usize,
+        has_threshold_signature: bool,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Primary aggregator selected for epoch
+    AggregatorSelected {
+        epoch_id: u64,
+        primary_aggregator: String,
+        committee_size: usize,
+        selection_method: String, // "vrf_min" or "timeout_fallback"
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// PoUW task submitted
+    TaskSubmitted {
+        task_id: String,
+        sponsor: String,
+        task_type: String,
+        reward_adic: f64,
+        worker_count: usize,
+        deadline_epoch: u64,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Workers selected for PoUW task
+    WorkersSelected {
+        task_id: String,
+        worker_count: usize,
+        total_eligible: usize,
+        selection_method: String,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// Work result submitted for PoUW task
+    WorkResultSubmitted {
+        task_id: String,
+        worker: String,
+        result_hash: String,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
+
+    /// PoUW receipt validated
+    ReceiptValidated {
+        receipt_id: String,
+        epoch_id: u64,
+        accepted_count: usize,
+        rejected_count: usize,
+        is_valid: bool,
+        fraud_proofs_count: usize,
+        #[serde(with = "chrono::serde::ts_seconds")]
+        timestamp: DateTime<Utc>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,6 +564,8 @@ pub enum FinalityType {
     KCore,
     #[serde(rename = "homology")]
     Homology,
+    #[serde(rename = "composite")]
+    Composite,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,6 +626,37 @@ impl NodeEvent {
             NodeEvent::NodeStarted { .. } => "node.started",
             NodeEvent::NodeStopped { .. } => "node.stopped",
             NodeEvent::GenesisLoaded { .. } => "genesis.loaded",
+            NodeEvent::VRFCommitSubmitted { .. } => "vrf.commit",
+            NodeEvent::VRFRevealOpened { .. } => "vrf.reveal",
+            NodeEvent::VRFRandomnessFinalized { .. } => "vrf.finalized",
+            NodeEvent::QuorumSelected { .. } => "quorum.selected",
+            NodeEvent::QuorumVoteCompleted { .. } => "quorum.voted",
+            NodeEvent::ChallengeWindowOpened { .. } => "challenge.opened",
+            NodeEvent::ChallengeSubmitted { .. } => "challenge.submitted",
+            NodeEvent::FraudProofSubmitted { .. } => "fraud.submitted",
+            NodeEvent::FraudProofVerified { .. } => "fraud.verified",
+            NodeEvent::ArbitrationStarted { .. } => "arbitration.started",
+            NodeEvent::ArbitrationCompleted { .. } => "arbitration.completed",
+            NodeEvent::EscrowLocked { .. } => "escrow.locked",
+            NodeEvent::EscrowReleased { .. } => "escrow.released",
+            NodeEvent::EscrowSlashed { .. } => "escrow.slashed",
+            NodeEvent::EscrowRefunded { .. } => "escrow.refunded",
+            NodeEvent::ProposalSubmitted { .. } => "governance.proposal.submitted",
+            NodeEvent::VoteCast { .. } => "governance.vote.cast",
+            NodeEvent::GovernanceReceiptEmitted { .. } => "governance.receipt.emitted",
+            NodeEvent::ProposalTallied { .. } => "governance.proposal.tallied",
+            NodeEvent::ProposalStatusChanged { .. } => "governance.proposal.status",
+            NodeEvent::ProposalEnacted { .. } => "governance.proposal.enacted",
+            NodeEvent::ParameterChanged { .. } => "governance.parameter.changed",
+            NodeEvent::TreasuryGrantExecuted { .. } => "governance.treasury.executed",
+            NodeEvent::CommitteeCertificateGenerated { .. } => "committee.certificate.generated",
+            NodeEvent::AggregatorSelected { .. } => "committee.aggregator.selected",
+            NodeEvent::TaskSubmitted { .. } => "pouw.task.submitted",
+            NodeEvent::WorkersSelected { .. } => "pouw.workers.selected",
+            NodeEvent::WorkResultSubmitted { .. } => "pouw.result.submitted",
+            NodeEvent::ReceiptValidated { .. } => "pouw.receipt.validated",
+            NodeEvent::TreasuryMilestoneCompleted { .. } => "governance.treasury.milestone",
+            NodeEvent::TreasuryGrantClawedBack { .. } => "governance.treasury.clawback",
         }
     }
 
@@ -327,6 +691,51 @@ impl NodeEvent {
             NodeEvent::NodeStarted { .. } => EventPriority::Low,
             NodeEvent::NodeStopped { .. } => EventPriority::Low,
             NodeEvent::GenesisLoaded { .. } => EventPriority::Low,
+
+            // Foundation layer events
+            // High priority: VRF randomness and critical challenges
+            NodeEvent::VRFCommitSubmitted { .. } => EventPriority::High,
+            NodeEvent::VRFRevealOpened { .. } => EventPriority::High,
+            NodeEvent::VRFRandomnessFinalized { .. } => EventPriority::High,
+            NodeEvent::ChallengeWindowOpened { .. } => EventPriority::High,
+            NodeEvent::ChallengeSubmitted { .. } => EventPriority::High,
+            NodeEvent::FraudProofSubmitted { .. } => EventPriority::High,
+            NodeEvent::FraudProofVerified { .. } => EventPriority::High,
+            NodeEvent::ArbitrationStarted { .. } => EventPriority::High,
+            NodeEvent::ArbitrationCompleted { .. } => EventPriority::High,
+
+            // Medium priority: Quorum and escrow operations
+            NodeEvent::QuorumSelected { .. } => EventPriority::Medium,
+            NodeEvent::QuorumVoteCompleted { .. } => EventPriority::Medium,
+            NodeEvent::EscrowLocked { .. } => EventPriority::Medium,
+            NodeEvent::EscrowReleased { .. } => EventPriority::Medium,
+            NodeEvent::EscrowSlashed { .. } => EventPriority::Medium,
+            NodeEvent::EscrowRefunded { .. } => EventPriority::Medium,
+
+            // Governance events
+            // High priority: Critical governance actions
+            NodeEvent::ProposalSubmitted { .. } => EventPriority::High,
+            NodeEvent::VoteCast { .. } => EventPriority::High,
+            NodeEvent::GovernanceReceiptEmitted { .. } => EventPriority::High,
+            NodeEvent::ProposalTallied { .. } => EventPriority::High,
+            NodeEvent::ProposalStatusChanged { .. } => EventPriority::High,
+            NodeEvent::ProposalEnacted { .. } => EventPriority::High,
+            NodeEvent::ParameterChanged { .. } => EventPriority::High,
+            // Medium priority: Treasury operations
+            NodeEvent::TreasuryGrantExecuted { .. } => EventPriority::Medium,
+
+            // Committee/PoUW events
+            // High priority: Critical committee and task operations
+            NodeEvent::CommitteeCertificateGenerated { .. } => EventPriority::High,
+            NodeEvent::TaskSubmitted { .. } => EventPriority::High,
+            NodeEvent::WorkResultSubmitted { .. } => EventPriority::High,
+            NodeEvent::ReceiptValidated { .. } => EventPriority::High,
+            // Medium priority: Selection and coordination
+            NodeEvent::AggregatorSelected { .. } => EventPriority::Medium,
+            NodeEvent::WorkersSelected { .. } => EventPriority::Medium,
+            // High priority: Treasury milestone operations
+            NodeEvent::TreasuryMilestoneCompleted { .. } => EventPriority::High,
+            NodeEvent::TreasuryGrantClawedBack { .. } => EventPriority::High,
         }
     }
 
@@ -357,6 +766,37 @@ impl NodeEvent {
             NodeEvent::NodeStarted { timestamp, .. } => *timestamp,
             NodeEvent::NodeStopped { timestamp, .. } => *timestamp,
             NodeEvent::GenesisLoaded { timestamp, .. } => *timestamp,
+            NodeEvent::VRFCommitSubmitted { timestamp, .. } => *timestamp,
+            NodeEvent::VRFRevealOpened { timestamp, .. } => *timestamp,
+            NodeEvent::VRFRandomnessFinalized { timestamp, .. } => *timestamp,
+            NodeEvent::QuorumSelected { timestamp, .. } => *timestamp,
+            NodeEvent::QuorumVoteCompleted { timestamp, .. } => *timestamp,
+            NodeEvent::ChallengeWindowOpened { timestamp, .. } => *timestamp,
+            NodeEvent::ChallengeSubmitted { timestamp, .. } => *timestamp,
+            NodeEvent::FraudProofSubmitted { timestamp, .. } => *timestamp,
+            NodeEvent::FraudProofVerified { timestamp, .. } => *timestamp,
+            NodeEvent::ArbitrationStarted { timestamp, .. } => *timestamp,
+            NodeEvent::ArbitrationCompleted { timestamp, .. } => *timestamp,
+            NodeEvent::EscrowLocked { timestamp, .. } => *timestamp,
+            NodeEvent::EscrowReleased { timestamp, .. } => *timestamp,
+            NodeEvent::EscrowSlashed { timestamp, .. } => *timestamp,
+            NodeEvent::EscrowRefunded { timestamp, .. } => *timestamp,
+            NodeEvent::ProposalSubmitted { timestamp, .. } => *timestamp,
+            NodeEvent::VoteCast { timestamp, .. } => *timestamp,
+            NodeEvent::GovernanceReceiptEmitted { timestamp, .. } => *timestamp,
+            NodeEvent::ProposalTallied { timestamp, .. } => *timestamp,
+            NodeEvent::ProposalStatusChanged { timestamp, .. } => *timestamp,
+            NodeEvent::ProposalEnacted { timestamp, .. } => *timestamp,
+            NodeEvent::ParameterChanged { timestamp, .. } => *timestamp,
+            NodeEvent::TreasuryGrantExecuted { timestamp, .. } => *timestamp,
+            NodeEvent::CommitteeCertificateGenerated { timestamp, .. } => *timestamp,
+            NodeEvent::AggregatorSelected { timestamp, .. } => *timestamp,
+            NodeEvent::TaskSubmitted { timestamp, .. } => *timestamp,
+            NodeEvent::WorkersSelected { timestamp, .. } => *timestamp,
+            NodeEvent::WorkResultSubmitted { timestamp, .. } => *timestamp,
+            NodeEvent::ReceiptValidated { timestamp, .. } => *timestamp,
+            NodeEvent::TreasuryMilestoneCompleted { timestamp, .. } => *timestamp,
+            NodeEvent::TreasuryGrantClawedBack { timestamp, .. } => *timestamp,
         }
     }
 }
@@ -378,6 +818,8 @@ pub struct EventBus {
     medium_priority: broadcast::Sender<NodeEvent>,
     low_priority: broadcast::Sender<NodeEvent>,
     metrics: Arc<std::sync::atomic::AtomicU64>,
+    // Prometheus metrics
+    pub events_emitted_total: Option<Arc<prometheus::IntCounter>>,
 }
 
 impl EventBus {
@@ -392,7 +834,13 @@ impl EventBus {
             medium_priority: medium_tx,
             low_priority: low_tx,
             metrics: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            events_emitted_total: None,
         }
+    }
+
+    /// Set metrics for event tracking
+    pub fn set_metrics(&mut self, events_emitted_total: Arc<prometheus::IntCounter>) {
+        self.events_emitted_total = Some(events_emitted_total);
     }
 
     /// Subscribe to all event channels
@@ -452,6 +900,11 @@ impl EventBus {
                 );
                 self.metrics
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                // Update Prometheus metric
+                if let Some(ref counter) = self.events_emitted_total {
+                    counter.inc();
+                }
             }
             Err(_) => {
                 // No subscribers, this is normal and not an error

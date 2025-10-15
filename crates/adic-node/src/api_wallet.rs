@@ -10,7 +10,6 @@ use std::sync::Arc;
 #[derive(Serialize)]
 pub struct WalletInfo {
     pub address: String,
-    pub public_key: String,
     pub node_id: String,
 }
 
@@ -70,7 +69,6 @@ pub async fn get_wallet_info(node: Arc<AdicNode>) -> Response {
 
     let wallet_info = WalletInfo {
         address,
-        public_key: hex::encode(node.public_key().as_bytes()),
         node_id: node.node_id(),
     };
 

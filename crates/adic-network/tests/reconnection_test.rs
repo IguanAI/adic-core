@@ -25,11 +25,14 @@ async fn create_test_node(name: &str, port: u16) -> Arc<NetworkEngine> {
     std::mem::forget(temp_dir); // Prevent cleanup during test
 
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
-    let finality = Arc::new(FinalityEngine::new(
-        FinalityConfig::from(&params),
-        consensus.clone(),
-        storage.clone(),
-    ));
+    let finality = Arc::new(
+        FinalityEngine::new(
+            FinalityConfig::from(&params),
+            consensus.clone(),
+            storage.clone(),
+        )
+        .await,
+    );
 
     let config = NetworkConfig {
         listen_addresses: vec![format!("/ip4/127.0.0.1/tcp/{}", port).parse().unwrap()],
@@ -166,11 +169,14 @@ async fn test_automatic_reconnection_to_important_peer() {
     std::mem::forget(temp_dir);
 
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
-    let finality = Arc::new(FinalityEngine::new(
-        FinalityConfig::from(&params),
-        consensus.clone(),
-        storage.clone(),
-    ));
+    let finality = Arc::new(
+        FinalityEngine::new(
+            FinalityConfig::from(&params),
+            consensus.clone(),
+            storage.clone(),
+        )
+        .await,
+    );
 
     let regular_node = Arc::new(
         NetworkEngine::new(config, keypair, storage, consensus, finality)
@@ -289,6 +295,8 @@ async fn test_stale_peer_cleanup() {
         connection_state: ConnectionState::Disconnected,
         message_stats: MessageStats::default(),
         padic_location: None,
+        asn: None,
+        region: None,
     };
 
     let stale_peer_id = stale_peer.peer_id;
@@ -334,6 +342,8 @@ async fn test_connection_state_transitions() {
         connection_state: ConnectionState::Disconnected,
         message_stats: MessageStats::default(),
         padic_location: None,
+        asn: None,
+        region: None,
     };
 
     let peer_id = peer_info.peer_id;

@@ -33,7 +33,7 @@ pub async fn run_local_test(count: usize) -> Result<()> {
 
     // Create finality engine
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus.clone(), storage.clone());
+    let finality = FinalityEngine::new(finality_config, consensus.clone(), storage.clone()).await;
 
     // Create tip manager
     let tip_manager = TipManager::new();
@@ -153,8 +153,7 @@ pub async fn run_local_test(count: usize) -> Result<()> {
                 &features,
                 &tips,
                 &storage,
-                consensus.conflicts(),
-                &consensus.reputation,
+                &consensus,
             )
             .await?
         } else {

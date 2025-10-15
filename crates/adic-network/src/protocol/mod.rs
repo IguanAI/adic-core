@@ -2,9 +2,11 @@ pub mod axis_overlay;
 pub mod binary_store;
 pub mod checkpoint_sync;
 pub mod consensus;
+pub mod dkg;
 pub mod discovery;
 pub mod dns_seeds;
 pub mod gossip;
+pub mod governance;
 pub mod stream;
 pub mod swarm_tracker;
 pub mod sync;
@@ -18,9 +20,11 @@ pub use checkpoint_sync::{
     DivergenceInfo,
 };
 pub use consensus::{ConsensusConfig, ConsensusMessage, ConsensusProtocol};
+pub use dkg::{CeremonyStatus, DKGConfig, DKGMessage, DKGProtocol};
 pub use discovery::{DiscoveryConfig, DiscoveryMessage, DiscoveryProtocol};
 pub use dns_seeds::{DnsSeedConfig, DnsSeedDiscovery};
 pub use gossip::{GossipConfig, GossipMessage, GossipProtocol};
+pub use governance::{GovernanceConfig, GovernanceEvent, GovernanceMessage, GovernanceProtocol};
 pub use stream::{StreamConfig, StreamProtocol, StreamRequest};
 pub use swarm_tracker::{PeerMetrics, SwarmSpeedTracker, SwarmStatistics};
 pub use sync::{SyncConfig, SyncProtocol, SyncRequest, SyncResponse};

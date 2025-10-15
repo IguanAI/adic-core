@@ -1,7 +1,6 @@
 use prometheus::{Histogram, HistogramOpts, IntCounter, IntGauge, Registry, TextEncoder};
 use std::sync::Arc;
 
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct Metrics {
     registry: Arc<Registry>,
@@ -19,11 +18,6 @@ pub struct Metrics {
     pub admissibility_s_failures: IntCounter,
     pub admissibility_c2_failures: IntCounter,
     pub admissibility_c3_failures: IntCounter,
-
-    // Deposit Metrics
-    pub deposits_escrowed: IntCounter,
-    pub deposits_refunded: IntCounter,
-    pub deposits_slashed: IntCounter,
 
     // Finality Metrics
     pub finalizations_total: IntCounter,
@@ -51,13 +45,59 @@ pub struct Metrics {
     pub websocket_messages_sent: IntCounter,
     pub sse_messages_sent: IntCounter,
 
-    // Message Propagation Metrics
-    pub messages_gossiped: IntCounter,
-    pub messages_received_network: IntCounter,
-    pub duplicate_messages: IntCounter,
-    pub propagation_latency: Histogram,
-    pub validation_latency: Histogram,
-    pub gossip_failures: IntCounter,
+    // Foundation Layer Metrics - VRF
+    pub vrf_commits_total: IntCounter,
+    pub vrf_reveals_total: IntCounter,
+    pub vrf_finalizations_total: IntCounter,
+    pub vrf_commit_duration: Histogram,
+    pub vrf_reveal_duration: Histogram,
+    pub vrf_finalize_duration: Histogram,
+
+    // Foundation Layer Metrics - Quorum Selection
+    pub quorum_selections_total: IntCounter,
+    pub quorum_selection_duration: Histogram,
+    pub quorum_committee_size: IntGauge,
+    // Note: quorum_votes_* metrics are passed via Arc to DisputeAdjudicator (node.rs:1144-1147)
+    // Rust's dead code analysis doesn't track usage through .clone() + Arc wrapper
+    #[allow(dead_code)]
+    pub quorum_votes_total: IntCounter,
+    #[allow(dead_code)]
+    pub quorum_votes_passed: IntCounter,
+    #[allow(dead_code)]
+    pub quorum_votes_failed: IntCounter,
+    #[allow(dead_code)]
+    pub quorum_vote_duration: Histogram,
+
+    // Foundation Layer Metrics - Challenges
+    // Note: These metrics are passed via Arc to sub-components:
+    // - challenge_windows_* → ChallengeWindowManager (node.rs:1122-1126)
+    // - fraud_proofs_* → DisputeAdjudicator (node.rs:1138-1147)
+    // - arbitrations_* → DisputeAdjudicator (node.rs:1138-1147)
+    // Rust's dead code analysis doesn't track usage through .clone() + Arc wrapper
+    #[allow(dead_code)]
+    pub challenge_windows_opened: IntCounter,
+    #[allow(dead_code)]
+    pub challenges_submitted: IntCounter,
+    #[allow(dead_code)]
+    pub fraud_proofs_submitted: IntCounter,
+    #[allow(dead_code)]
+    pub fraud_proofs_verified: IntCounter,
+    #[allow(dead_code)]
+    pub fraud_proofs_rejected: IntCounter,
+    #[allow(dead_code)]
+    pub arbitrations_started: IntCounter,
+    #[allow(dead_code)]
+    pub arbitrations_completed: IntCounter,
+    #[allow(dead_code)]
+    pub challenge_windows_active: IntGauge,
+
+    // Foundation Layer Metrics - Escrow
+    pub escrow_locks_total: IntCounter,
+    pub escrow_releases_total: IntCounter,
+    pub escrow_slashes_total: IntCounter,
+    pub escrow_refunds_total: IntCounter,
+    pub escrow_lock_duration: Histogram,
+    pub escrow_locked_amount: IntGauge,
 }
 
 impl Default for Metrics {
@@ -107,13 +147,6 @@ impl Metrics {
             "Admissibility C3 failures",
         )
         .unwrap();
-
-        let deposits_escrowed =
-            IntCounter::new("adic_deposits_escrowed_total", "Total deposits escrowed").unwrap();
-        let deposits_refunded =
-            IntCounter::new("adic_deposits_refunded_total", "Total deposits refunded").unwrap();
-        let deposits_slashed =
-            IntCounter::new("adic_deposits_slashed_total", "Total deposits slashed").unwrap();
 
         let finalizations_total =
             IntCounter::new("adic_finalizations_total", "Total finalizations").unwrap();
@@ -171,34 +204,146 @@ impl Metrics {
         let sse_messages_sent =
             IntCounter::new("adic_sse_messages_sent_total", "Total SSE messages sent").unwrap();
 
-        let messages_gossiped = IntCounter::new(
-            "adic_messages_gossiped_total",
-            "Total messages broadcast via gossip",
+        // Foundation Layer - VRF Metrics
+        let vrf_commits_total = IntCounter::new(
+            "adic_vrf_commits_total",
+            "Total VRF commits submitted",
         )
         .unwrap();
-        let messages_received_network = IntCounter::new(
-            "adic_messages_received_network_total",
-            "Total messages received from network",
+        let vrf_reveals_total = IntCounter::new(
+            "adic_vrf_reveals_total",
+            "Total VRF reveals submitted",
         )
         .unwrap();
-        let duplicate_messages = IntCounter::new(
-            "adic_duplicate_messages_total",
-            "Total duplicate messages received",
+        let vrf_finalizations_total = IntCounter::new(
+            "adic_vrf_finalizations_total",
+            "Total VRF epoch finalizations",
         )
         .unwrap();
-        let propagation_latency = Histogram::with_opts(HistogramOpts::new(
-            "adic_message_propagation_latency_seconds",
-            "Message propagation latency from submission to reception",
+        let vrf_commit_duration = Histogram::with_opts(HistogramOpts::new(
+            "adic_vrf_commit_duration_seconds",
+            "VRF commit operation duration",
         ))
         .unwrap();
-        let validation_latency = Histogram::with_opts(HistogramOpts::new(
-            "adic_message_validation_latency_seconds",
-            "Message validation latency",
+        let vrf_reveal_duration = Histogram::with_opts(HistogramOpts::new(
+            "adic_vrf_reveal_duration_seconds",
+            "VRF reveal operation duration",
         ))
         .unwrap();
-        let gossip_failures = IntCounter::new(
-            "adic_gossip_failures_total",
-            "Total gossip/broadcast failures",
+        let vrf_finalize_duration = Histogram::with_opts(HistogramOpts::new(
+            "adic_vrf_finalize_duration_seconds",
+            "VRF finalization operation duration",
+        ))
+        .unwrap();
+
+        // Foundation Layer - Quorum Selection Metrics
+        let quorum_selections_total = IntCounter::new(
+            "adic_quorum_selections_total",
+            "Total quorum committee selections",
+        )
+        .unwrap();
+        let quorum_selection_duration = Histogram::with_opts(HistogramOpts::new(
+            "adic_quorum_selection_duration_seconds",
+            "Quorum committee selection duration",
+        ))
+        .unwrap();
+        let quorum_committee_size = IntGauge::new(
+            "adic_quorum_committee_size",
+            "Current quorum committee size",
+        )
+        .unwrap();
+        let quorum_votes_total = IntCounter::new(
+            "adic_quorum_votes_total",
+            "Total quorum votes processed",
+        )
+        .unwrap();
+        let quorum_votes_passed = IntCounter::new(
+            "adic_quorum_votes_passed",
+            "Total quorum votes that passed",
+        )
+        .unwrap();
+        let quorum_votes_failed = IntCounter::new(
+            "adic_quorum_votes_failed",
+            "Total quorum votes that failed",
+        )
+        .unwrap();
+        let quorum_vote_duration = Histogram::with_opts(HistogramOpts::new(
+            "adic_quorum_vote_duration_seconds",
+            "Quorum vote processing duration",
+        ))
+        .unwrap();
+
+        // Foundation Layer - Challenge Metrics
+        let challenge_windows_opened = IntCounter::new(
+            "adic_challenge_windows_opened_total",
+            "Total challenge windows opened",
+        )
+        .unwrap();
+        let challenges_submitted = IntCounter::new(
+            "adic_challenges_submitted_total",
+            "Total challenges submitted",
+        )
+        .unwrap();
+        let fraud_proofs_submitted = IntCounter::new(
+            "adic_fraud_proofs_submitted_total",
+            "Total fraud proofs submitted",
+        )
+        .unwrap();
+        let fraud_proofs_verified = IntCounter::new(
+            "adic_fraud_proofs_verified_total",
+            "Total fraud proofs verified as valid",
+        )
+        .unwrap();
+        let fraud_proofs_rejected = IntCounter::new(
+            "adic_fraud_proofs_rejected_total",
+            "Total fraud proofs rejected as invalid",
+        )
+        .unwrap();
+        let arbitrations_started = IntCounter::new(
+            "adic_arbitrations_started_total",
+            "Total arbitrations started",
+        )
+        .unwrap();
+        let arbitrations_completed = IntCounter::new(
+            "adic_arbitrations_completed_total",
+            "Total arbitrations completed",
+        )
+        .unwrap();
+        let challenge_windows_active = IntGauge::new(
+            "adic_challenge_windows_active",
+            "Number of active challenge windows",
+        )
+        .unwrap();
+
+        // Foundation Layer - Escrow Metrics
+        let escrow_locks_total = IntCounter::new(
+            "adic_escrow_locks_total",
+            "Total escrow locks created",
+        )
+        .unwrap();
+        let escrow_releases_total = IntCounter::new(
+            "adic_escrow_releases_total",
+            "Total escrow funds released",
+        )
+        .unwrap();
+        let escrow_slashes_total = IntCounter::new(
+            "adic_escrow_slashes_total",
+            "Total escrow funds slashed",
+        )
+        .unwrap();
+        let escrow_refunds_total = IntCounter::new(
+            "adic_escrow_refunds_total",
+            "Total escrow funds refunded",
+        )
+        .unwrap();
+        let escrow_lock_duration = Histogram::with_opts(HistogramOpts::new(
+            "adic_escrow_lock_duration_seconds",
+            "Escrow lock operation duration",
+        ))
+        .unwrap();
+        let escrow_locked_amount = IntGauge::new(
+            "adic_escrow_locked_amount_adic",
+            "Total amount currently locked in escrow (in ADIC)",
         )
         .unwrap();
 
@@ -231,15 +376,6 @@ impl Metrics {
             .unwrap();
         registry
             .register(Box::new(admissibility_c3_failures.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(deposits_escrowed.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(deposits_refunded.clone()))
-            .unwrap();
-        registry
-            .register(Box::new(deposits_slashed.clone()))
             .unwrap();
         registry
             .register(Box::new(finalizations_total.clone()))
@@ -281,23 +417,82 @@ impl Metrics {
         registry
             .register(Box::new(sse_messages_sent.clone()))
             .unwrap();
+
+        // Register Foundation Layer - VRF metrics
         registry
-            .register(Box::new(messages_gossiped.clone()))
+            .register(Box::new(vrf_commits_total.clone()))
             .unwrap();
         registry
-            .register(Box::new(messages_received_network.clone()))
+            .register(Box::new(vrf_reveals_total.clone()))
             .unwrap();
         registry
-            .register(Box::new(duplicate_messages.clone()))
+            .register(Box::new(vrf_finalizations_total.clone()))
             .unwrap();
         registry
-            .register(Box::new(propagation_latency.clone()))
+            .register(Box::new(vrf_commit_duration.clone()))
             .unwrap();
         registry
-            .register(Box::new(validation_latency.clone()))
+            .register(Box::new(vrf_reveal_duration.clone()))
             .unwrap();
         registry
-            .register(Box::new(gossip_failures.clone()))
+            .register(Box::new(vrf_finalize_duration.clone()))
+            .unwrap();
+
+        // Register Foundation Layer - Quorum metrics
+        registry
+            .register(Box::new(quorum_selections_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(quorum_selection_duration.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(quorum_committee_size.clone()))
+            .unwrap();
+
+        // Register Foundation Layer - Challenge metrics
+        registry
+            .register(Box::new(challenge_windows_opened.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(challenges_submitted.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(fraud_proofs_submitted.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(fraud_proofs_verified.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(fraud_proofs_rejected.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(arbitrations_started.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(arbitrations_completed.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(challenge_windows_active.clone()))
+            .unwrap();
+
+        // Register Foundation Layer - Escrow metrics
+        registry
+            .register(Box::new(escrow_locks_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(escrow_releases_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(escrow_slashes_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(escrow_refunds_total.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(escrow_lock_duration.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(escrow_locked_amount.clone()))
             .unwrap();
 
         Self {
@@ -312,9 +507,6 @@ impl Metrics {
             admissibility_s_failures,
             admissibility_c2_failures,
             admissibility_c3_failures,
-            deposits_escrowed,
-            deposits_refunded,
-            deposits_slashed,
             finalizations_total,
             kcore_size,
             finality_depth,
@@ -331,12 +523,33 @@ impl Metrics {
             sse_connections,
             websocket_messages_sent,
             sse_messages_sent,
-            messages_gossiped,
-            messages_received_network,
-            duplicate_messages,
-            propagation_latency,
-            validation_latency,
-            gossip_failures,
+            vrf_commits_total,
+            vrf_reveals_total,
+            vrf_finalizations_total,
+            vrf_commit_duration,
+            vrf_reveal_duration,
+            vrf_finalize_duration,
+            quorum_selections_total,
+            quorum_selection_duration,
+            quorum_committee_size,
+            quorum_votes_total,
+            quorum_votes_passed,
+            quorum_votes_failed,
+            quorum_vote_duration,
+            challenge_windows_opened,
+            challenges_submitted,
+            fraud_proofs_submitted,
+            fraud_proofs_verified,
+            fraud_proofs_rejected,
+            arbitrations_started,
+            arbitrations_completed,
+            challenge_windows_active,
+            escrow_locks_total,
+            escrow_releases_total,
+            escrow_slashes_total,
+            escrow_refunds_total,
+            escrow_lock_duration,
+            escrow_locked_amount,
         }
     }
 
@@ -363,50 +576,8 @@ mod tests {
         assert!(text.contains("adic_finalizations_total"));
     }
 
-    #[test]
-    fn test_propagation_metrics() {
-        let m = Metrics::new();
-
-        // Test message propagation metrics
-        m.messages_gossiped.inc();
-        m.messages_received_network.inc_by(5);
-        m.duplicate_messages.inc_by(2);
-        m.gossip_failures.inc();
-
-        let text = m.gather();
-
-        // Verify all new propagation metrics are present
-        assert!(text.contains("adic_messages_gossiped_total"));
-        assert!(text.contains("adic_messages_received_network_total"));
-        assert!(text.contains("adic_duplicate_messages_total"));
-        assert!(text.contains("adic_gossip_failures_total"));
-        assert!(text.contains("adic_message_propagation_latency_seconds"));
-        assert!(text.contains("adic_message_validation_latency_seconds"));
-    }
-
-    #[test]
-    fn test_propagation_latency_histogram() {
-        let m = Metrics::new();
-
-        // Record some latencies
-        m.propagation_latency.observe(0.05); // 50ms
-        m.propagation_latency.observe(0.1); // 100ms
-        m.propagation_latency.observe(0.2); // 200ms
-
-        m.validation_latency.observe(0.001); // 1ms
-        m.validation_latency.observe(0.002); // 2ms
-
-        let text = m.gather();
-
-        // Verify histograms are tracked
-        assert!(text.contains("adic_message_propagation_latency_seconds"));
-        assert!(text.contains("adic_message_validation_latency_seconds"));
-
-        // Histograms should have bucket and count metrics
-        assert!(text.contains("_bucket"));
-        assert!(text.contains("_count"));
-        assert!(text.contains("_sum"));
-    }
+    // Note: Network propagation metrics (gossiped, duplicate, latency) removed
+    // as they require complex gossip protocol instrumentation (Phase 2)
 
     #[test]
     fn test_all_metrics_registered() {
@@ -425,9 +596,6 @@ mod tests {
         // Admissibility metrics
         assert!(text.contains("adic_admissibility_checks_total"));
 
-        // Deposit metrics
-        assert!(text.contains("adic_deposits_escrowed_total"));
-
         // Finality metrics
         assert!(text.contains("adic_finalizations_total"));
         assert!(text.contains("adic_kcore_size"));
@@ -443,8 +611,63 @@ mod tests {
         assert!(text.contains("adic_websocket_connections"));
         assert!(text.contains("adic_sse_connections"));
 
-        // Propagation metrics
-        assert!(text.contains("adic_messages_gossiped_total"));
-        assert!(text.contains("adic_duplicate_messages_total"));
+        // Note: Network propagation metrics removed (Phase 2 work)
+    }
+
+    #[test]
+    fn test_foundation_layer_metrics() {
+        let m = Metrics::new();
+
+        // Test VRF metrics
+        m.vrf_commits_total.inc();
+        m.vrf_reveals_total.inc();
+        m.vrf_finalizations_total.inc();
+        m.vrf_commit_duration.observe(0.05);
+
+        // Test Quorum selection metrics
+        m.quorum_selections_total.inc();
+        m.quorum_committee_size.set(15);
+        // Note: quorum_votes_* metrics are in DisputeAdjudicator (storage market)
+
+        // Test Challenge metrics
+        m.challenge_windows_opened.inc();
+        m.challenges_submitted.inc();
+        m.fraud_proofs_submitted.inc();
+        m.fraud_proofs_verified.inc();
+        m.arbitrations_started.inc();
+        m.challenge_windows_active.set(5);
+
+        // Test Escrow metrics
+        m.escrow_locks_total.inc();
+        m.escrow_releases_total.inc();
+        m.escrow_slashes_total.inc();
+        m.escrow_locked_amount.set(1000);
+
+        let text = m.gather();
+
+        // Verify VRF metrics
+        assert!(text.contains("adic_vrf_commits_total"));
+        assert!(text.contains("adic_vrf_reveals_total"));
+        assert!(text.contains("adic_vrf_finalizations_total"));
+        assert!(text.contains("adic_vrf_commit_duration_seconds"));
+
+        // Verify Quorum selection metrics
+        assert!(text.contains("adic_quorum_selections_total"));
+        assert!(text.contains("adic_quorum_committee_size"));
+        // Note: quorum vote metrics are in DisputeAdjudicator, not main Metrics
+
+        // Verify Challenge metrics
+        assert!(text.contains("adic_challenge_windows_opened_total"));
+        assert!(text.contains("adic_challenges_submitted_total"));
+        assert!(text.contains("adic_fraud_proofs_submitted_total"));
+        assert!(text.contains("adic_fraud_proofs_verified_total"));
+        assert!(text.contains("adic_arbitrations_started_total"));
+        assert!(text.contains("adic_challenge_windows_active"));
+
+        // Verify Escrow metrics
+        assert!(text.contains("adic_escrow_locks_total"));
+        assert!(text.contains("adic_escrow_releases_total"));
+        assert!(text.contains("adic_escrow_slashes_total"));
+        assert!(text.contains("adic_escrow_locked_amount_adic"));
     }
 }

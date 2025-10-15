@@ -1,7 +1,25 @@
-use crate::{AdicFeatures, MessageId, PublicKey, Signature, ValueTransfer};
+use crate::{canonical_hash, AdicFeatures, MessageId, PublicKey, Signature, ValueTransfer};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// Domain Separation Tags for cryptographic signatures (PoUW III §10.3)
+///
+/// These tags ensure that signatures for different message types cannot be confused
+/// or replayed across different contexts. Each message type uses a unique DST prefix.
+pub mod dst {
+    /// Governance proposal signature tag
+    pub const GOVERNANCE_PROPOSAL: &[u8] = b"ADIC-GOV-PROP-v1";
+
+    /// Governance vote signature tag
+    pub const GOVERNANCE_VOTE: &[u8] = b"ADIC-GOV-VOTE-v1";
+
+    /// Governance receipt signature tag (already defined in adic-governance, included here for completeness)
+    pub const GOVERNANCE_RECEIPT: &[u8] = b"ADIC-GOV-R-v1";
+
+    /// Governance milestone attestation signature tag
+    pub const GOVERNANCE_MILESTONE: &[u8] = b"ADIC-GOV-MILESTONE-v1";
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConflictId(pub String);
@@ -127,24 +145,29 @@ impl AdicMessage {
     }
 
     pub fn compute_id(&self) -> MessageId {
-        let mut data = Vec::new();
-
-        for parent in &self.parents {
-            data.extend_from_slice(parent.as_bytes());
+        // Create canonical representation (excludes id and signature)
+        #[derive(Serialize)]
+        struct CanonicalMessage<'a> {
+            parents: &'a Vec<MessageId>,
+            features: &'a AdicFeatures,
+            meta: &'a AdicMeta,
+            proposer_pk: &'a PublicKey,
+            transfer: &'a Option<ValueTransfer>,
+            data: &'a Vec<u8>,
         }
 
-        data.extend_from_slice(&serde_json::to_vec(&self.features).unwrap());
-        data.extend_from_slice(&serde_json::to_vec(&self.meta).unwrap());
-        data.extend_from_slice(self.proposer_pk.as_bytes());
+        let canonical = CanonicalMessage {
+            parents: &self.parents,
+            features: &self.features,
+            meta: &self.meta,
+            proposer_pk: &self.proposer_pk,
+            transfer: &self.transfer,
+            data: &self.data,
+        };
 
-        // Include transfer data in ID computation if present
-        if let Some(ref transfer) = self.transfer {
-            data.extend_from_slice(&transfer.to_bytes());
-        }
-
-        data.extend_from_slice(&self.data);
-
-        MessageId::new(&data)
+        // Use canonical JSON hashing for deterministic ID
+        let hash = canonical_hash(&canonical).expect("Failed to compute canonical hash");
+        MessageId::from_bytes(hash)
     }
 
     pub fn verify_id(&self) -> bool {
@@ -160,33 +183,35 @@ impl AdicMessage {
     }
 
     /// Get the message bytes for signing (excludes the signature field)
+    ///
+    /// Uses canonical JSON for deterministic serialization
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut data = Vec::new();
-
-        // Include ID
-        data.extend_from_slice(self.id.as_bytes());
-
-        // Include parents
-        for parent in &self.parents {
-            data.extend_from_slice(parent.as_bytes());
+        #[derive(Serialize)]
+        struct SignableMessage<'a> {
+            id: &'a MessageId,
+            parents: &'a Vec<MessageId>,
+            features: &'a AdicFeatures,
+            meta: &'a AdicMeta,
+            proposer_pk: &'a PublicKey,
+            transfer: &'a Option<ValueTransfer>,
+            data: &'a Vec<u8>,
         }
 
-        // Include serialized features and meta
-        data.extend_from_slice(&serde_json::to_vec(&self.features).unwrap());
-        data.extend_from_slice(&serde_json::to_vec(&self.meta).unwrap());
+        let signable = SignableMessage {
+            id: &self.id,
+            parents: &self.parents,
+            features: &self.features,
+            meta: &self.meta,
+            proposer_pk: &self.proposer_pk,
+            transfer: &self.transfer,
+            data: &self.data,
+        };
 
-        // Include proposer public key
-        data.extend_from_slice(self.proposer_pk.as_bytes());
-
-        // Include transfer data if present
-        if let Some(ref transfer) = self.transfer {
-            data.extend_from_slice(&transfer.to_bytes());
-        }
-
-        // Include data payload
-        data.extend_from_slice(&self.data);
-
-        data
+        // Use canonical JSON for deterministic serialization
+        use crate::to_canonical_json;
+        to_canonical_json(&signable)
+            .expect("Failed to serialize message")
+            .into_bytes()
     }
 }
 

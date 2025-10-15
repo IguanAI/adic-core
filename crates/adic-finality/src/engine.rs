@@ -12,6 +12,17 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 
+/// Finality timing statistics for governance timelock calculation
+#[derive(Debug, Clone)]
+pub struct FinalityTimingStats {
+    pub f1_avg: Option<std::time::Duration>,
+    pub f1_p95: Option<std::time::Duration>,
+    pub f2_avg: Option<std::time::Duration>,
+    pub f2_p95: Option<std::time::Duration>,
+    pub f1_sample_size: usize,
+    pub f2_sample_size: usize,
+}
+
 /// Configuration for finality engine
 #[derive(Debug, Clone)]
 pub struct FinalityConfig {
@@ -44,8 +55,8 @@ impl From<&AdicParams> for FinalityConfig {
             check_interval_ms: 1000,
             window_size: 1000,
 
-            // F2 parameters (defaults from design doc)
-            f2_enabled: true,
+            // F2 parameters (Phase 0: feature-flagged OFF by default per DESIGN.md §1.2)
+            f2_enabled: false,
             f2_timeout_ms: 2000,
             f1_enabled: true,
             epsilon: 0.1,
@@ -67,8 +78,8 @@ impl Default for FinalityConfig {
             check_interval_ms: 1000,
             window_size: 1000,
 
-            // F2 defaults
-            f2_enabled: true,
+            // F2 defaults (Phase 0: OFF by default per DESIGN.md §1.2)
+            f2_enabled: false,
             f2_timeout_ms: 2000,
             f1_enabled: true,
             epsilon: 0.1,
@@ -81,8 +92,8 @@ impl Default for FinalityConfig {
 
 /// Main finality engine
 pub struct FinalityEngine {
-    config: FinalityConfig,
-    analyzer: KCoreAnalyzer,
+    config: Arc<RwLock<FinalityConfig>>,
+    analyzer: Arc<RwLock<KCoreAnalyzer>>,
     f2_checker: Arc<Mutex<F2FinalityChecker>>,
     storage: Arc<StorageEngine>,
     finalized: Arc<RwLock<HashMap<MessageId, FinalityArtifact>>>,
@@ -94,20 +105,41 @@ pub struct FinalityEngine {
     f1_finalized_messages: Arc<RwLock<Vec<MessageId>>>,
     f2_stabilized_messages: Arc<RwLock<Vec<MessageId>>>,
     checkpoint_height: Arc<RwLock<u64>>,
+
+    // Finality timing metrics for governance timelock calculation
+    f1_timing_metrics: Arc<RwLock<VecDeque<std::time::Duration>>>,
+    f2_timing_metrics: Arc<RwLock<VecDeque<std::time::Duration>>>,
+    metrics_window_size: usize,
+
+    // Epoch tracking for PoUW integration
+    /// Maximum finalized depth observed (tracks the deepest finalized message)
+    max_finalized_depth: Arc<RwLock<u32>>,
+    /// Finality depth parameter (D*) from AdicParams
+    depth_star: u32,
+
+    // Metrics counters - updated externally by incrementing directly
+    pub finalizations_total: Option<Arc<prometheus::IntCounter>>,
+    pub kcore_size: Option<Arc<prometheus::IntGauge>>,
+    pub finality_depth: Option<Arc<prometheus::Histogram>>,
+    pub f2_computation_time: Option<Arc<prometheus::Histogram>>,
+    pub f2_timeout_count: Option<Arc<prometheus::IntCounter>>,
+    pub f1_fallback_count: Option<Arc<prometheus::IntCounter>>,
+    pub finality_method_used: Option<Arc<prometheus::IntGauge>>,
 }
 
 impl FinalityEngine {
-    pub fn new(
+    pub async fn new(
         config: FinalityConfig,
         consensus: Arc<ConsensusEngine>,
         storage: Arc<StorageEngine>,
     ) -> Self {
+        let params = consensus.params().await;
         let analyzer = KCoreAnalyzer::new(
             config.k,
             config.min_depth,
             config.min_diversity,
             config.min_reputation,
-            consensus.params().rho.clone(),
+            params.rho.clone(),
         );
 
         // Initialize F2 checker with config
@@ -118,12 +150,16 @@ impl FinalityEngine {
             epsilon: config.epsilon,
             timeout_ms: config.f2_timeout_ms,
             use_streaming: false, // Batch mode by default for backward compatibility
+            max_betti_d: 2,       // Default stability heuristic (governable)
+            min_persistence: 0.01, // Default noise filtering threshold (governable)
         };
         let f2_checker = Arc::new(Mutex::new(F2FinalityChecker::new(f2_config)));
 
+        let depth_star = params.depth_star;
+
         Self {
-            config,
-            analyzer,
+            config: Arc::new(RwLock::new(config)),
+            analyzer: Arc::new(RwLock::new(analyzer)),
             f2_checker,
             storage,
             finalized: Arc::new(RwLock::new(HashMap::new())),
@@ -133,7 +169,81 @@ impl FinalityEngine {
             f1_finalized_messages: Arc::new(RwLock::new(Vec::new())),
             f2_stabilized_messages: Arc::new(RwLock::new(Vec::new())),
             checkpoint_height: Arc::new(RwLock::new(0)),
+            f1_timing_metrics: Arc::new(RwLock::new(VecDeque::new())),
+            f2_timing_metrics: Arc::new(RwLock::new(VecDeque::new())),
+            metrics_window_size: 100, // Keep last 100 measurements
+            max_finalized_depth: Arc::new(RwLock::new(0)),
+            depth_star,
+            finalizations_total: None,
+            kcore_size: None,
+            finality_depth: None,
+            f2_computation_time: None,
+            f2_timeout_count: None,
+            f1_fallback_count: None,
+            finality_method_used: None,
         }
+    }
+
+    /// Set metrics for finality tracking
+    pub fn set_metrics(
+        &mut self,
+        finalizations_total: Arc<prometheus::IntCounter>,
+        kcore_size: Arc<prometheus::IntGauge>,
+        finality_depth: Arc<prometheus::Histogram>,
+        f2_computation_time: Arc<prometheus::Histogram>,
+        f2_timeout_count: Arc<prometheus::IntCounter>,
+        f1_fallback_count: Arc<prometheus::IntCounter>,
+        finality_method_used: Arc<prometheus::IntGauge>,
+    ) {
+        self.finalizations_total = Some(finalizations_total);
+        self.kcore_size = Some(kcore_size);
+        self.finality_depth = Some(finality_depth);
+        self.f2_computation_time = Some(f2_computation_time);
+        self.f2_timeout_count = Some(f2_timeout_count);
+        self.f1_fallback_count = Some(f1_fallback_count);
+        self.finality_method_used = Some(finality_method_used);
+    }
+
+    /// Update finality parameters for hot-reload support
+    /// Note: Only operational params (k, depth, epsilon) are hot-reloadable
+    pub async fn update_params(&self, new_params: &adic_types::AdicParams, f2_max_betti: usize, f2_min_persistence: f64) {
+        // Update config
+        {
+            let mut config = self.config.write().await;
+            config.k = new_params.k as usize;
+            config.min_depth = new_params.depth_star;
+        }
+
+        // Recreate k-core analyzer with new parameters
+        let config = self.config.read().await;
+        *self.analyzer.write().await = KCoreAnalyzer::new(
+            new_params.k as usize,
+            new_params.depth_star,
+            config.min_diversity,
+            config.min_reputation,
+            new_params.rho.clone(),
+        );
+
+        // Update F2 checker config
+        let mut f2_checker = self.f2_checker.lock().await;
+        *f2_checker = F2FinalityChecker::new(F2Config {
+            dimension: 3,
+            radius: 5,
+            axis: 0,
+            epsilon: config.epsilon,
+            timeout_ms: config.f2_timeout_ms,
+            use_streaming: false,
+            max_betti_d: f2_max_betti,
+            min_persistence: f2_min_persistence,
+        });
+
+        tracing::info!(
+            k = new_params.k,
+            depth = new_params.depth_star,
+            f2_max_betti = f2_max_betti,
+            f2_min_persistence = f2_min_persistence,
+            "✅ Finality parameters updated"
+        );
     }
 
     /// Add a message to the graph for finality tracking
@@ -160,7 +270,8 @@ impl FinalityEngine {
         pending.push_back(id);
 
         // Keep window size limited
-        while pending.len() > self.config.window_size {
+        let window_size = self.config.read().await.window_size;
+        while pending.len() > window_size {
             pending.pop_front();
         }
 
@@ -179,6 +290,13 @@ impl FinalityEngine {
         finalized.get(id).cloned()
     }
 
+    /// Store a finality artifact received from the network
+    /// This is used when artifacts propagate from other nodes
+    pub async fn store_artifact(&self, artifact: FinalityArtifact) {
+        let mut finalized = self.finalized.write().await;
+        finalized.insert(artifact.intent_id, artifact);
+    }
+
     /// Run finality checks on pending messages
     /// Tries F2 (topological) first, then falls back to F1 (k-core) on timeout
     pub async fn check_finality(&self) -> Result<Vec<MessageId>> {
@@ -189,10 +307,24 @@ impl FinalityEngine {
 
         let mut newly_finalized = Vec::new();
 
+        // Read config once at the start
+        let f2_enabled = self.config.read().await.f2_enabled;
+        let f1_enabled = self.config.read().await.f1_enabled;
+
         // Try F2 finality first if enabled
-        if self.config.f2_enabled {
+        if f2_enabled {
+            let f2_start = std::time::Instant::now();
             match self.try_f2_finality(&pending_list).await {
                 Ok(Some((finalized_msgs, h3_stable, h2_bottleneck, confidence))) => {
+                    // Update metrics - F2 computation time
+                    if let Some(ref histogram) = self.f2_computation_time {
+                        histogram.observe(f2_start.elapsed().as_secs_f64());
+                    }
+                    // Set finality method to F2
+                    if let Some(ref gauge) = self.finality_method_used {
+                        gauge.set(2);
+                    }
+
                     // F2 succeeded - finalize these messages with witness data
                     for msg_id in &finalized_msgs {
                         self.finalize_message_f2(
@@ -203,6 +335,11 @@ impl FinalityEngine {
                             finalized_msgs.len(),
                         )
                         .await?;
+
+                        // Update metrics - finalization count
+                        if let Some(ref counter) = self.finalizations_total {
+                            counter.inc();
+                        }
                     }
                     newly_finalized.extend(finalized_msgs);
 
@@ -217,34 +354,83 @@ impl FinalityEngine {
                 Ok(None) => {
                     // F2 returned Pending or not enough data - fall through to F1
                     debug!(
-                        f1_enabled = self.config.f1_enabled,
+                        f1_enabled = f1_enabled,
                         "🔄 F2 finality not achieved, falling back to F1"
                     );
+                    // Update metrics - F1 fallback
+                    if let Some(ref counter) = self.f1_fallback_count {
+                        counter.inc();
+                    }
                 }
                 Err(e) => {
                     warn!(
                         error = %e,
-                        f1_enabled = self.config.f1_enabled,
+                        f1_enabled = f1_enabled,
                         "🔄 F2 check error, falling back to F1"
                     );
+                    // Check if it's a timeout error
+                    if e.to_string().contains("timeout") || e.to_string().contains("Timeout") {
+                        if let Some(ref counter) = self.f2_timeout_count {
+                            counter.inc();
+                        }
+                    }
+                    // Update metrics - F1 fallback
+                    if let Some(ref counter) = self.f1_fallback_count {
+                        counter.inc();
+                    }
                 }
             }
         }
 
         // F1 fallback - check each message individually with k-core
-        if self.config.f1_enabled {
+        if f1_enabled {
             for msg_id in pending_list {
                 if self.is_finalized(&msg_id).await {
                     continue;
                 }
 
-                match self
-                    .analyzer
+                // Capture F1 finalization timing
+                let f1_start = std::time::Instant::now();
+
+                let analyzer = self.analyzer.read().await;
+                match analyzer
                     .analyze(msg_id, &self.storage, &self.consensus.reputation)
                     .await
                 {
                     Ok(result) if result.is_final => {
-                        let artifact = self.create_artifact(msg_id, result);
+                        let f1_duration = f1_start.elapsed();
+
+                        // Record F1 timing metric
+                        {
+                            let mut metrics = self.f1_timing_metrics.write().await;
+                            metrics.push_back(f1_duration);
+                            // Trim to window size
+                            while metrics.len() > self.metrics_window_size {
+                                metrics.pop_front();
+                            }
+                        }
+
+                        // Update metrics - finalization count
+                        if let Some(ref counter) = self.finalizations_total {
+                            counter.inc();
+                        }
+                        // Set finality method to F1
+                        if let Some(ref gauge) = self.finality_method_used {
+                            gauge.set(1);
+                        }
+                        // Update k-core size
+                        if let Some(ref gauge) = self.kcore_size {
+                            gauge.set(result.core_size as i64);
+                        }
+                        // Update finality depth
+                        if let Some(ref histogram) = self.finality_depth {
+                            histogram.observe(result.depth as f64);
+                        }
+
+                        let artifact = self.create_artifact(msg_id, result.clone()).await;
+
+                        // Update epoch tracking with finalized depth
+                        self.update_finalized_depth(result.depth).await;
 
                         // Trigger consensus updates for finality
                         if let Some(proposer) = self.consensus.deposits.get_proposer(&msg_id).await
@@ -354,6 +540,17 @@ impl FinalityEngine {
                 finalized_messages,
                 elapsed_ms,
             } => {
+                // Record F2 timing metric
+                let f2_duration = std::time::Duration::from_millis(elapsed_ms);
+                {
+                    let mut metrics = self.f2_timing_metrics.write().await;
+                    metrics.push_back(f2_duration);
+                    // Trim to window size
+                    while metrics.len() > self.metrics_window_size {
+                        metrics.pop_front();
+                    }
+                }
+
                 info!(
                     num_finalized = finalized_messages.len(),
                     h_d_stable = h_d_stable,
@@ -409,6 +606,9 @@ impl FinalityEngine {
         confidence: f64,
         num_finalized: usize,
     ) -> Result<()> {
+        // Read config once
+        let config = self.config.read().await;
+
         // Create artifact with F2-specific witness data
         let artifact = FinalityArtifact {
             intent_id: msg_id,
@@ -428,14 +628,19 @@ impl FinalityEngine {
                 num_finalized_messages: Some(num_finalized),
             },
             params: FinalityParams {
-                k: self.config.k,
-                q: self.config.min_diversity,
-                depth_star: self.config.min_depth,
-                r_sum_min: self.config.min_reputation,
+                k: config.k,
+                q: config.min_diversity,
+                depth_star: config.min_depth,
+                r_sum_min: config.min_reputation,
             },
             validators: Vec::new(),
             timestamp: chrono::Utc::now().timestamp(),
         };
+
+        // Update epoch tracking
+        // F2 finalization implies messages have reached at least min_depth (D*)
+        // since F2 is stricter than F1
+        self.update_finalized_depth(config.min_depth).await;
 
         // Trigger consensus updates
         if let Some(proposer) = self.consensus.deposits.get_proposer(&msg_id).await {
@@ -470,12 +675,14 @@ impl FinalityEngine {
     }
 
     /// Create finality artifact from k-core result
-    fn create_artifact(&self, msg_id: MessageId, result: KCoreResult) -> FinalityArtifact {
+    async fn create_artifact(&self, msg_id: MessageId, result: KCoreResult) -> FinalityArtifact {
+        let config = self.config.read().await;
+
         let params = FinalityParams {
-            k: self.config.k,
-            q: self.config.min_diversity,
-            depth_star: self.config.min_depth,
-            r_sum_min: self.config.min_reputation,
+            k: config.k,
+            q: config.min_diversity,
+            depth_star: config.min_depth,
+            r_sum_min: config.min_reputation,
         };
 
         let witness = FinalityWitness {
@@ -485,7 +692,7 @@ impl FinalityEngine {
             diversity_ok: result
                 .distinct_balls
                 .values()
-                .all(|&c| c >= self.config.min_diversity),
+                .all(|&c| c >= config.min_diversity),
             reputation_sum: result.total_reputation,
             distinct_balls: result.distinct_balls,
             core_size: result.core_size,
@@ -502,7 +709,7 @@ impl FinalityEngine {
     /// Start background finality checker
     pub async fn start_checker(&self) {
         let engine = self.clone();
-        let interval = self.config.check_interval_ms;
+        let interval = self.config.read().await.check_interval_ms;
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(interval));
@@ -529,26 +736,148 @@ impl FinalityEngine {
         }
     }
 
+    /// Get current epoch number based on finalized depth
+    ///
+    /// Per PoUW II §3: Epochs are delimited by finalized depth-D windows
+    /// Formula: epoch = floor(max_finalized_depth / D*)
+    pub async fn current_epoch(&self) -> u64 {
+        let max_depth = *self.max_finalized_depth.read().await;
+        if self.depth_star == 0 {
+            return 0;
+        }
+        (max_depth / self.depth_star) as u64
+    }
+
+    /// Get maximum finalized depth
+    pub async fn max_finalized_depth(&self) -> u32 {
+        *self.max_finalized_depth.read().await
+    }
+
+    /// Check if a message has achieved composite F1 ∧ F2 finality
+    ///
+    /// Per PoUW III §7.1: Governance-grade finality requires both F1 (k-core)
+    /// and F2 (persistent homology) to pass.
+    ///
+    /// Returns true if the message has a composite finality artifact OR
+    /// if it has achieved both F1 and F2 finality separately.
+    pub async fn has_composite_finality(&self, id: &MessageId) -> bool {
+        let finalized = self.finalized.read().await;
+        if let Some(artifact) = finalized.get(id) {
+            artifact.has_composite_finality()
+        } else {
+            false
+        }
+    }
+
+    /// Check if a message is finalized with governance-grade finality (F1 ∧ F2)
+    ///
+    /// This is an alias for `has_composite_finality` with clearer naming for
+    /// governance use cases.
+    pub async fn is_governance_finalized(&self, id: &MessageId) -> bool {
+        self.has_composite_finality(id).await
+    }
+
+    /// Update maximum finalized depth (called internally when messages finalize)
+    async fn update_finalized_depth(&self, depth: u32) {
+        let mut max_depth = self.max_finalized_depth.write().await;
+        if depth > *max_depth {
+            // Skip epoch calculation if depth_star is 0 (test mode or not configured)
+            if self.depth_star > 0 {
+                let old_epoch = (*max_depth / self.depth_star) as u64;
+                let new_epoch = (depth / self.depth_star) as u64;
+
+                if new_epoch > old_epoch {
+                    info!(
+                        old_epoch = old_epoch,
+                        new_epoch = new_epoch,
+                        finalized_depth = depth,
+                        depth_star = self.depth_star,
+                        "📅 Epoch boundary crossed"
+                    );
+                }
+            }
+
+            *max_depth = depth;
+        }
+    }
+
     /// Check k-core finality for a specific message
     pub async fn check_kcore_finality(
         &self,
         msg_id: &MessageId,
     ) -> Result<Option<KCoreFinalityResult>> {
         // Analyze k-core starting from this message
-        let result = self
-            .analyzer
+        let analyzer = self.analyzer.read().await;
+        let result = analyzer
             .analyze(*msg_id, &self.storage, &self.consensus.reputation)
             .await?;
 
         // Calculate diversity score as the minimum diversity across all axes
         let diversity_score = result.distinct_balls.values().min().copied().unwrap_or(0);
 
+        let config = self.config.read().await;
         Ok(Some(KCoreFinalityResult {
-            k_value: self.config.k,
+            k_value: config.k,
             depth: result.depth,
             diversity_score,
             is_final: result.is_final,
         }))
+    }
+
+    /// Get average F1 finality time from recent measurements
+    pub async fn get_avg_f1_finality_time(&self) -> Option<std::time::Duration> {
+        let metrics = self.f1_timing_metrics.read().await;
+        if metrics.is_empty() {
+            return None;
+        }
+        let sum: std::time::Duration = metrics.iter().sum();
+        Some(sum / metrics.len() as u32)
+    }
+
+    /// Get P95 F1 finality time (95th percentile)
+    pub async fn get_p95_f1_finality_time(&self) -> Option<std::time::Duration> {
+        let metrics = self.f1_timing_metrics.read().await;
+        if metrics.is_empty() {
+            return None;
+        }
+        let mut sorted: Vec<std::time::Duration> = metrics.iter().cloned().collect();
+        sorted.sort();
+        let index = (sorted.len() * 95 / 100).min(sorted.len() - 1);
+        Some(sorted[index])
+    }
+
+    /// Get average F2 finality time from recent measurements
+    pub async fn get_avg_f2_finality_time(&self) -> Option<std::time::Duration> {
+        let metrics = self.f2_timing_metrics.read().await;
+        if metrics.is_empty() {
+            return None;
+        }
+        let sum: std::time::Duration = metrics.iter().sum();
+        Some(sum / metrics.len() as u32)
+    }
+
+    /// Get P95 F2 finality time (95th percentile)
+    pub async fn get_p95_f2_finality_time(&self) -> Option<std::time::Duration> {
+        let metrics = self.f2_timing_metrics.read().await;
+        if metrics.is_empty() {
+            return None;
+        }
+        let mut sorted: Vec<std::time::Duration> = metrics.iter().cloned().collect();
+        sorted.sort();
+        let index = (sorted.len() * 95 / 100).min(sorted.len() - 1);
+        Some(sorted[index])
+    }
+
+    /// Get finality timing statistics for monitoring
+    pub async fn get_finality_timing_stats(&self) -> FinalityTimingStats {
+        FinalityTimingStats {
+            f1_avg: self.get_avg_f1_finality_time().await,
+            f1_p95: self.get_p95_f1_finality_time().await,
+            f2_avg: self.get_avg_f2_finality_time().await,
+            f2_p95: self.get_p95_f2_finality_time().await,
+            f1_sample_size: self.f1_timing_metrics.read().await.len(),
+            f2_sample_size: self.f2_timing_metrics.read().await.len(),
+        }
     }
 }
 
@@ -566,6 +895,18 @@ impl Clone for FinalityEngine {
             f1_finalized_messages: Arc::clone(&self.f1_finalized_messages),
             f2_stabilized_messages: Arc::clone(&self.f2_stabilized_messages),
             checkpoint_height: Arc::clone(&self.checkpoint_height),
+            f1_timing_metrics: Arc::clone(&self.f1_timing_metrics),
+            f2_timing_metrics: Arc::clone(&self.f2_timing_metrics),
+            metrics_window_size: self.metrics_window_size,
+            max_finalized_depth: Arc::clone(&self.max_finalized_depth),
+            depth_star: self.depth_star,
+            finalizations_total: self.finalizations_total.clone(),
+            kcore_size: self.kcore_size.clone(),
+            finality_depth: self.finality_depth.clone(),
+            f2_computation_time: self.f2_computation_time.clone(),
+            f2_timeout_count: self.f2_timeout_count.clone(),
+            f1_fallback_count: self.f1_fallback_count.clone(),
+            finality_method_used: self.finality_method_used.clone(),
         }
     }
 }
@@ -577,7 +918,8 @@ impl FinalityEngine {
         f1_messages.push(message_id);
 
         // Check if we should create a checkpoint
-        if f1_messages.len() >= self.config.checkpoint_interval as usize {
+        let checkpoint_interval = self.config.read().await.checkpoint_interval;
+        if f1_messages.len() >= checkpoint_interval as usize {
             if let Err(e) = self.create_checkpoint().await {
                 warn!(error = %e, "Failed to create checkpoint on F1 finality");
             }
@@ -766,7 +1108,7 @@ mod tests {
             storage.clone(),
         ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone()).await;
 
         // Create a tiny chain: root -> child
         let root_id = MessageId::new(b"root");
@@ -852,7 +1194,7 @@ mod tests {
         let mut finality_cfg = FinalityConfig::from(&params);
         finality_cfg.window_size = 5; // Small window for testing
 
-        let engine = FinalityEngine::new(finality_cfg, consensus, storage.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus, storage.clone()).await;
 
         // Add more messages than window size
         for i in 0..10 {
@@ -882,7 +1224,7 @@ mod tests {
             storage.clone(),
         ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus, storage.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus, storage.clone()).await;
 
         // Add some messages
         for i in 0..3 {
@@ -920,7 +1262,7 @@ mod tests {
             storage.clone(),
         ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone()).await;
 
         let root_id = MessageId::new(b"root");
         let proposer = PublicKey::from_bytes([1; 32]);
@@ -990,7 +1332,7 @@ mod tests {
             storage.clone(),
         ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg.clone(), consensus, storage);
+        let engine = FinalityEngine::new(finality_cfg.clone(), consensus, storage).await;
 
         let msg_id = MessageId::new(b"test");
         let kcore_result = KCoreResult {
@@ -1002,7 +1344,7 @@ mod tests {
             core_size: 7,
         };
 
-        let artifact = engine.create_artifact(msg_id, kcore_result);
+        let artifact = engine.create_artifact(msg_id, kcore_result).await;
 
         assert_eq!(artifact.intent_id, msg_id);
         assert_eq!(artifact.gate, FinalityGate::F1KCore);
@@ -1022,7 +1364,7 @@ mod tests {
             storage.clone(),
         ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus, storage.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus, storage.clone()).await;
 
         let msg_id = MessageId::new(b"test");
         let msg = create_test_message(msg_id, vec![], &[(0, 1)]);
@@ -1057,7 +1399,7 @@ mod tests {
             storage.clone(),
         ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone()).await;
 
         // Create a chain: root -> middle -> tip
         let root_id = MessageId::new(b"root");
@@ -1129,7 +1471,7 @@ mod tests {
             storage.clone(),
         ));
         let finality_cfg = FinalityConfig::from(&params);
-        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone()).await;
 
         let root_id = MessageId::new(b"root");
         let child_id = MessageId::new(b"child");
@@ -1230,7 +1572,7 @@ mod tests {
         finality_cfg.f2_timeout_ms = 5000;
         finality_cfg.epsilon = 1.0; // Very lenient
 
-        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone()).await;
 
         // Create multiple messages to potentially trigger F2
         let mut msg_ids = vec![];
@@ -1295,7 +1637,7 @@ mod tests {
         finality_cfg.f2_timeout_ms = 1; // 1ms timeout - should timeout immediately
         finality_cfg.f1_enabled = true;
 
-        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone()).await;
 
         // Create messages
         let msg_id = MessageId::new(b"timeout_test");
@@ -1348,7 +1690,7 @@ mod tests {
         finality_cfg.f2_enabled = false;
         finality_cfg.f1_enabled = true;
 
-        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone());
+        let engine = FinalityEngine::new(finality_cfg, consensus.clone(), storage.clone()).await;
 
         // Create messages
         let msg_id = MessageId::new(b"f1_only");
@@ -1399,7 +1741,7 @@ mod tests {
             finality_cfg,
             consensus.clone(),
             storage.clone(),
-        ));
+        ).await);
 
         // Create messages
         for i in 0..5 {

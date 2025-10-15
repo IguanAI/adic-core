@@ -156,6 +156,8 @@ fn bench_f2_finality_check(c: &mut Criterion) {
             epsilon: 0.5,
             timeout_ms: 10000, // Long timeout for benchmarking
             use_streaming: false,
+            max_betti_d: 10,
+            min_persistence: 0.01,
         };
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &messages, |b, msgs| {

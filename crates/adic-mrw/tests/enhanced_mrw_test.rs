@@ -1,4 +1,4 @@
-use adic_consensus::{ConflictResolver, ReputationTracker};
+use adic_consensus::ConsensusEngine;
 use adic_mrw::{MrwEngine, MrwSelector, ParentCandidate, SelectionParams, WeightCalculator};
 use adic_storage::{store::BackendType, StorageConfig, StorageEngine};
 use adic_types::{
@@ -6,6 +6,7 @@ use adic_types::{
 };
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 fn create_message_with_features(
     id: u8,
@@ -40,14 +41,15 @@ async fn test_mrw_bootstrap_single_tip() {
         ..Default::default()
     };
 
-    let storage = StorageEngine::new(StorageConfig {
-        backend_type: BackendType::Memory,
-        ..Default::default()
-    })
-    .unwrap();
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
-    let conflict_resolver = ConflictResolver::new();
-    let reputation_tracker = ReputationTracker::new(params.gamma);
+    let consensus = ConsensusEngine::new(params.clone(), storage.clone());
     let mrw = MrwEngine::new(params.clone());
 
     let proposer = PublicKey::from_bytes([1; 32]);
@@ -67,9 +69,8 @@ async fn test_mrw_bootstrap_single_tip() {
         .select_parents(
             &new_features,
             &[tip.id],
-            &storage,
-            &conflict_resolver,
-            &reputation_tracker,
+            &*storage,
+            &consensus,
         )
         .await;
 
@@ -87,14 +88,15 @@ async fn test_mrw_bootstrap_few_tips() {
         ..Default::default()
     };
 
-    let storage = StorageEngine::new(StorageConfig {
-        backend_type: BackendType::Memory,
-        ..Default::default()
-    })
-    .unwrap();
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
-    let conflict_resolver = ConflictResolver::new();
-    let reputation_tracker = ReputationTracker::new(params.gamma);
+    let consensus = ConsensusEngine::new(params.clone(), storage.clone());
     let mrw = MrwEngine::new(params.clone());
 
     let proposer = PublicKey::from_bytes([1; 32]);
@@ -116,9 +118,8 @@ async fn test_mrw_bootstrap_few_tips() {
         .select_parents(
             &new_features,
             &[tip1.id, tip2.id],
-            &storage,
-            &conflict_resolver,
-            &reputation_tracker,
+            &*storage,
+            &consensus,
         )
         .await;
 
@@ -139,14 +140,15 @@ async fn test_mrw_large_tip_set() {
         ..Default::default()
     };
 
-    let storage = StorageEngine::new(StorageConfig {
-        backend_type: BackendType::Memory,
-        ..Default::default()
-    })
-    .unwrap();
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
-    let conflict_resolver = ConflictResolver::new();
-    let reputation_tracker = ReputationTracker::new(params.gamma);
+    let consensus = ConsensusEngine::new(params.clone(), storage.clone());
     let mrw = MrwEngine::new(params.clone());
 
     // Create 1000 tips with varying features
@@ -169,7 +171,8 @@ async fn test_mrw_large_tip_set() {
 
         // Set varied reputations
         let reputation = 0.5 + (i as f64 / 2000.0);
-        reputation_tracker
+        consensus
+            .reputation
             .set_reputation(&proposer, reputation)
             .await;
     }
@@ -187,9 +190,8 @@ async fn test_mrw_large_tip_set() {
         .select_parents(
             &new_features,
             &tip_ids,
-            &storage,
-            &conflict_resolver,
-            &reputation_tracker,
+            &*storage,
+            &consensus,
         )
         .await;
 
@@ -292,14 +294,15 @@ async fn test_mrw_axis_independence() {
         ..Default::default()
     };
 
-    let storage = StorageEngine::new(StorageConfig {
-        backend_type: BackendType::Memory,
-        ..Default::default()
-    })
-    .unwrap();
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
-    let conflict_resolver = ConflictResolver::new();
-    let reputation_tracker = ReputationTracker::new(params.gamma);
+    let consensus = ConsensusEngine::new(params.clone(), storage.clone());
     let mrw = MrwEngine::new(params.clone());
 
     // Create tips with different patterns on each axis
@@ -330,8 +333,7 @@ async fn test_mrw_axis_independence() {
             &new_features,
             &[tip1.id, tip2.id, tip3.id],
             &storage,
-            &conflict_resolver,
-            &reputation_tracker,
+            &consensus,
         )
         .await
         .unwrap();
@@ -375,14 +377,15 @@ async fn test_mrw_reputation_extremes() {
         ..Default::default()
     };
 
-    let storage = StorageEngine::new(StorageConfig {
-        backend_type: BackendType::Memory,
-        ..Default::default()
-    })
-    .unwrap();
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
-    let conflict_resolver = ConflictResolver::new();
-    let reputation_tracker = ReputationTracker::new(params.gamma);
+    let consensus = ConsensusEngine::new(params.clone(), storage.clone());
     let mrw = MrwEngine::new(params.clone());
 
     // Create tips with extreme reputation differences
@@ -391,13 +394,16 @@ async fn test_mrw_reputation_extremes() {
     let max_rep_proposer = PublicKey::from_bytes([3; 32]);
 
     // Set reputations
-    reputation_tracker
+    consensus
+        .reputation
         .set_reputation(&high_rep_proposer, 0.9)
         .await;
-    reputation_tracker
+    consensus
+        .reputation
         .set_reputation(&zero_rep_proposer, 0.0)
         .await;
-    reputation_tracker
+    consensus
+        .reputation
         .set_reputation(&max_rep_proposer, 10.0)
         .await;
 
@@ -424,8 +430,7 @@ async fn test_mrw_reputation_extremes() {
                 &new_features,
                 &[tip1.id, tip2.id, tip3.id],
                 &storage,
-                &conflict_resolver,
-                &reputation_tracker,
+                &consensus,
             )
             .await
             .unwrap();
@@ -453,14 +458,15 @@ async fn test_mrw_reputation_extremes() {
 #[tokio::test]
 async fn test_mrw_empty_tip_set() {
     let params = AdicParams::default();
-    let storage = StorageEngine::new(StorageConfig {
-        backend_type: BackendType::Memory,
-        ..Default::default()
-    })
-    .unwrap();
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
-    let conflict_resolver = ConflictResolver::new();
-    let reputation_tracker = ReputationTracker::new(params.gamma);
+    let consensus = ConsensusEngine::new(params.clone(), storage.clone());
     let mrw = MrwEngine::new(params);
 
     let new_features = AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(50, 3, 10))]);
@@ -470,9 +476,8 @@ async fn test_mrw_empty_tip_set() {
         .select_parents(
             &new_features,
             &[], // Empty tip set
-            &storage,
-            &conflict_resolver,
-            &reputation_tracker,
+            &*storage,
+            &consensus,
         )
         .await;
 
@@ -483,14 +488,15 @@ async fn test_mrw_empty_tip_set() {
 #[tokio::test]
 async fn test_mrw_conflicting_tips() {
     let params = AdicParams::default();
-    let storage = StorageEngine::new(StorageConfig {
-        backend_type: BackendType::Memory,
-        ..Default::default()
-    })
-    .unwrap();
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
-    let conflict_resolver = ConflictResolver::new();
-    let reputation_tracker = ReputationTracker::new(params.gamma);
+    let consensus = ConsensusEngine::new(params.clone(), storage.clone());
     let mrw = MrwEngine::new(params);
 
     let proposer = PublicKey::from_bytes([1; 32]);
@@ -503,7 +509,8 @@ async fn test_mrw_conflicting_tips() {
     storage.store_message(&tip2).await.unwrap();
 
     // Register conflict
-    conflict_resolver
+    consensus
+        .energy_tracker()
         .register_conflict_with_messages("double_spend", vec![tip1.id, tip2.id])
         .await;
 
@@ -515,8 +522,7 @@ async fn test_mrw_conflicting_tips() {
             &new_features,
             &[tip1.id, tip2.id],
             &storage,
-            &conflict_resolver,
-            &reputation_tracker,
+            &consensus,
         )
         .await
         .unwrap();

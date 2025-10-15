@@ -23,6 +23,8 @@ mod tests {
             connection_state: ConnectionState::Connected,
             message_stats: MessageStats::default(),
             padic_location: Some(QpDigits::from_u64(id as u64, 3, 5)),
+            asn: None,
+            region: None,
         }
     }
 

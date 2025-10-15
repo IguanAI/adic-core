@@ -44,10 +44,11 @@ mod update_tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let peer_id = PeerId::random();
-        let (_protocol, _event_receiver) =
+        let (protocol, mut _event_receiver) =
             UpdateProtocol::new(config, temp_dir.path().to_path_buf(), peer_id).unwrap();
-        // Protocol initialized successfully
-        // Test placeholder
+        // Protocol initialized successfully: assert initial state reasonable
+        let all_versions = protocol.get_all_peer_versions().await;
+        assert!(all_versions.is_empty(), "No versions should be tracked initially");
     }
 
     #[tokio::test]
@@ -78,7 +79,7 @@ mod update_tests {
         let _response = protocol.handle_message(msg, peer_id).await;
 
         // Check for version discovered event
-        tokio::time::timeout(Duration::from_secs(1), async {
+        let got_event = tokio::time::timeout(Duration::from_secs(1), async {
             while let Some(event) = event_receiver.recv().await {
                 if let UpdateProtocolEvent::VersionDiscovered(_, _) = event {
                     return true;
@@ -88,6 +89,7 @@ mod update_tests {
         })
         .await
         .unwrap_or(false);
+        assert!(got_event, "Should receive VersionDiscovered event");
     }
 
     #[tokio::test]
@@ -149,7 +151,7 @@ mod update_tests {
         let _response = protocol.handle_message(msg, peer_id).await;
 
         // Check for chunk download completed event
-        tokio::time::timeout(Duration::from_secs(1), async {
+        let got_chunk_event = tokio::time::timeout(Duration::from_secs(1), async {
             while let Some(event) = event_receiver.recv().await {
                 if let UpdateProtocolEvent::ChunkDownloadCompleted(_, _, _) = event {
                     return true;
@@ -159,6 +161,7 @@ mod update_tests {
         })
         .await
         .unwrap_or(false);
+        assert!(got_chunk_event, "Should receive ChunkDownloadCompleted event");
     }
 
     #[tokio::test]

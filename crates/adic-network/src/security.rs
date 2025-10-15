@@ -416,6 +416,7 @@ fn security_params_to_adic_params(sp: &SecurityParams) -> AdicParams {
         r_min: sp.r_min,
         r_sum_min: sp.r_sum_min,
         lambda: sp.mrw_params.0,
+        alpha: sp.reputation_exponents.0,  // MRW reputation exponent
         beta: sp.reputation_exponents.1,
         mu: sp.mrw_params.1,
         gamma: sp.gamma,

@@ -7,7 +7,8 @@ use std::collections::HashMap;
 pub enum FinalityGate {
     F1KCore,
     F2PersistentHomology,
-    SSF,
+    /// Composite finality: Both F1 and F2 (required for governance per PoUW III §7.1)
+    F1AndF2Composite,
 }
 
 /// Witness data for finality
@@ -82,6 +83,29 @@ impl FinalityArtifact {
         self.witness.diversity_ok
             && self.witness.depth >= self.params.depth_star
             && self.witness.reputation_sum >= self.params.r_sum_min
+    }
+
+    /// Check if this artifact provides F1 (k-core) finality
+    pub fn has_f1_finality(&self) -> bool {
+        matches!(
+            self.gate,
+            FinalityGate::F1KCore | FinalityGate::F1AndF2Composite
+        ) && self.witness.kcore_root.is_some()
+    }
+
+    /// Check if this artifact provides F2 (persistent homology) finality
+    pub fn has_f2_finality(&self) -> bool {
+        matches!(
+            self.gate,
+            FinalityGate::F2PersistentHomology | FinalityGate::F1AndF2Composite
+        ) && self.witness.h3_stable.is_some()
+    }
+
+    /// Check if this artifact provides composite F1 ∧ F2 finality
+    /// Required for governance-grade finality per PoUW III §7.1
+    pub fn has_composite_finality(&self) -> bool {
+        self.gate == FinalityGate::F1AndF2Composite
+            || (self.has_f1_finality() && self.has_f2_finality())
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {

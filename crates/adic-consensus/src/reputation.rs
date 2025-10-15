@@ -85,7 +85,7 @@ impl ReputationScore {
 pub struct ReputationTracker {
     scores: Arc<RwLock<HashMap<PublicKey, ReputationScore>>>,
     decay_factor: f64,
-    gamma: f64,
+    gamma: Arc<RwLock<f64>>, // Wrapped for hot-reload support
     /// Track message approvals for overlap detection
     approval_history: Arc<RwLock<HashMap<PublicKey, Vec<adic_types::MessageId>>>>,
     event_callback: Arc<RwLock<Option<ReputationEventCallback>>>,
@@ -96,7 +96,7 @@ impl ReputationTracker {
         Self {
             scores: Arc::new(RwLock::new(HashMap::new())),
             decay_factor: 0.99,
-            gamma,
+            gamma: Arc::new(RwLock::new(gamma)),
             approval_history: Arc::new(RwLock::new(HashMap::new())),
             event_callback: Arc::new(RwLock::new(None)),
         }
@@ -106,6 +106,13 @@ impl ReputationTracker {
     pub async fn set_event_callback(&self, callback: ReputationEventCallback) {
         let mut cb = self.event_callback.write().await;
         *cb = Some(callback);
+    }
+
+    /// Update gamma parameter for reputation updates (hot-reload support)
+    pub async fn update_gamma(&self, new_gamma: f64) {
+        let mut gamma = self.gamma.write().await;
+        *gamma = new_gamma;
+        tracing::info!(gamma = new_gamma, "✅ Reputation gamma parameter updated");
     }
 
     /// Emit a reputation change event if callback is set
@@ -159,6 +166,7 @@ impl ReputationTracker {
     /// Update reputation positively when message is finalized
     /// Uses adjusted formula: R_{t+1} = γR_t + (1−γ) * (1 + diversity/(1+depth))
     pub async fn good_update(&self, pubkey: &PublicKey, diversity: f64, depth: u32) {
+        let gamma = *self.gamma.read().await;
         let mut scores = self.scores.write().await;
         let score = scores.entry(*pubkey).or_insert_with(ReputationScore::new);
 
@@ -168,11 +176,11 @@ impl ReputationTracker {
         // Apply update: R_{t+1} = γR_t + (1−γ) * good
         let old_rep = score.value;
         let old_finalized = score.messages_finalized;
-        score.value = (self.gamma * old_rep + (1.0 - self.gamma) * good_score).min(10.0); // Cap at 10.0
+        score.value = (gamma * old_rep + (1.0 - gamma) * good_score).min(10.0); // Cap at 10.0
         score.messages_finalized += 1;
         score.last_update = chrono::Utc::now().timestamp();
 
-        tracing::info!(
+        tracing::debug!(
             pubkey = %pubkey.to_hex(),
             reputation_before = old_rep,
             reputation_after = score.value,
@@ -199,15 +207,16 @@ impl ReputationTracker {
     /// Update reputation negatively when message is invalid/slashed
     /// Uses paper formula: R_{t+1} = γR_t + (1−γ) * (-penalty)
     pub async fn bad_update(&self, pubkey: &PublicKey, penalty: f64) {
+        let gamma = *self.gamma.read().await;
         let mut scores = self.scores.write().await;
         let score = scores.entry(*pubkey).or_insert_with(ReputationScore::new);
 
         // Apply paper formula with negative penalty: R_{t+1} = γR_t + (1−γ) * (-penalty)
         let old_rep = score.value;
-        score.value = (self.gamma * old_rep + (1.0 - self.gamma) * (-penalty)).max(0.1); // Floor at 0.1
+        score.value = (gamma * old_rep + (1.0 - gamma) * (-penalty)).max(0.1); // Floor at 0.1
         score.last_update = chrono::Utc::now().timestamp();
 
-        tracing::info!(
+        tracing::debug!(
             pubkey = %pubkey.to_hex(),
             reputation_before = old_rep,
             reputation_after = score.value,
@@ -250,19 +259,20 @@ impl ReputationTracker {
         let bad = eta * overlap_score;
 
         // Update reputation: R_{t+1} = γR_t + (1−γ)(good − bad)
+        let gamma = *self.gamma.read().await;
         let mut scores = self.scores.write().await;
         let score = scores.entry(*pubkey).or_insert_with(ReputationScore::new);
 
         let old_rep = score.value;
         let old_finalized = score.messages_finalized;
-        let new_rep = self.gamma * old_rep + (1.0 - self.gamma) * (good - bad);
+        let new_rep = gamma * old_rep + (1.0 - gamma) * (good - bad);
 
         // Apply bounds [0.1, 10.0]
         score.value = new_rep.clamp(0.1, 10.0);
         score.messages_finalized += finalized_count as u64;
         score.last_update = chrono::Utc::now().timestamp();
 
-        tracing::info!(
+        tracing::debug!(
             pubkey = %pubkey.to_hex(),
             reputation_before = old_rep,
             reputation_after = score.value,
@@ -349,7 +359,7 @@ impl ReputationTracker {
         let old_count = approvals.len();
         approvals.push(message_id);
 
-        tracing::info!(
+        tracing::debug!(
             pubkey = %pubkey.to_hex(),
             message_id = %message_id,
             approvals_before = old_count,
@@ -426,7 +436,7 @@ impl Clone for ReputationTracker {
         Self {
             scores: Arc::clone(&self.scores),
             decay_factor: self.decay_factor,
-            gamma: self.gamma,
+            gamma: Arc::clone(&self.gamma),
             approval_history: Arc::clone(&self.approval_history),
             event_callback: Arc::clone(&self.event_callback),
         }

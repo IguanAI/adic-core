@@ -6,6 +6,8 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod api;
+mod api_governance;
+mod api_storage_market;
 mod api_sse;
 mod api_wallet;
 mod api_wallet_tx;
@@ -133,6 +135,18 @@ enum Commands {
         #[command(subcommand)]
         subcommand: UpdateCommands,
     },
+
+    /// Governance operations (proposals, voting)
+    Governance {
+        #[command(subcommand)]
+        command: GovernanceCommands,
+    },
+
+    /// Storage market operations
+    StorageMarket {
+        #[command(subcommand)]
+        command: StorageMarketCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -206,6 +220,298 @@ enum UpdateCommands {
         /// Version string (e.g., "0.2.0")
         #[arg(long)]
         version: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum GovernanceCommands {
+    /// Submit a governance proposal
+    Propose {
+        /// Parameter keys to update (comma-separated, e.g., "k,delta")
+        #[arg(long)]
+        params: String,
+
+        /// New values as JSON (e.g., '{"k": 25, "delta": 10}')
+        #[arg(long)]
+        values: String,
+
+        /// Proposal class: constitutional or operational
+        #[arg(long, default_value = "operational")]
+        class: String,
+
+        /// IPFS CID of rationale document
+        #[arg(long)]
+        rationale: String,
+
+        /// Epoch at which to enact (0 = auto-calculate)
+        #[arg(long, default_value = "0")]
+        enact_epoch: u64,
+
+        /// Network to connect to
+        #[arg(long, default_value = "testnet")]
+        network: String,
+    },
+
+    /// Vote on a proposal
+    Vote {
+        /// Proposal ID (hex)
+        #[arg(long)]
+        proposal_id: String,
+
+        /// Vote: yes, no, or abstain
+        #[arg(long)]
+        ballot: String,
+
+        /// Network to connect to
+        #[arg(long, default_value = "testnet")]
+        network: String,
+    },
+
+    /// List all proposals
+    List {
+        /// Filter by status (voting, tallying, succeeded, enacted, rejected, failed)
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Network to connect to
+        #[arg(long, default_value = "testnet")]
+        network: String,
+    },
+
+    /// Show proposal details
+    Show {
+        /// Proposal ID (hex)
+        #[arg(long)]
+        proposal_id: String,
+
+        /// Network to connect to
+        #[arg(long, default_value = "testnet")]
+        network: String,
+    },
+
+    /// Show current governance parameters
+    Parameters {
+        /// Network to connect to
+        #[arg(long, default_value = "testnet")]
+        network: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum StorageMarketCommands {
+    /// Publish a storage deal intent
+    PublishIntent {
+        /// Data CID (hex, 64 chars = 32 bytes)
+        #[arg(long)]
+        data_cid: String,
+
+        /// Data size in bytes
+        #[arg(long)]
+        size: u64,
+
+        /// Duration in epochs
+        #[arg(long)]
+        duration: u64,
+
+        /// Max price per epoch (ADIC)
+        #[arg(long)]
+        max_price: f64,
+
+        /// Required redundancy (number of providers)
+        #[arg(long, default_value = "1")]
+        redundancy: u8,
+
+        /// Settlement rail (adic, filecoin, arweave)
+        #[arg(long, default_value = "adic")]
+        rail: String,
+
+        /// Node API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// List storage intents
+    ListIntents {
+        /// Filter by client address (hex)
+        #[arg(long)]
+        client: Option<String>,
+
+        /// Filter by status (pending, finalized)
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Limit results
+        #[arg(long, default_value = "50")]
+        limit: usize,
+
+        /// Offset for pagination
+        #[arg(long, default_value = "0")]
+        offset: usize,
+
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// Get intent details
+    GetIntent {
+        /// Intent ID (hex)
+        #[arg(long)]
+        id: String,
+
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// Submit provider acceptance
+    AcceptIntent {
+        /// Intent ID to accept (hex)
+        #[arg(long)]
+        intent_id: String,
+
+        /// Price per epoch (ADIC)
+        #[arg(long)]
+        price: f64,
+
+        /// Collateral amount (ADIC)
+        #[arg(long)]
+        collateral: f64,
+
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// List acceptances
+    ListAcceptances {
+        /// Filter by provider address (hex)
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Filter by intent ID (hex)
+        #[arg(long)]
+        intent_id: Option<String>,
+
+        /// Limit results
+        #[arg(long, default_value = "50")]
+        limit: usize,
+
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// Compile a deal from intent and acceptance
+    CompileDeal {
+        /// Intent ID (hex)
+        #[arg(long)]
+        intent_id: String,
+
+        /// Acceptance ID (hex)
+        #[arg(long)]
+        acceptance_id: String,
+
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// Activate a deal
+    ActivateDeal {
+        /// Deal ID
+        #[arg(long)]
+        deal_id: u64,
+
+        /// Merkle root of data (hex, 64 chars = 32 bytes)
+        #[arg(long)]
+        merkle_root: String,
+
+        /// Chunk count
+        #[arg(long)]
+        chunks: u64,
+
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// List deals
+    ListDeals {
+        /// Filter by client address (hex)
+        #[arg(long)]
+        client: Option<String>,
+
+        /// Filter by provider address (hex)
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Filter by status (published, pendingactivation, active, completed, failed)
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Limit results
+        #[arg(long, default_value = "50")]
+        limit: usize,
+
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// Get deal details
+    GetDeal {
+        /// Deal ID
+        #[arg(long)]
+        id: u64,
+
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// Get challenges for a deal and epoch
+    GetChallenges {
+        /// Deal ID
+        #[arg(long)]
+        deal_id: u64,
+
+        /// Epoch number
+        #[arg(long)]
+        epoch: u64,
+
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// Show market statistics
+    Stats {
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// Show provider statistics
+    ProviderStats {
+        /// Provider address (hex)
+        #[arg(long)]
+        address: String,
+
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
+    },
+
+    /// Show client statistics
+    ClientStats {
+        /// Client address (hex)
+        #[arg(long)]
+        address: String,
+
+        /// API URL
+        #[arg(long, default_value = "http://localhost:8080")]
+        api_url: String,
     },
 }
 
@@ -309,7 +615,19 @@ async fn main() -> Result<()> {
                     info!("✅ Copyover recovery complete, starting node");
 
                     // Start node with recovered config
-                    let node = node::AdicNode::new(config.clone()).await?;
+                    let mut node = node::AdicNode::new(config.clone()).await?;
+
+                    // Configure governance if enabled
+                    if let Some(ref gov_config) = config.applications.governance {
+                        let lifecycle_config = gov_config.to_lifecycle_config(config.consensus.epoch_duration_secs);
+                        let protocol_config = gov_config.to_protocol_config(config.consensus.epoch_duration_secs);
+                        node = node.with_governance_manager(lifecycle_config, protocol_config)?;
+                        info!(
+                            epoch_duration_secs = config.consensus.epoch_duration_secs,
+                            "🗳️  Governance system enabled (copyover recovery)"
+                        );
+                    }
+
                     info!(
                         node_id = %node.node_id(),
                         "🎯 Node initialized with recovered state"
@@ -390,7 +708,22 @@ async fn main() -> Result<()> {
             );
 
             // Create and start node
-            let node = node::AdicNode::new(config.clone()).await?;
+            let mut node = node::AdicNode::new(config.clone()).await?;
+
+            // Configure governance if enabled
+            if let Some(ref gov_config) = config.applications.governance {
+                let lifecycle_config = gov_config.to_lifecycle_config(config.consensus.epoch_duration_secs);
+                let protocol_config = gov_config.to_protocol_config(config.consensus.epoch_duration_secs);
+
+                node = node.with_governance_manager(lifecycle_config, protocol_config)?;
+                info!(
+                    rmax = gov_config.rmax,
+                    min_quorum = gov_config.min_quorum,
+                    voting_period_epochs = gov_config.voting_period_epochs,
+                    epoch_duration_secs = config.consensus.epoch_duration_secs,
+                    "🗳️  Governance system enabled"
+                );
+            }
 
             info!(
                 node_id = %node.node_id(),
@@ -404,8 +737,9 @@ async fn main() -> Result<()> {
             // Start the node
             let node_handle = tokio::spawn(async move {
                 if let Err(e) = node.run().await {
+                    let error_msg = e.to_string();
                     warn!(
-                        error = %e,
+                        error = %error_msg,
                         "❌ Node encountered error"
                     );
                 }
@@ -695,6 +1029,76 @@ async fn main() -> Result<()> {
         }
 
         Commands::Update { subcommand } => handle_update_command(subcommand, cli.config).await,
+
+        Commands::Governance { command } => {
+            info!("🗳️  Governance command");
+            match command {
+                GovernanceCommands::Propose {
+                    params,
+                    values,
+                    class,
+                    rationale,
+                    enact_epoch,
+                    network,
+                } => {
+                    adic_node::cli_governance::handle_propose(
+                        params,
+                        values,
+                        class,
+                        rationale,
+                        enact_epoch,
+                        network,
+                        cli.config,
+                    )
+                    .await
+                }
+                GovernanceCommands::Vote {
+                    proposal_id,
+                    ballot,
+                    network,
+                } => {
+                    adic_node::cli_governance::handle_vote(
+                        proposal_id,
+                        ballot,
+                        network,
+                        cli.config,
+                    )
+                    .await
+                }
+                GovernanceCommands::List { status, network } => {
+                    adic_node::cli_governance::handle_list(
+                        status,
+                        network,
+                        cli.config,
+                    )
+                    .await
+                }
+                GovernanceCommands::Show {
+                    proposal_id,
+                    network,
+                } => {
+                    adic_node::cli_governance::handle_show(
+                        proposal_id,
+                        network,
+                        cli.config,
+                    )
+                    .await
+                }
+                GovernanceCommands::Parameters { network } => {
+                    adic_node::cli_governance::handle_parameters(
+                        network,
+                        cli.config,
+                    )
+                    .await
+                }
+            }
+        }
+
+        Commands::StorageMarket { command } => {
+            info!("💾 Storage market command");
+            // Convert main's StorageMarketCommands to cli module's version
+            handle_storage_market_cli(command).await
+        }
     }
 }
 
@@ -878,4 +1282,54 @@ async fn handle_update_command(cmd: UpdateCommands, config_path: Option<PathBuf>
             Ok(())
         }
     }
+}
+
+/// Convert main's StorageMarketCommands to CLI handler's version
+async fn handle_storage_market_cli(cmd: StorageMarketCommands) -> Result<()> {
+    use adic_node::cli_storage_market;
+
+    // Convert to CLI module's enum variant
+    let cli_cmd = match cmd {
+        StorageMarketCommands::PublishIntent { data_cid, size, duration, max_price, redundancy, rail, api_url } => {
+            cli_storage_market::StorageMarketCommands::PublishIntent { data_cid, size, duration, max_price, redundancy, rail, api_url }
+        }
+        StorageMarketCommands::ListIntents { client, status, limit, offset, api_url } => {
+            cli_storage_market::StorageMarketCommands::ListIntents { client, status, limit, offset, api_url }
+        }
+        StorageMarketCommands::GetIntent { id, api_url } => {
+            cli_storage_market::StorageMarketCommands::GetIntent { id, api_url }
+        }
+        StorageMarketCommands::AcceptIntent { intent_id, price, collateral, api_url } => {
+            cli_storage_market::StorageMarketCommands::AcceptIntent { intent_id, price, collateral, api_url }
+        }
+        StorageMarketCommands::ListAcceptances { provider, intent_id, limit, api_url } => {
+            cli_storage_market::StorageMarketCommands::ListAcceptances { provider, intent_id, limit, api_url }
+        }
+        StorageMarketCommands::CompileDeal { intent_id, acceptance_id, api_url } => {
+            cli_storage_market::StorageMarketCommands::CompileDeal { intent_id, acceptance_id, api_url }
+        }
+        StorageMarketCommands::ActivateDeal { deal_id, merkle_root, chunks, api_url } => {
+            cli_storage_market::StorageMarketCommands::ActivateDeal { deal_id, merkle_root, chunks, api_url }
+        }
+        StorageMarketCommands::ListDeals { client, provider, status, limit, api_url } => {
+            cli_storage_market::StorageMarketCommands::ListDeals { client, provider, status, limit, api_url }
+        }
+        StorageMarketCommands::GetDeal { id, api_url } => {
+            cli_storage_market::StorageMarketCommands::GetDeal { id, api_url }
+        }
+        StorageMarketCommands::GetChallenges { deal_id, epoch, api_url } => {
+            cli_storage_market::StorageMarketCommands::GetChallenges { deal_id, epoch, api_url }
+        }
+        StorageMarketCommands::Stats { api_url } => {
+            cli_storage_market::StorageMarketCommands::Stats { api_url }
+        }
+        StorageMarketCommands::ProviderStats { address, api_url } => {
+            cli_storage_market::StorageMarketCommands::ProviderStats { address, api_url }
+        }
+        StorageMarketCommands::ClientStats { address, api_url } => {
+            cli_storage_market::StorageMarketCommands::ClientStats { address, api_url }
+        }
+    };
+
+    cli_storage_market::handle_storage_market_command(cli_cmd).await
 }

@@ -14,8 +14,16 @@ rand = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+hex = { workspace = true }
 aes-gcm = "0.10"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+# BLS threshold signatures for governance and PoUW receipts
+threshold_crypto = { version = "0.4", features = ["bincode"] }
+bincode = "1.3"
+# Old rand version required by threshold_crypto for key generation
+rand_07 = { package = "rand", version = "0.7" }
+tracing = { workspace = true }
+lru = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }
@@ -23,3 +31,4 @@ chrono = { workspace = true }
 adic-consensus = { path = "../adic-consensus" }
 adic-storage = { path = "../adic-storage" }
 tokio = { workspace = true, features = ["full"] }
+rand_chacha = "0.3"

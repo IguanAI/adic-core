@@ -37,6 +37,11 @@ pub struct AdmissibilityChecker {
     ultrametric_validator: Option<Arc<UltrametricValidator>>,
     /// Whether to use ultrametric validation (defaults to true for security)
     use_ultrametric: bool,
+    // Metrics counters - updated externally by incrementing directly
+    pub admissibility_checks_total: Option<Arc<prometheus::IntCounter>>,
+    pub admissibility_s_failures: Option<Arc<prometheus::IntCounter>>,
+    pub admissibility_c2_failures: Option<Arc<prometheus::IntCounter>>,
+    pub admissibility_c3_failures: Option<Arc<prometheus::IntCounter>>,
 }
 
 impl AdmissibilityChecker {
@@ -48,6 +53,10 @@ impl AdmissibilityChecker {
             params,
             ultrametric_validator,
             use_ultrametric: true,
+            admissibility_checks_total: None,
+            admissibility_s_failures: None,
+            admissibility_c2_failures: None,
+            admissibility_c3_failures: None,
         }
     }
 
@@ -63,7 +72,25 @@ impl AdmissibilityChecker {
             params,
             ultrametric_validator,
             use_ultrametric,
+            admissibility_checks_total: None,
+            admissibility_s_failures: None,
+            admissibility_c2_failures: None,
+            admissibility_c3_failures: None,
         }
+    }
+
+    /// Set metrics for admissibility tracking
+    pub fn set_metrics(
+        &mut self,
+        admissibility_checks_total: Arc<prometheus::IntCounter>,
+        admissibility_s_failures: Arc<prometheus::IntCounter>,
+        admissibility_c2_failures: Arc<prometheus::IntCounter>,
+        admissibility_c3_failures: Arc<prometheus::IntCounter>,
+    ) {
+        self.admissibility_checks_total = Some(admissibility_checks_total);
+        self.admissibility_s_failures = Some(admissibility_s_failures);
+        self.admissibility_c2_failures = Some(admissibility_c2_failures);
+        self.admissibility_c3_failures = Some(admissibility_c3_failures);
     }
 
     pub fn check_message(
@@ -72,6 +99,11 @@ impl AdmissibilityChecker {
         parent_features: &[Vec<QpDigits>],
         parent_reputations: &[f64],
     ) -> Result<AdmissibilityResult> {
+        // Update metrics - admissibility check started
+        if let Some(ref counter) = self.admissibility_checks_total {
+            counter.inc();
+        }
+
         if message.parents.len() != (self.params.d + 1) as usize {
             return Err(AdicError::AdmissibilityFailed(format!(
                 "Expected {} parents, got {}",
@@ -132,6 +164,23 @@ impl AdmissibilityChecker {
             c3_result.0,
             details.clone(),
         );
+
+        // Update metrics for failures
+        if !score_passed {
+            if let Some(ref counter) = self.admissibility_s_failures {
+                counter.inc();
+            }
+        }
+        if !c2_result.0 {
+            if let Some(ref counter) = self.admissibility_c2_failures {
+                counter.inc();
+            }
+        }
+        if !c3_result.0 {
+            if let Some(ref counter) = self.admissibility_c3_failures {
+                counter.inc();
+            }
+        }
 
         info!(
             message_id = %message.id,

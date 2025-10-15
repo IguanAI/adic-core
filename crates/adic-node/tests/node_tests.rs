@@ -7,7 +7,12 @@ use chrono::Utc;
 
 #[tokio::test]
 async fn test_node_initialization() {
+    use tempfile::tempdir;
+
+    let temp_dir = tempdir().unwrap();
     let mut config = NodeConfig::default();
+    config.node.data_dir = temp_dir.path().to_path_buf();
+    config.node.name = "test_node_init".to_string();
     // Use in-memory storage for tests
     config.storage.backend = "memory".to_string();
     config.node.bootstrap = Some(true); // Set as bootstrap node for tests
@@ -21,8 +26,13 @@ async fn test_node_initialization() {
 
 #[tokio::test]
 async fn test_message_submission() {
+    use tempfile::tempdir;
+
+    let temp_dir = tempdir().unwrap();
     // Use test-friendly config with relaxed params and in-memory storage
     let mut config = NodeConfig::default();
+    config.node.data_dir = temp_dir.path().to_path_buf();
+    config.node.name = "test_message_submission".to_string();
     // Keep d = 3 as per spec, but relax other constraints for testing
     config.consensus.q = 1; // Minimal diversity requirement
     config.consensus.rho = vec![1, 1, 1]; // Lower radii for easier proximity matching
@@ -70,8 +80,13 @@ async fn test_message_submission() {
 
 #[tokio::test]
 async fn test_node_stats() {
+    use tempfile::tempdir;
+
+    let temp_dir = tempdir().unwrap();
     // Use test-friendly config with relaxed params and in-memory storage
     let mut config = NodeConfig::default();
+    config.node.data_dir = temp_dir.path().to_path_buf();
+    config.node.name = "test_node_stats".to_string();
     // Keep d = 3 as per spec, but relax other constraints for testing
     config.consensus.q = 1; // Minimal diversity requirement
     config.consensus.rho = vec![1, 1, 1]; // Lower radii for easier proximity matching

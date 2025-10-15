@@ -1,4 +1,6 @@
+pub mod bls;
 pub mod consensus_crypto;
+pub mod dkg;
 pub mod feature_crypto;
 pub mod padic_crypto;
 pub mod security_params;
@@ -10,8 +12,18 @@ mod test_helpers;
 
 use adic_types::{AdicError, AdicMessage, PublicKey, Result, Signature};
 use ed25519_dalek::{Signature as DalekSignature, Signer, SigningKey, Verifier, VerifyingKey};
+use lru::LruCache;
 use rand::rngs::OsRng;
+use std::num::NonZeroUsize;
+use std::sync::Mutex;
 
+pub use bls::{
+    BLSError, BLSSignature, BLSSignatureShare,
+    BLSThresholdSigner, ThresholdConfig, dst, generate_threshold_keys,
+};
+pub use dkg::{
+    DKGCeremony, DKGCommitment, DKGResult, DKGShare, DKGState, ParticipantId,
+};
 pub use consensus_crypto::{
     CertificateValidator, ConflictResolutionProof, ConflictResolver, ConsensusValidator,
     FinalityCertificate, HomologyProof, KCoreProof,
@@ -86,6 +98,9 @@ impl Keypair {
 
 pub struct CryptoEngine {
     signing_key: Option<SigningKey>,
+    /// LRU cache for VerifyingKey objects to avoid repeated deserialization
+    /// Capacity: 1000 keys = ~32KB memory (32 bytes per key)
+    verifying_key_cache: Mutex<LruCache<[u8; 32], VerifyingKey>>,
 }
 
 impl Default for CryptoEngine {
@@ -96,7 +111,10 @@ impl Default for CryptoEngine {
 
 impl CryptoEngine {
     pub fn new() -> Self {
-        Self { signing_key: None }
+        Self {
+            signing_key: None,
+            verifying_key_cache: Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap())),
+        }
     }
 
     pub fn generate_keypair(&mut self) -> PublicKey {
@@ -127,8 +145,20 @@ impl CryptoEngine {
         public_key: &PublicKey,
         signature: &Signature,
     ) -> Result<bool> {
-        let verifying_key = VerifyingKey::from_bytes(public_key.as_bytes())
-            .map_err(|_| AdicError::SignatureVerification)?;
+        // Try to get cached VerifyingKey, or create and cache if not present
+        let verifying_key = {
+            let mut cache = self.verifying_key_cache.lock().unwrap();
+            let key_bytes = *public_key.as_bytes();
+
+            if let Some(cached_key) = cache.get(&key_bytes) {
+                *cached_key
+            } else {
+                let new_key = VerifyingKey::from_bytes(&key_bytes)
+                    .map_err(|_| AdicError::SignatureVerification)?;
+                cache.put(key_bytes, new_key);
+                new_key
+            }
+        };
 
         let sig_bytes = signature.as_bytes();
         if sig_bytes.len() != 64 {

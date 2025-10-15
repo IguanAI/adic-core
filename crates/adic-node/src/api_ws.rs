@@ -378,6 +378,7 @@ async fn handle_events(
                         let response = ServerMessage::Subscribed { events };
                         let msg = serde_json::to_string(&response)?;
                         sender.send(Message::Text(msg)).await?;
+                        metrics.websocket_messages_sent.inc();
                     }
                     SubscriptionCommand::Unsubscribe(events) => {
                         debug!(events = ?events, "Processing unsubscribe command");
@@ -386,12 +387,14 @@ async fn handle_events(
                         let response = ServerMessage::Unsubscribed { events };
                         let msg = serde_json::to_string(&response)?;
                         sender.send(Message::Text(msg)).await?;
+                        metrics.websocket_messages_sent.inc();
                     }
                     SubscriptionCommand::Ping => {
                         debug!("Processing ping command");
                         let response = ServerMessage::Pong;
                         let msg = serde_json::to_string(&response)?;
                         sender.send(Message::Text(msg)).await?;
+                        metrics.websocket_messages_sent.inc();
                     }
                 }
             }

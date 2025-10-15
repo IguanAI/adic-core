@@ -11,11 +11,18 @@ members = [
     "crates/adic-network",
     "crates/adic-node",
     "crates/adic-bench",
+    "crates/adic-app-common",
+    "crates/adic-vrf",
+    "crates/adic-quorum",
+    "crates/adic-challenges", "crates/adic-governance", "crates/adic-pouw", "crates/adic-storage-market",
+]
+exclude = [
+    "crates/*/fuzz",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 authors = ["ADIC Core Team"]
 license = "MIT"
@@ -42,7 +49,11 @@ hex = "0.4"
 rocksdb = "0.22"
 
 # Networking
-libp2p = { version = "0.56", features = ["tcp", "tokio", "noise", "yamux", "gossipsub", "kad", "identify", "mdns", "request-response", "dcutr", "relay", "metrics"] }
+# SECURITY: Minimized libp2p features to reduce attack surface
+# - Removed unused features: tcp, noise, yamux (using QUIC instead)
+# - Removed unused features: identify, mdns, request-response, dcutr, relay
+# - Kept essential features: gossipsub (pubsub), kad (peer discovery), metrics (observability)
+libp2p = { version = "0.56", features = ["gossipsub", "kad", "tokio", "metrics"] }
 quinn = "0.11"
 
 # Math
@@ -58,6 +69,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"]
 log = "0.4"
 clap = { version = "4.5", features = ["derive"] }
 config = "0.14"
+lru = "0.12"
 
 # HTTP/API
 axum = { version = "0.7", features = ["ws"] }
@@ -79,6 +91,8 @@ criterion = "0.5"
 opt-level = 3
 lto = true
 codegen-units = 1
+strip = true        # Strip symbols for smaller binary size (20-30% reduction)
+panic = "abort"     # Abort on panic instead of unwinding (smaller binary + faster)
 
 [profile.bench]
 inherits = "release"

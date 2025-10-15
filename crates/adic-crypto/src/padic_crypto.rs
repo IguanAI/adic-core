@@ -3,7 +3,6 @@ use adic_types::{features::QpDigits, AdicError, Result};
 use blake3::Hasher;
 use rand::rngs::OsRng;
 use rand::Rng;
-use std::collections::HashSet;
 
 /// P-adic encryption system using ultrametric properties
 pub struct PadicCrypto {
@@ -226,7 +225,26 @@ impl PadicKeyExchange {
     }
 }
 
-/// Ultrametric key derivation for enhanced security
+/// Ultrametric key derivation for experimental/research use
+///
+/// # Security Notice
+///
+/// This struct is for **experimental/research purposes only**. It demonstrates
+/// p-adic ball-based key derivation but does NOT provide secure threshold
+/// secret sharing.
+///
+/// # For Production Use
+///
+/// **Threshold Cryptography:**
+/// - Use `adic_crypto::bls::BLSThresholdSigner` for BLS threshold signatures
+/// - Use `adic_crypto::dkg::DKGCeremony` for distributed key generation
+///
+/// **Ultrametric Diversity:**
+/// - Enforced at quorum selection layer (`adic_quorum::QuorumSelector`)
+/// - Per ADICPoUW2.pdf §3.2: VRF-based committee selection with diversity caps
+///
+/// This separation of concerns allows battle-tested BLS12-381 threshold crypto
+/// to be combined with ADIC's ultrametric diversity guarantees.
 pub struct UltrametricKeyDerivation {
     crypto: PadicCrypto,
     radius: usize,
@@ -276,6 +294,21 @@ impl UltrametricKeyDerivation {
     }
 
     /// Generate threshold keys requiring multiple p-adic neighborhoods
+    ///
+    /// # Note on Threshold Cryptography
+    ///
+    /// This method generates keys derived from diverse p-adic neighborhoods for
+    /// experimental/research purposes. It does NOT implement secure threshold
+    /// secret sharing.
+    ///
+    /// **For production threshold cryptography**, use:
+    /// - `adic_crypto::bls::BLSThresholdSigner` - BLS threshold signatures (BLS12-381)
+    /// - `adic_crypto::dkg::DKGCeremony` - Distributed key generation with Feldman VSS
+    ///
+    /// **Ultrametric diversity** is enforced at the quorum selection layer
+    /// (`adic_quorum::QuorumSelector`) per ADICPoUW2.pdf §3.2, not in the
+    /// threshold crypto layer. This separation allows battle-tested BLS crypto
+    /// to be used with ADIC's ultrametric diversity guarantees.
     pub fn generate_threshold_keys(
         &self,
         master_key: &QpDigits,
@@ -298,47 +331,18 @@ impl UltrametricKeyDerivation {
         Ok(keys)
     }
 
-    /// Combine threshold keys from diverse neighborhoods
-    pub fn combine_threshold_keys(
-        &self,
-        keys: &[QpDigits],
-        positions: &[QpDigits],
-        threshold: usize,
-    ) -> Result<QpDigits> {
-        if keys.len() < threshold {
-            return Err(AdicError::InvalidParameter(
-                "Insufficient keys for threshold".to_string(),
-            ));
-        }
-
-        // Verify positions are in distinct balls
-        let mut unique_balls = HashSet::new();
-        for pos in positions {
-            let ball = ball_id(pos, self.radius);
-            unique_balls.insert(ball);
-        }
-
-        if unique_balls.len() < threshold {
-            return Err(AdicError::InvalidParameter(
-                "Keys not from diverse neighborhoods".to_string(),
-            ));
-        }
-
-        // Combine keys using XOR (simplified; use Shamir's in production)
-        let mut combined = vec![0u8; self.crypto.precision];
-        for key in keys.iter().take(threshold) {
-            for (i, &digit) in key.digits.iter().enumerate() {
-                if i < combined.len() {
-                    combined[i] ^= digit;
-                }
-            }
-        }
-
-        Ok(QpDigits {
-            p: self.crypto.prime,
-            digits: combined,
-        })
-    }
+    // ❌ REMOVED: combine_threshold_keys()
+    //
+    // The insecure XOR-based key combination has been removed.
+    //
+    // For production threshold secret sharing, use:
+    // - BLS threshold signatures: `adic_crypto::bls::BLSThresholdSigner`
+    // - Shamir's Secret Sharing: Consider `threshold-secret-sharing` crate
+    // - Distributed Key Generation: `adic_crypto::dkg::DKGCeremony`
+    //
+    // Ultrametric diversity is enforced at quorum selection time in
+    // `adic_quorum::QuorumSelector`, separating consensus concerns from
+    // cryptographic primitives per ADIC design principles.
 }
 
 /// Distance-based encryption where decryption requires ultrametric proximity
@@ -532,19 +536,21 @@ mod tests {
             QpDigits::from_u64(2, 3, 10),
         ];
 
+        // Test generating threshold keys from diverse neighborhoods
         let keys = ukd
             .generate_threshold_keys(&master_key, &neighborhoods, 2)
             .unwrap();
         assert_eq!(keys.len(), neighborhoods.len());
 
-        // Test combining with diverse positions
-        // 0 and 1 are in different balls with radius 1
-        let positions = vec![QpDigits::from_u64(0, 3, 10), QpDigits::from_u64(1, 3, 10)];
+        // Verify each key is derived from its neighborhood
+        for (i, neighborhood) in neighborhoods.iter().enumerate() {
+            let expected_key = ukd.derive_ball_key(&master_key, neighborhood);
+            assert_eq!(keys[i].p, expected_key.p);
+            assert_eq!(keys[i].digits, expected_key.digits);
+        }
 
-        let combined = ukd
-            .combine_threshold_keys(&keys[..2], &positions, 2)
-            .unwrap();
-        assert_eq!(combined.p, 3);
+        // Note: Key combination removed - use BLS threshold crypto for production
+        // See: adic_crypto::bls::BLSThresholdSigner
     }
 
     #[test]
@@ -742,15 +748,18 @@ mod tests {
         let keys_k1 = ukd
             .generate_threshold_keys(&master_key, &neighborhoods, 1)
             .unwrap();
-        let combined = ukd
-            .combine_threshold_keys(&keys_k1[..1], &neighborhoods[..1], 1)
-            .unwrap();
-        assert_eq!(combined.p, 3);
+        assert_eq!(keys_k1.len(), 2);
+        // Verify first key is properly derived
+        let expected_key = ukd.derive_ball_key(&master_key, &neighborhoods[0]);
+        assert_eq!(keys_k1[0].p, expected_key.p);
 
         // Test with empty neighborhoods
         let empty: Vec<QpDigits> = vec![];
         let result = ukd.generate_threshold_keys(&master_key, &empty, 1);
         assert!(result.is_err());
+
+        // Note: Key combination tests removed - use BLS threshold crypto for production
+        // See: adic_crypto::bls::BLSThresholdSigner and adic_crypto::dkg::DKGCeremony
     }
 
     #[test]

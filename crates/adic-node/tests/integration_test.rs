@@ -27,7 +27,9 @@ async fn test_full_consensus_flow() {
 
     // Create finality engine
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus.clone(), storage.clone());
+    let finality = Arc::new(
+        FinalityEngine::new(finality_config, consensus.clone(), storage.clone()).await
+    );
 
     // Generate keypair
     let keypair = Keypair::generate();
@@ -246,7 +248,9 @@ async fn test_finality_kcore() {
 
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus.clone(), storage);
+    let finality = Arc::new(
+        FinalityEngine::new(finality_config, consensus.clone(), storage).await
+    );
 
     // Create a k-core structure
     // Need at least k nodes with degree >= k
@@ -546,9 +550,10 @@ async fn test_wallet_json_export_import() {
 
     // Verify JSON structure
     let json_value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-    assert_eq!(json_value["version"], 3);
+    assert_eq!(json_value["version"], 4);
     assert!(json_value["encrypted_private_key"].is_string());
     assert!(json_value["salt"].is_string());
+    assert!(json_value["nonce"].is_string()); // v4 uses nonce for XSalsa20-Poly1305
     // node_id is intentionally not exported for security/portability
     assert!(json_value["node_id"].is_null());
 

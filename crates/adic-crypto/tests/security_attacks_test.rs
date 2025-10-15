@@ -2,8 +2,7 @@
 //! Tests resistance against various cryptographic attacks
 
 use adic_crypto::{
-    PadicCrypto, PadicKeyExchange, ProximityEncryption, StandardSigner, UltrametricKeyDerivation,
-    UltrametricValidator,
+    PadicCrypto, PadicKeyExchange, ProximityEncryption, StandardSigner, UltrametricValidator,
 };
 use adic_types::{AdicFeatures, AdicParams, AxisId, AxisPhi, QpDigits};
 use chrono::Utc;
@@ -308,31 +307,36 @@ fn test_oracle_attack_resistance() {
 
 #[test]
 fn test_threshold_key_security() {
-    // Test that threshold keys can't be combined without enough shares
-    let ukd = UltrametricKeyDerivation::new(3, 10, 1);
-    let master_key = QpDigits::from_u64(999999, 3, 10);
+    // Test threshold key generation with proper BLS threshold crypto
+    use adic_crypto::bls::{generate_threshold_keys, BLSThresholdSigner, ThresholdConfig, dst};
 
-    let neighborhoods = vec![
-        QpDigits::from_u64(0, 3, 10),
-        QpDigits::from_u64(1, 3, 10),
-        QpDigits::from_u64(2, 3, 10),
-        QpDigits::from_u64(3, 3, 10),
-    ];
+    // Create 3-of-4 threshold BLS scheme
+    let config = ThresholdConfig::new(4, 3).unwrap();
+    let (pk_set, shares) = generate_threshold_keys(4, 3).unwrap();
 
-    // Create 3-of-4 threshold scheme
-    let keys = ukd
-        .generate_threshold_keys(&master_key, &neighborhoods, 3)
-        .unwrap();
+    let signer = BLSThresholdSigner::new(config);
+    let message = b"Test message for threshold signature";
 
-    // Try to combine with only 2 keys (should fail)
-    let result = ukd.combine_threshold_keys(&keys[..2], &neighborhoods[..2], 3);
-    assert!(result.is_err(), "Threshold bypassed with insufficient keys");
+    // Generate signature shares from 3 participants
+    let mut sig_shares = Vec::new();
+    for i in 0..3 {
+        let share = signer.sign_share(&shares[i], i, message, dst::POUW_RECEIPT).unwrap();
+        sig_shares.push(share);
+    }
 
-    // Verify 3 keys work
-    let combined = ukd
-        .combine_threshold_keys(&keys[..3], &neighborhoods[..3], 3)
-        .unwrap();
-    assert_eq!(combined.p, master_key.p);
+    // Aggregate to threshold signature
+    let threshold_sig = signer.aggregate_shares(&pk_set, &sig_shares).unwrap();
+
+    // Verify the threshold signature
+    let is_valid = signer.verify(&pk_set, message, dst::POUW_RECEIPT, &threshold_sig).unwrap();
+    assert!(is_valid, "BLS threshold signature should verify");
+
+    // Test that 2 shares are insufficient
+    assert!(signer.aggregate_shares(&pk_set, &sig_shares[..2]).is_err(),
+            "Should fail with insufficient shares");
+
+    // Note: UltrametricKeyDerivation is for experimental p-adic key derivation only.
+    // Production threshold crypto uses BLS12-381 as shown above.
 }
 
 #[test]

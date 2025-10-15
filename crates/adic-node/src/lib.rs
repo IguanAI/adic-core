@@ -1,10 +1,15 @@
 pub mod api;
+pub mod api_governance;
+pub mod api_storage_market;
 pub mod api_sse;
 pub mod api_wallet;
 pub mod api_wallet_tx;
 pub mod api_ws;
 pub mod auth;
+pub mod auth_ed25519;
 pub mod cli;
+pub mod cli_governance;
+pub mod cli_storage_market;
 pub mod config;
 pub mod config_loader;
 pub mod copyover;

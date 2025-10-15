@@ -62,7 +62,10 @@ impl AccountAddress {
     }
 
     pub fn from_public_key(pubkey: &adic_types::PublicKey) -> Self {
-        Self(*pubkey.as_bytes())
+        // SECURITY: Hash the public key to prevent public key exposure
+        // Use Blake3 for fast, secure address derivation
+        let hash = blake3::hash(pubkey.as_bytes());
+        Self(*hash.as_bytes())
     }
 
     pub fn as_bytes(&self) -> &[u8; 32] {
@@ -186,4 +189,5 @@ pub enum TransferReason {
     Standard,        // Generic user-to-user transfers
     Faucet,          // Faucet distributions
     MessageTransfer, // Transfers embedded in messages
+    Slashing,        // Storage market slashing (collateral forfeiture)
 }

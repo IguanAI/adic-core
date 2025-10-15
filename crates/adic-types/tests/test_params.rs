@@ -17,7 +17,7 @@ fn test_adic_params_default() {
     assert_eq!(params.r_min, 1.0);
     assert_eq!(params.r_sum_min, 4.0);
     assert_eq!(params.lambda, 1.0);
-    assert_eq!(params.beta, 0.5);
+    assert_eq!(params.beta, 1.0); // MRW age decay exponent per ADIC-DAG paper
     assert_eq!(params.mu, 1.0);
     assert_eq!(params.gamma, 0.9);
 }
@@ -55,6 +55,7 @@ fn test_adic_params_custom() {
         r_min: 2.0,
         r_sum_min: 8.0,
         lambda: 2.0,
+        alpha: 1.0,
         beta: 0.3,
         mu: 0.5,
         gamma: 0.95,
@@ -86,6 +87,7 @@ fn test_adic_params_edge_cases() {
         r_min: 0.0,
         r_sum_min: 0.0,
         lambda: 0.0,
+        alpha: 0.0,
         beta: 0.0,
         mu: 0.0,
         gamma: 0.0,
@@ -108,6 +110,7 @@ fn test_adic_params_edge_cases() {
         r_min: 999999.0,
         r_sum_min: 9999999.0,
         lambda: 100000.0,
+        alpha: 1.0,
         beta: 0.999999,
         mu: 100000.0,
         gamma: 0.999999,
@@ -204,6 +207,7 @@ fn test_adic_params_float_precision() {
         r_min: 1.111111111,
         r_sum_min: 4.444444444,
         lambda: 1.23456789,
+        alpha: 1.0,
         beta: 0.555555555,
         mu: 0.987654321,
         gamma: 0.9999999,
@@ -234,7 +238,8 @@ fn test_adic_params_partial_deserialization() {
         "r_min": 1.0,
         "r_sum_min": 4.0,
         "lambda": 1.0,
-        "beta": 0.5,
+        "alpha": 1.0,
+        "beta": 1.0,
         "mu": 1.0,
         "gamma": 0.9
     }"#;

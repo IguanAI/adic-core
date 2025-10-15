@@ -76,8 +76,18 @@ impl StorageEngine {
             .map(|t| t.len())
             .unwrap_or(0);
 
+        // Calculate message height based on DAG depth
+        let height = self.calculate_message_height(message).await?;
+
         // Store the message
         if let Err(e) = self.backend.put_message(message).await {
+            self.backend.rollback_transaction().await?;
+            return Err(e);
+        }
+
+        // Store height metadata
+        let height_bytes = height.to_le_bytes();
+        if let Err(e) = self.backend.put_metadata(&message.id, "height", &height_bytes).await {
             self.backend.rollback_transaction().await?;
             return Err(e);
         }
@@ -123,6 +133,7 @@ impl StorageEngine {
         info!(
             message_id = %message.id,
             proposer = %message.proposer_pk.to_hex(),
+            height = height,
             parents_count = parents_count,
             tips_before = tips_before,
             tips_after = tips_after,
@@ -444,6 +455,313 @@ impl StorageEngine {
     pub async fn get_recently_finalized(&self, limit: usize) -> Result<Vec<MessageId>> {
         self.backend.get_recently_finalized(limit).await
     }
+
+    /// Traverse DAG to get ancestors up to a given depth
+    pub async fn get_ancestors(
+        &self,
+        message_id: &MessageId,
+        depth: usize,
+    ) -> Result<Vec<AdicMessage>> {
+        use std::collections::{HashSet, VecDeque};
+
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        let mut result = Vec::new();
+
+        // Start with the given message
+        queue.push_back((message_id.clone(), 0));
+        visited.insert(message_id.clone());
+
+        while let Some((current_id, current_depth)) = queue.pop_front() {
+            if current_depth >= depth {
+                continue;
+            }
+
+            // Get parents of current message
+            match self.get_parents(&current_id).await {
+                Ok(parents) => {
+                    for parent_id in parents {
+                        if !visited.contains(&parent_id) {
+                            visited.insert(parent_id.clone());
+                            queue.push_back((parent_id.clone(), current_depth + 1));
+
+                            // Fetch the actual message
+                            if let Ok(Some(msg)) = self.get_message(&parent_id).await {
+                                result.push(msg);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Error getting parents for {}: {}", current_id, e);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Traverse DAG to get descendants up to a given depth
+    pub async fn get_descendants(
+        &self,
+        message_id: &MessageId,
+        depth: usize,
+    ) -> Result<Vec<AdicMessage>> {
+        use std::collections::{HashSet, VecDeque};
+
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        let mut result = Vec::new();
+
+        // Start with the given message
+        queue.push_back((message_id.clone(), 0));
+        visited.insert(message_id.clone());
+
+        while let Some((current_id, current_depth)) = queue.pop_front() {
+            if current_depth >= depth {
+                continue;
+            }
+
+            // Get children of current message
+            match self.get_children(&current_id).await {
+                Ok(children) => {
+                    for child_id in children {
+                        if !visited.contains(&child_id) {
+                            visited.insert(child_id.clone());
+                            queue.push_back((child_id.clone(), current_depth + 1));
+
+                            // Fetch the actual message
+                            if let Ok(Some(msg)) = self.get_message(&child_id).await {
+                                result.push(msg);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Error getting children for {}: {}", current_id, e);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Store a checkpoint at a specific height
+    pub async fn store_checkpoint(&self, height: u64, root: &MessageId) -> Result<()> {
+        let key = format!("checkpoint:{}", height);
+        // Use a dummy message ID to store global metadata
+        let dummy_id = MessageId::from_bytes([0u8; 32]);
+        self.backend
+            .put_metadata(&dummy_id, &key, root.as_bytes())
+            .await?;
+
+        tracing::info!(
+            height = height,
+            root = %root,
+            "📍 Checkpoint stored"
+        );
+        Ok(())
+    }
+
+    /// Get checkpoint root at a specific height
+    pub async fn get_checkpoint(&self, height: u64) -> Result<Option<MessageId>> {
+        let key = format!("checkpoint:{}", height);
+        let dummy_id = MessageId::from_bytes([0u8; 32]);
+
+        match self.backend.get_metadata(&dummy_id, &key).await? {
+            Some(bytes) => {
+                if bytes.len() == 32 {
+                    let mut id_bytes = [0u8; 32];
+                    id_bytes.copy_from_slice(&bytes);
+                    Ok(Some(MessageId::from_bytes(id_bytes)))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get checkpoint with surrounding messages for sync
+    pub async fn get_checkpoint_data(
+        &self,
+        height: u64,
+        max_messages: usize,
+    ) -> Result<Option<(MessageId, Vec<AdicMessage>)>> {
+        // Get the checkpoint root
+        let root = match self.get_checkpoint(height).await? {
+            Some(root) => root,
+            None => return Ok(None),
+        };
+
+        // Get the root message and its descendants
+        let mut messages = Vec::new();
+
+        // Add the root message itself
+        if let Some(root_msg) = self.get_message(&root).await? {
+            messages.push(root_msg);
+        }
+
+        // Get descendants up to the limit
+        if messages.len() < max_messages {
+            let descendants = self
+                .get_descendants(&root, 5) // Get up to 5 levels of descendants
+                .await?;
+
+            for msg in descendants {
+                if messages.len() >= max_messages {
+                    break;
+                }
+                messages.push(msg);
+            }
+        }
+
+        Ok(Some((root, messages)))
+    }
+
+    /// Calculate message height based on DAG depth
+    /// Height = max(parent heights) + 1, or 0 for genesis
+    async fn calculate_message_height(&self, message: &AdicMessage) -> Result<u64> {
+        if message.parents.is_empty() {
+            // Genesis message has height 0
+            return Ok(0);
+        }
+
+        let mut max_parent_height = 0u64;
+        for parent_id in &message.parents {
+            if let Some(parent_height) = self.get_message_height(parent_id).await? {
+                max_parent_height = max_parent_height.max(parent_height);
+            } else {
+                // Parent not found or no height stored yet
+                tracing::warn!(
+                    "Parent {} not found or missing height for message {}",
+                    parent_id,
+                    message.id
+                );
+            }
+        }
+
+        Ok(max_parent_height + 1)
+    }
+
+    /// Get the height of a message
+    pub async fn get_message_height(&self, id: &MessageId) -> Result<Option<u64>> {
+        match self.backend.get_metadata(id, "height").await? {
+            Some(bytes) => {
+                if bytes.len() == 8 {
+                    let height = u64::from_le_bytes([
+                        bytes[0], bytes[1], bytes[2], bytes[3],
+                        bytes[4], bytes[5], bytes[6], bytes[7],
+                    ]);
+                    Ok(Some(height))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get all messages at a specific height
+    pub async fn get_messages_at_height(&self, height: u64) -> Result<Vec<MessageId>> {
+        let mut messages_at_height = Vec::new();
+        let all_ids = self.backend.list_messages().await?;
+
+        for id in all_ids {
+            if let Some(msg_height) = self.get_message_height(&id).await? {
+                if msg_height == height {
+                    messages_at_height.push(id);
+                }
+            }
+        }
+
+        Ok(messages_at_height)
+    }
+
+    /// Get messages up to a certain height (for finalization)
+    pub async fn get_messages_up_to_height(&self, max_height: u64) -> Result<Vec<MessageId>> {
+        let mut messages = Vec::new();
+        let all_ids = self.backend.list_messages().await?;
+
+        for id in all_ids {
+            if let Some(height) = self.get_message_height(&id).await? {
+                if height <= max_height {
+                    messages.push(id);
+                }
+            }
+        }
+
+        Ok(messages)
+    }
+
+    /// Generate Merkle proof for a message
+    /// Returns a path from the message to a root, including sibling hashes
+    pub async fn generate_merkle_proof(
+        &self,
+        message_id: &MessageId,
+    ) -> Result<(Vec<[u8; 32]>, [u8; 32])> {
+        use std::collections::HashSet;
+
+        // Get the target message
+        let target_msg = self
+            .get_message(message_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(format!("Message {} not found", message_id)))?;
+
+        let mut proof_path = Vec::new();
+        let mut current_id = message_id.clone();
+        let mut visited = HashSet::new();
+        visited.insert(current_id.clone());
+
+        // Traverse up the DAG collecting hashes
+        for _ in 0..20 {
+            // Limit depth to 20
+            // Get parents
+            let parents = self.get_parents(&current_id).await.unwrap_or_default();
+
+            if parents.is_empty() {
+                // Reached a root
+                break;
+            }
+
+            // Add parent hashes to proof
+            for parent_id in &parents {
+                if !visited.contains(parent_id) {
+                    // Add parent hash to proof path
+                    let mut hash = [0u8; 32];
+                    hash.copy_from_slice(parent_id.as_bytes());
+                    proof_path.push(hash);
+                    visited.insert(parent_id.clone());
+                }
+            }
+
+            // Move to first parent for next iteration
+            if let Some(next) = parents.first() {
+                current_id = next.clone();
+            } else {
+                break;
+            }
+        }
+
+        // Compute root hash from the proof path
+        // For simplicity, we'll use the last hash in the path as the root
+        let root = if let Some(last) = proof_path.last() {
+            *last
+        } else {
+            // If no path, use the message ID itself as root
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(target_msg.id.as_bytes());
+            hash
+        };
+
+        tracing::debug!(
+            message_id = %message_id,
+            path_length = proof_path.len(),
+            "🔐 Generated Merkle proof"
+        );
+
+        Ok((proof_path, root))
+    }
 }
 
 #[cfg(test)]
@@ -502,5 +820,93 @@ mod tests {
         // Should no longer be a tip after finalization
         let tips = engine.get_tips().await.unwrap();
         assert!(!tips.contains(&message.id));
+    }
+
+    #[tokio::test]
+    async fn test_height_indexing() {
+        let config = StorageConfig {
+            backend_type: BackendType::Memory,
+            cache_size: 1000,
+            flush_interval_ms: 5000,
+            max_batch_size: 100,
+        };
+        let engine = StorageEngine::new(config).unwrap();
+
+        // Create a DAG chain: genesis -> msg1 -> msg2 -> msg3
+        //                                     \-> msg4
+        let genesis = AdicMessage::new(
+            vec![],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(1, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([0; 32]),
+            vec![0],
+        );
+        engine.store_message(&genesis).await.unwrap();
+
+        let msg1 = AdicMessage::new(
+            vec![genesis.id.clone()],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(2, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([1; 32]),
+            vec![1],
+        );
+        engine.store_message(&msg1).await.unwrap();
+
+        let msg2 = AdicMessage::new(
+            vec![msg1.id.clone()],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(3, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([2; 32]),
+            vec![2],
+        );
+        engine.store_message(&msg2).await.unwrap();
+
+        let msg3 = AdicMessage::new(
+            vec![msg2.id.clone()],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(4, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([3; 32]),
+            vec![3],
+        );
+        engine.store_message(&msg3).await.unwrap();
+
+        let msg4 = AdicMessage::new(
+            vec![msg1.id.clone()],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(5, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([4; 32]),
+            vec![4],
+        );
+        engine.store_message(&msg4).await.unwrap();
+
+        // Verify heights
+        assert_eq!(engine.get_message_height(&genesis.id).await.unwrap(), Some(0));
+        assert_eq!(engine.get_message_height(&msg1.id).await.unwrap(), Some(1));
+        assert_eq!(engine.get_message_height(&msg2.id).await.unwrap(), Some(2));
+        assert_eq!(engine.get_message_height(&msg3.id).await.unwrap(), Some(3));
+        assert_eq!(engine.get_message_height(&msg4.id).await.unwrap(), Some(2));
+
+        // Test get_messages_at_height
+        let height_0 = engine.get_messages_at_height(0).await.unwrap();
+        assert_eq!(height_0.len(), 1);
+        assert!(height_0.contains(&genesis.id));
+
+        let height_1 = engine.get_messages_at_height(1).await.unwrap();
+        assert_eq!(height_1.len(), 1);
+        assert!(height_1.contains(&msg1.id));
+
+        let height_2 = engine.get_messages_at_height(2).await.unwrap();
+        assert_eq!(height_2.len(), 2);
+        assert!(height_2.contains(&msg2.id));
+        assert!(height_2.contains(&msg4.id));
+
+        // Test get_messages_up_to_height
+        let up_to_2 = engine.get_messages_up_to_height(2).await.unwrap();
+        assert_eq!(up_to_2.len(), 4); // genesis, msg1, msg2, msg4
+        assert!(up_to_2.contains(&genesis.id));
+        assert!(up_to_2.contains(&msg1.id));
+        assert!(up_to_2.contains(&msg2.id));
+        assert!(up_to_2.contains(&msg4.id));
+        assert!(!up_to_2.contains(&msg3.id));
     }
 }

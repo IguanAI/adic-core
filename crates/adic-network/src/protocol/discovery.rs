@@ -300,6 +300,8 @@ impl DiscoveryProtocol {
                                                 crate::peer::ConnectionState::Connected,
                                             message_stats: Default::default(),
                                             padic_location: None,
+                                            asn: None,
+                                            region: None,
                                         };
 
                                         if let Err(e) =
@@ -593,7 +595,7 @@ impl DiscoveryProtocol {
         &self,
         peer_id_bytes: Vec<u8>,
         addresses: Vec<String>,
-        _capabilities: Vec<String>,
+        capabilities: Vec<String>,
     ) -> Result<()> {
         let peer_info = PeerInfo {
             peer_id: peer_id_bytes.clone(),
@@ -604,7 +606,17 @@ impl DiscoveryProtocol {
 
         self.add_peer(peer_info).await;
         if let Ok(peer_id) = PeerId::from_bytes(&peer_id_bytes) {
-            info!("Peer {} announced itself", peer_id);
+            // Parse network metadata from capabilities
+            let (asn_opt, region_opt) = Self::parse_network_metadata(&capabilities);
+
+            if asn_opt.is_some() || region_opt.is_some() {
+                info!(
+                    "Peer {} announced with metadata: ASN={:?}, region={:?}",
+                    peer_id, asn_opt, region_opt
+                );
+            } else {
+                info!("Peer {} announced itself", peer_id);
+            }
         }
         Ok(())
     }
@@ -661,6 +673,27 @@ impl DiscoveryProtocol {
         false
     }
 
+    /// Parse network metadata from capabilities list
+    ///
+    /// Capabilities format: ["asn:15169", "region:us-west"]
+    /// Returns (ASN, region) tuple with optional values
+    pub fn parse_network_metadata(capabilities: &[String]) -> (Option<u32>, Option<String>) {
+        let mut asn_opt = None;
+        let mut region_opt = None;
+
+        for cap in capabilities {
+            if let Some(asn_str) = cap.strip_prefix("asn:") {
+                if let Ok(asn) = asn_str.parse::<u32>() {
+                    asn_opt = Some(asn);
+                }
+            } else if let Some(region) = cap.strip_prefix("region:") {
+                region_opt = Some(region.to_string());
+            }
+        }
+
+        (asn_opt, region_opt)
+    }
+
     /// Extract PeerId from a multiaddr
     #[allow(dead_code)]
     fn extract_peer_id_from_multiaddr(&self, addr: &Multiaddr) -> Option<PeerId> {
@@ -691,6 +724,8 @@ impl DiscoveryProtocol {
             peer_id: self.local_peer_id.to_bytes(),
             version: 1,
             listening_port: Some(9001), // Default QUIC port, should be configurable
+            asn: None, // Discovery protocol doesn't have access to config, set in NetworkEngine
+            region: None,
         };
 
         let data = serde_json::to_vec(&msg).map_err(|e| {

@@ -50,6 +50,9 @@ pub struct MessageValidator {
     cache_queue: Arc<RwLock<VecDeque<MessageId>>>,
     /// Maximum cache size
     max_cache_size: usize,
+    // Metrics counters - updated externally by incrementing directly
+    pub signature_verifications: Option<Arc<prometheus::IntCounter>>,
+    pub signature_failures: Option<Arc<prometheus::IntCounter>>,
 }
 
 impl Default for MessageValidator {
@@ -67,7 +70,19 @@ impl MessageValidator {
             validation_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_queue: Arc::new(RwLock::new(VecDeque::new())),
             max_cache_size: 10000, // Cache up to 10k validation results
+            signature_verifications: None,
+            signature_failures: None,
         }
+    }
+
+    /// Set metrics for signature tracking
+    pub fn set_metrics(
+        &mut self,
+        signature_verifications: Arc<prometheus::IntCounter>,
+        signature_failures: Arc<prometheus::IntCounter>,
+    ) {
+        self.signature_verifications = Some(signature_verifications);
+        self.signature_failures = Some(signature_failures);
     }
 
     /// Clear the validation cache
@@ -163,8 +178,16 @@ impl MessageValidator {
     }
 
     fn verify_signature(&self, message: &AdicMessage, result: &mut ValidationResult) -> bool {
+        // Update metrics - signature verification attempt
+        if let Some(ref counter) = self.signature_verifications {
+            counter.inc();
+        }
+
         if message.signature.is_empty() {
             result.add_error("Message signature is empty".to_string());
+            if let Some(ref counter) = self.signature_failures {
+                counter.inc();
+            }
             return false;
         }
 
@@ -176,11 +199,17 @@ impl MessageValidator {
             Ok(is_valid) => {
                 if !is_valid {
                     result.add_error("Invalid message signature".to_string());
+                    if let Some(ref counter) = self.signature_failures {
+                        counter.inc();
+                    }
                     return false;
                 }
             }
             Err(e) => {
                 result.add_error(format!("Signature verification error: {}", e));
+                if let Some(ref counter) = self.signature_failures {
+                    counter.inc();
+                }
                 return false;
             }
         }

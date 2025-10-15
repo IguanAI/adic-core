@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
+use adic_storage::StorageEngine;
 use adic_types::{AdicError, AdicMessage, MessageId, Result};
 use libp2p::PeerId;
 
@@ -106,6 +107,7 @@ impl SyncState {
 pub struct SyncProtocol {
     config: SyncConfig,
     state: Arc<RwLock<SyncState>>,
+    storage: Arc<StorageEngine>,
     download_semaphore: Arc<Semaphore>,
     event_sender: mpsc::UnboundedSender<SyncEvent>,
     event_receiver: Arc<RwLock<mpsc::UnboundedReceiver<SyncEvent>>>,
@@ -122,12 +124,13 @@ pub enum SyncEvent {
 }
 
 impl SyncProtocol {
-    pub fn new(config: SyncConfig) -> Self {
+    pub fn new(config: SyncConfig, storage: Arc<StorageEngine>) -> Self {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
 
         Self {
             config: config.clone(),
             state: Arc::new(RwLock::new(SyncState::new())),
+            storage,
             download_semaphore: Arc::new(Semaphore::new(config.parallel_downloads)),
             event_sender,
             event_receiver: Arc::new(RwLock::new(event_receiver)),
@@ -203,42 +206,92 @@ impl SyncProtocol {
                 let state = self.state.read().await;
                 SyncResponse::Frontier(state.frontier.iter().cloned().collect())
             }
-            SyncRequest::GetMessages(_ids) => {
-                // In a real implementation, fetch from storage
-                SyncResponse::Messages(vec![])
+            SyncRequest::GetMessages(ids) => {
+                // Fetch messages from storage
+                let mut messages = Vec::new();
+                for id in ids {
+                    match self.storage.get_message(&id).await {
+                        Ok(Some(msg)) => messages.push(msg),
+                        Ok(None) => {
+                            debug!("Message {} not found in storage", id);
+                        }
+                        Err(e) => {
+                            warn!("Error fetching message {}: {}", id, e);
+                        }
+                    }
+                }
+                SyncResponse::Messages(messages)
             }
             SyncRequest::GetRange {
-                from: _,
+                from,
                 to: _,
-                max_messages: _,
+                max_messages,
             } => {
-                // In a real implementation, fetch from storage
-                SyncResponse::Range {
-                    messages: vec![],
-                    has_more: false,
+                // Get messages since the 'from' checkpoint
+                // Note: 'to' is currently ignored - a full implementation would
+                // traverse the DAG to find messages between from and to
+                match self.storage.get_messages_since(&from, max_messages).await {
+                    Ok(messages) => {
+                        let has_more = messages.len() == max_messages;
+                        SyncResponse::Range { messages, has_more }
+                    }
+                    Err(e) => {
+                        warn!("Error getting range from {}: {}", from, e);
+                        SyncResponse::Error(format!("Failed to get range: {}", e))
+                    }
                 }
             }
-            SyncRequest::GetAncestors {
-                message_id: _,
-                depth: _,
-            } => {
-                // In a real implementation, traverse DAG
-                SyncResponse::Ancestors(vec![])
+            SyncRequest::GetAncestors { message_id, depth } => {
+                // Traverse DAG to get ancestors
+                match self.storage.get_ancestors(&message_id, depth).await {
+                    Ok(ancestors) => SyncResponse::Ancestors(ancestors),
+                    Err(e) => {
+                        warn!("Error getting ancestors for {}: {}", message_id, e);
+                        SyncResponse::Error(format!("Failed to get ancestors: {}", e))
+                    }
+                }
             }
-            SyncRequest::GetDescendants {
-                message_id: _,
-                depth: _,
-            } => {
-                // In a real implementation, traverse DAG
-                SyncResponse::Descendants(vec![])
+            SyncRequest::GetDescendants { message_id, depth } => {
+                // Traverse DAG to get descendants
+                match self.storage.get_descendants(&message_id, depth).await {
+                    Ok(descendants) => SyncResponse::Descendants(descendants),
+                    Err(e) => {
+                        warn!("Error getting descendants for {}: {}", message_id, e);
+                        SyncResponse::Error(format!("Failed to get descendants: {}", e))
+                    }
+                }
             }
-            SyncRequest::GetCheckpoint(_height) => {
-                // In a real implementation, fetch checkpoint
-                SyncResponse::Error("Checkpoint not found".to_string())
+            SyncRequest::GetCheckpoint(height) => {
+                // Fetch checkpoint from storage
+                match self.storage.get_checkpoint_data(height, 100).await {
+                    Ok(Some((root, messages))) => SyncResponse::Checkpoint {
+                        height,
+                        root,
+                        messages,
+                    },
+                    Ok(None) => {
+                        debug!("Checkpoint at height {} not found", height);
+                        SyncResponse::Error(format!("Checkpoint not found at height {}", height))
+                    }
+                    Err(e) => {
+                        warn!("Error fetching checkpoint at height {}: {}", height, e);
+                        SyncResponse::Error(format!("Failed to fetch checkpoint: {}", e))
+                    }
+                }
             }
-            SyncRequest::GetProof(_message_id) => {
-                // In a real implementation, generate Merkle proof
-                SyncResponse::Error("Proof generation not implemented".to_string())
+            SyncRequest::GetProof(message_id) => {
+                // Generate Merkle proof for the message
+                match self.storage.generate_merkle_proof(&message_id).await {
+                    Ok((path, root)) => SyncResponse::Proof {
+                        message_id,
+                        path,
+                        root,
+                    },
+                    Err(e) => {
+                        warn!("Error generating proof for {}: {}", message_id, e);
+                        SyncResponse::Error(format!("Failed to generate proof: {}", e))
+                    }
+                }
             }
         }
     }
@@ -426,11 +479,25 @@ impl SyncProtocol {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use adic_storage::{StorageConfig, StorageEngine, store::BackendType};
+    use adic_types::{AdicFeatures, AdicMeta, AdicMessage, AxisPhi, QpDigits, PublicKey};
+    use chrono::Utc;
+
+    fn create_test_storage() -> Arc<StorageEngine> {
+        let storage_config = StorageConfig {
+            backend_type: BackendType::Memory,
+            cache_size: 1000,
+            flush_interval_ms: 5000,
+            max_batch_size: 100,
+        };
+        Arc::new(StorageEngine::new(storage_config).unwrap())
+    }
 
     #[tokio::test]
     async fn test_sync_protocol_creation() {
         let config = SyncConfig::default();
-        let protocol = SyncProtocol::new(config);
+        let storage = create_test_storage();
+        let protocol = SyncProtocol::new(config, storage);
 
         assert!(!protocol.is_syncing().await);
         assert_eq!(protocol.syncing_peers().await.len(), 0);
@@ -439,12 +506,181 @@ mod tests {
     #[tokio::test]
     async fn test_request_generation() {
         let config = SyncConfig::default();
-        let protocol = SyncProtocol::new(config);
+        let storage = create_test_storage();
+        let protocol = SyncProtocol::new(config, storage);
         let peer = PeerId::random();
 
         let request_id1 = protocol.request_frontier(peer).await.unwrap();
         let request_id2 = protocol.request_frontier(peer).await.unwrap();
 
         assert_ne!(request_id1, request_id2);
+    }
+
+    #[tokio::test]
+    async fn test_get_messages_handler() {
+        let config = SyncConfig::default();
+        let storage = create_test_storage();
+
+        // Store test messages
+        let msg1 = AdicMessage::new(
+            vec![],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(10, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([1; 32]),
+            vec![1, 2, 3],
+        );
+        let msg2 = AdicMessage::new(
+            vec![],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(20, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([2; 32]),
+            vec![4, 5, 6],
+        );
+
+        storage.store_message(&msg1).await.unwrap();
+        storage.store_message(&msg2).await.unwrap();
+
+        let protocol = SyncProtocol::new(config, storage);
+
+        // Test GetMessages request
+        let request = SyncRequest::GetMessages(vec![msg1.id.clone(), msg2.id.clone()]);
+        let response = protocol.handle_request(request).await;
+
+        match response {
+            SyncResponse::Messages(messages) => {
+                assert_eq!(messages.len(), 2);
+                assert!(messages.iter().any(|m| m.id == msg1.id));
+                assert!(messages.iter().any(|m| m.id == msg2.id));
+            }
+            _ => panic!("Expected Messages response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_ancestors_handler() {
+        let config = SyncConfig::default();
+        let storage = create_test_storage();
+
+        // Create a chain: genesis -> msg1 -> msg2
+        let genesis = AdicMessage::new(
+            vec![],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(1, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([0; 32]),
+            vec![0],
+        );
+        storage.store_message(&genesis).await.unwrap();
+
+        let msg1 = AdicMessage::new(
+            vec![genesis.id.clone()],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(2, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([1; 32]),
+            vec![1],
+        );
+        storage.store_message(&msg1).await.unwrap();
+
+        let msg2 = AdicMessage::new(
+            vec![msg1.id.clone()],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(3, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([2; 32]),
+            vec![2],
+        );
+        storage.store_message(&msg2).await.unwrap();
+
+        let protocol = SyncProtocol::new(config, storage);
+
+        // Test GetAncestors request
+        let request = SyncRequest::GetAncestors {
+            message_id: msg2.id.clone(),
+            depth: 5,
+        };
+        let response = protocol.handle_request(request).await;
+
+        match response {
+            SyncResponse::Ancestors(ancestors) => {
+                assert!(ancestors.len() >= 1); // Should include at least msg1
+                assert!(ancestors.iter().any(|m| m.id == msg1.id));
+            }
+            _ => panic!("Expected Ancestors response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_checkpoint_handler() {
+        let config = SyncConfig::default();
+        let storage = create_test_storage();
+
+        // Create and store a checkpoint
+        let checkpoint_msg = AdicMessage::new(
+            vec![],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(100, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([99; 32]),
+            vec![99],
+        );
+        storage.store_message(&checkpoint_msg).await.unwrap();
+        storage
+            .store_checkpoint(1000, &checkpoint_msg.id)
+            .await
+            .unwrap();
+
+        let protocol = SyncProtocol::new(config, storage);
+
+        // Test GetCheckpoint request
+        let request = SyncRequest::GetCheckpoint(1000);
+        let response = protocol.handle_request(request).await;
+
+        match response {
+            SyncResponse::Checkpoint {
+                height,
+                root,
+                messages,
+            } => {
+                assert_eq!(height, 1000);
+                assert_eq!(root, checkpoint_msg.id);
+                assert!(!messages.is_empty());
+            }
+            SyncResponse::Error(e) => panic!("Expected Checkpoint response, got error: {}", e),
+            _ => panic!("Expected Checkpoint response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_merkle_proof_handler() {
+        let config = SyncConfig::default();
+        let storage = create_test_storage();
+
+        // Create a message
+        let msg = AdicMessage::new(
+            vec![],
+            AdicFeatures::new(vec![AxisPhi::new(0, QpDigits::from_u64(42, 3, 5))]),
+            AdicMeta::new(Utc::now()),
+            PublicKey::from_bytes([42; 32]),
+            vec![42],
+        );
+        storage.store_message(&msg).await.unwrap();
+
+        let protocol = SyncProtocol::new(config, storage);
+
+        // Test GetProof request
+        let request = SyncRequest::GetProof(msg.id.clone());
+        let response = protocol.handle_request(request).await;
+
+        match response {
+            SyncResponse::Proof {
+                message_id,
+                path,
+                root,
+            } => {
+                assert_eq!(message_id, msg.id);
+                assert_eq!(root.len(), 32);
+                // Path might be empty for a genesis message
+                assert!(path.len() <= 20); // Max depth is 20
+            }
+            SyncResponse::Error(e) => panic!("Expected Proof response, got error: {}", e),
+            _ => panic!("Expected Proof response"),
+        }
     }
 }

@@ -39,8 +39,9 @@ use crate::metrics::NetworkMetrics;
 use crate::peer::PeerManager;
 use crate::pipeline::{MessagePipeline, PipelineConfig};
 use crate::protocol::{
-    ConsensusProtocol, DiscoveryConfig, DiscoveryProtocol, GossipProtocol, StreamProtocol,
-    SyncProtocol, UpdateProtocol, UpdateProtocolConfig,
+    ConsensusProtocol, DKGConfig, DKGProtocol, DiscoveryConfig, DiscoveryProtocol,
+    GovernanceConfig, GovernanceProtocol, GossipProtocol, StreamProtocol, SyncProtocol,
+    UpdateProtocol, UpdateProtocolConfig,
 };
 use crate::resilience::NetworkResilience;
 use crate::routing::HypertangleRouter;
@@ -58,6 +59,10 @@ pub struct NetworkConfig {
     pub listen_addresses: Vec<Multiaddr>,
     pub enable_metrics: bool,
     pub data_dir: std::path::PathBuf,
+    /// Optional self-reported ASN for network diversity
+    pub asn: Option<u32>,
+    /// Optional self-reported region for network diversity
+    pub region: Option<String>,
 }
 
 impl Default for NetworkConfig {
@@ -70,6 +75,8 @@ impl Default for NetworkConfig {
             listen_addresses: vec!["/ip4/0.0.0.0/tcp/9000".parse().unwrap()],
             enable_metrics: true,
             data_dir: std::path::PathBuf::from("./data"),
+            asn: None,
+            region: None,
         }
     }
 }
@@ -90,6 +97,8 @@ pub struct NetworkEngine {
     stream_protocol: Arc<StreamProtocol>,
     discovery_protocol: Arc<DiscoveryProtocol>,
     update_protocol: Arc<UpdateProtocol>,
+    dkg_protocol: Arc<DKGProtocol>,
+    governance_protocol: Arc<GovernanceProtocol>,
     router: Arc<HypertangleRouter>,
     pipeline: Arc<MessagePipeline>,
     state_sync: Arc<StateSync>,
@@ -137,7 +146,7 @@ impl NetworkEngine {
         debug!("Initializing network protocols");
         let gossip = Arc::new(GossipProtocol::new(&keypair, Default::default())?);
 
-        let sync_protocol = Arc::new(SyncProtocol::new(Default::default()));
+        let sync_protocol = Arc::new(SyncProtocol::new(Default::default(), storage.clone()));
         let consensus_protocol = Arc::new(ConsensusProtocol::new(Default::default()));
         let stream_protocol = Arc::new(StreamProtocol::new(Default::default()));
         let (update_protocol, _update_events) = UpdateProtocol::new(
@@ -147,7 +156,9 @@ impl NetworkEngine {
         )
         .map_err(|e| AdicError::Network(format!("Failed to initialize update protocol: {}", e)))?;
         let update_protocol = Arc::new(update_protocol);
-        debug!("Network protocols initialized");
+        let dkg_protocol = Arc::new(DKGProtocol::new(DKGConfig::default()));
+        let governance_protocol = Arc::new(GovernanceProtocol::new(GovernanceConfig::default()));
+        debug!("Network protocols initialized (including governance)");
 
         // Initialize discovery protocol
         debug!("Initializing discovery protocol");
@@ -197,8 +208,10 @@ impl NetworkEngine {
         gossip.subscribe("adic/tips").await?;
         gossip.subscribe("adic/finality").await?;
         gossip.subscribe("adic/conflicts").await?;
+        gossip.subscribe("adic/dkg").await?;
+        gossip.subscribe("adic/governance").await?;
         debug!(
-            topics = ?["adic/messages", "adic/tips", "adic/finality", "adic/conflicts"],
+            topics = ?["adic/messages", "adic/tips", "adic/finality", "adic/conflicts", "adic/dkg", "adic/governance"],
             "Topic subscriptions complete"
         );
 
@@ -221,6 +234,8 @@ impl NetworkEngine {
             stream_protocol,
             discovery_protocol,
             update_protocol,
+            dkg_protocol,
+            governance_protocol,
             router,
             pipeline,
             state_sync,
@@ -424,6 +439,8 @@ impl NetworkEngine {
                                                             ConnectionState::Connected,
                                                         message_stats: MessageStats::default(),
                                                         padic_location: None,
+                                                        asn: None,
+                                                        region: None,
                                                     };
 
                                                     if let Err(e) =
@@ -571,6 +588,8 @@ impl NetworkEngine {
             connection_state: ConnectionState::Connected,
             message_stats: MessageStats::default(),
             padic_location: None,
+            asn: None,
+            region: None,
         };
 
         if let Err(e) = self.peer_manager.add_peer(peer_info).await {
@@ -644,6 +663,8 @@ impl NetworkEngine {
                 peer_id: self.peer_id.to_bytes(),
                 version: 1,
                 listening_port: local_port,
+                asn: self.config.asn,
+                region: self.config.region.clone(),
             };
             let data = serde_json::to_vec(&msg).map_err(|e| {
                 AdicError::Serialization(format!("Failed to serialize handshake: {}", e))
@@ -685,8 +706,17 @@ impl NetworkEngine {
                 NetworkMessage::Handshake {
                     peer_id,
                     listening_port,
+                    asn,
+                    region,
                     ..
                 } => {
+                    // Log metadata if provided
+                    if asn.is_some() || region.is_some() {
+                        debug!(
+                            "Received handshake with metadata: ASN={:?}, region={:?}",
+                            asn, region
+                        );
+                    }
                     if let Some(port) = listening_port {
                         if let Ok(pid) = PeerId::from_bytes(&peer_id) {
                             debug!(
@@ -739,6 +769,8 @@ impl NetworkEngine {
                 peer_id: self.peer_id.to_bytes(),
                 version: 1,
                 listening_port: local_port,
+                asn: self.config.asn,
+                region: self.config.region.clone(),
             };
             let data = serde_json::to_vec(&msg).map_err(|e| {
                 AdicError::Serialization(format!("Failed to serialize handshake response: {}", e))
@@ -755,8 +787,18 @@ impl NetworkEngine {
                 NetworkMessage::Handshake {
                     peer_id,
                     listening_port,
+                    asn,
+                    region,
                     ..
                 } => {
+                    // Log metadata if provided
+                    if asn.is_some() || region.is_some() {
+                        debug!(
+                            "Received handshake with metadata: ASN={:?}, region={:?}",
+                            asn, region
+                        );
+                    }
+
                     if let Some(port) = listening_port {
                         if let Ok(pid) = PeerId::from_bytes(&peer_id) {
                             debug!(
@@ -816,9 +858,36 @@ impl NetworkEngine {
                                 )
                                 .await;
 
+                            // Messages sent via send_with_priority have a header: [priority_byte][4_length_bytes][data]
+                            // Check if this looks like a priority-framed message
+                            let (data_slice, _priority) = if buffer.len() >= 5 {
+                                // Read priority byte
+                                let priority = buffer[0];
+                                // Read length (4 bytes, big-endian)
+                                let length = u32::from_be_bytes([buffer[1], buffer[2], buffer[3], buffer[4]]) as usize;
+
+                                // Validate length matches
+                                if 5 + length == buffer.len() {
+                                    debug!(
+                                        "🔍 [RECEIVER_DEBUG] Message from {} has priority header (priority={}, length={})",
+                                        remote_peer_id, priority, length
+                                    );
+                                    (&buffer[5..], Some(priority))
+                                } else {
+                                    debug!(
+                                        "🔍 [RECEIVER_DEBUG] Message from {} length mismatch (expected {}, got {}), treating as raw",
+                                        remote_peer_id, 5 + length, buffer.len()
+                                    );
+                                    (&buffer[..], None)
+                                }
+                            } else {
+                                // Too short to have priority header, treat as raw
+                                (&buffer[..], None)
+                            };
+
                             // Try to deserialize as NetworkMessage first, fallback to AdicMessage for backward compatibility
                             if let Ok(network_msg) =
-                                serde_json::from_slice::<NetworkMessage>(&buffer)
+                                serde_json::from_slice::<NetworkMessage>(data_slice)
                             {
                                 if let Err(e) = network
                                     .handle_network_message(network_msg, remote_peer_id)
@@ -827,7 +896,7 @@ impl NetworkEngine {
                                     warn!("Failed to handle network message: {}", e);
                                 }
                             } else if let Ok(adic_msg) =
-                                serde_json::from_slice::<AdicMessage>(&buffer)
+                                serde_json::from_slice::<AdicMessage>(data_slice)
                             {
                                 // Backward compatibility: handle raw AdicMessage
                                 info!("[{}] QUIC: Received ADIC message {} (proposer {}) from peer {}",
@@ -843,8 +912,8 @@ impl NetworkEngine {
                                 }
                             } else {
                                 debug!(
-                                    "Failed to deserialize message from peer {}",
-                                    remote_peer_id
+                                    "Failed to deserialize message from peer {} (buffer len: {}, data_slice len: {})",
+                                    remote_peer_id, buffer.len(), data_slice.len()
                                 );
                             }
                         }
@@ -1060,10 +1129,12 @@ impl NetworkEngine {
                 peer_id: _,
                 version,
                 listening_port,
+                asn,
+                region,
             } => {
                 debug!(
-                    "Received handshake from peer {} (version {}, port {:?})",
-                    from_peer, version, listening_port
+                    "Received handshake from peer {} (version {}, port {:?}, ASN={:?}, region={:?})",
+                    from_peer, version, listening_port, asn, region
                 );
                 // Store peer info if we got their listening port
                 if let Some(port) = listening_port {
@@ -1071,6 +1142,19 @@ impl NetworkEngine {
                     // This could be used for future connections
                     info!("Peer {} is listening on port {}", from_peer, port);
                 }
+
+                // Store ASN/region metadata in PeerInfo
+                if asn.is_some() || region.is_some() {
+                    self.peer_manager
+                        .update_peer_metadata(&from_peer, asn, region.clone())
+                        .await?;
+
+                    info!(
+                        "Peer {} announced network metadata: ASN={:?}, region={:?}",
+                        from_peer, asn, region
+                    );
+                }
+
                 Ok(())
             }
             NetworkMessage::SyncRequest(sync_request) => {
@@ -1093,6 +1177,29 @@ impl NetworkEngine {
                     from_peer, update_msg
                 );
                 self.handle_update_message(update_msg, from_peer).await
+            }
+            NetworkMessage::DKG(dkg_msg) => {
+                debug!(
+                    "Received DKG message from peer {}: {:?}",
+                    from_peer, dkg_msg
+                );
+                self.handle_dkg_message(dkg_msg, from_peer).await
+            }
+            NetworkMessage::FinalityArtifact(artifact) => {
+                info!(
+                    "Received finality artifact for message {} from peer {} (gate: {:?})",
+                    hex::encode(&artifact.intent_id.as_bytes()[..8]),
+                    from_peer,
+                    artifact.gate
+                );
+                self.handle_finality_artifact(artifact, from_peer).await
+            }
+            NetworkMessage::ReputationSync(rep_msg) => {
+                debug!(
+                    "Received reputation sync message from peer {}: {:?}",
+                    from_peer, rep_msg
+                );
+                self.handle_reputation_sync(rep_msg, from_peer).await
             }
         }
     }
@@ -1824,6 +1931,77 @@ impl NetworkEngine {
         Some(self.update_protocol.clone())
     }
 
+    pub fn get_dkg_protocol(&self) -> Arc<DKGProtocol> {
+        self.dkg_protocol.clone()
+    }
+
+    pub fn get_gossip_protocol(&self) -> Arc<GossipProtocol> {
+        self.gossip.clone()
+    }
+
+    pub fn get_governance_protocol(&self) -> Arc<GovernanceProtocol> {
+        self.governance_protocol.clone()
+    }
+
+    /// Send a DKG message to a specific peer
+    pub async fn send_dkg_message(
+        &self,
+        peer: PeerId,
+        message: crate::protocol::dkg::DKGMessage,
+    ) -> Result<()> {
+        let msg = NetworkMessage::DKG(message);
+        let data = serde_json::to_vec(&msg).map_err(|e| {
+            AdicError::Serialization(format!("Failed to serialize DKG message: {}", e))
+        })?;
+
+        // Get connection to peer
+        let transport = self.transport.read().await;
+        let pool = transport.connection_pool();
+
+        if let Some(conn) = pool.get_connection(&peer).await {
+            match conn.open_uni().await {
+                Ok(mut stream) => {
+                    stream.write_all(&data).await.map_err(|e| {
+                        AdicError::Network(format!("Failed to send DKG message: {}", e))
+                    })?;
+                    stream.finish().map_err(|e| {
+                        AdicError::Network(format!("Failed to finish stream: {}", e))
+                    })?;
+
+                    debug!("Sent DKG message to peer {}", peer);
+                    Ok(())
+                }
+                Err(e) => Err(AdicError::Network(format!(
+                    "Failed to open stream to peer {}: {}",
+                    peer, e
+                ))),
+            }
+        } else {
+            Err(AdicError::Network(format!(
+                "No connection to peer {}",
+                peer
+            )))
+        }
+    }
+
+    /// Broadcast a DKG message to multiple peers
+    pub async fn broadcast_dkg_message(
+        &self,
+        peers: &[PeerId],
+        message: crate::protocol::dkg::DKGMessage,
+    ) -> Result<()> {
+        for peer in peers {
+            if let Err(e) = self.send_dkg_message(*peer, message.clone()).await {
+                warn!(
+                    peer_id = %peer,
+                    error = %e,
+                    "Failed to send DKG message to peer"
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub async fn get_connected_peers(&self) -> Vec<PeerId> {
         self.peer_manager.get_connected_peers().await
     }
@@ -1887,6 +2065,352 @@ impl NetworkEngine {
                 // No response needed
             }
         }
+        Ok(())
+    }
+
+    /// Handle DKG messages for distributed key generation
+    async fn handle_dkg_message(
+        &self,
+        message: crate::protocol::dkg::DKGMessage,
+        from_peer: PeerId,
+    ) -> Result<()> {
+        // Process through DKG protocol
+        self.dkg_protocol.handle_message(message, from_peer).await;
+        Ok(())
+    }
+
+    /// Handle finality artifact messages from remote peers
+    /// CRITICAL: This ensures finality proofs propagate across the network
+    async fn handle_finality_artifact(
+        &self,
+        artifact: adic_finality::FinalityArtifact,
+        from_peer: PeerId,
+    ) -> Result<()> {
+        info!(
+            "🔍 [HANDLER_DEBUG] 📥 RECEIVED finality artifact for message {} from peer {} (gate: {:?})",
+            hex::encode(&artifact.intent_id.as_bytes()[..8]),
+            from_peer,
+            artifact.gate
+        );
+
+        // Validate the artifact first
+        if !artifact.is_valid() {
+            warn!(
+                "🔍 [HANDLER_DEBUG] ❌ Received INVALID finality artifact for message {} from peer {} - rejecting",
+                hex::encode(&artifact.intent_id.as_bytes()[..8]),
+                from_peer
+            );
+            return Err(AdicError::InvalidMessage(
+                "Invalid finality artifact".into(),
+            ));
+        }
+        info!(
+            "🔍 [HANDLER_DEBUG] ✅ Artifact validation PASSED for message {}",
+            hex::encode(&artifact.intent_id.as_bytes()[..8])
+        );
+
+        // Check if we have the message that this artifact finalizes
+        match self.storage.get_message(&artifact.intent_id).await {
+            Ok(Some(_)) => {
+                info!(
+                    "🔍 [HANDLER_DEBUG] ✅ We have the message {} that this artifact finalizes",
+                    hex::encode(&artifact.intent_id.as_bytes()[..8])
+                );
+            }
+            Ok(None) => {
+                debug!(
+                    "🔍 [HANDLER_DEBUG] ⚠️ Received finality artifact for UNKNOWN message {} from peer {} - will store anyway",
+                    hex::encode(&artifact.intent_id.as_bytes()[..8]),
+                    from_peer
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "🔍 [HANDLER_DEBUG] ⚠️ Failed to check if message {} exists: {} - continuing anyway",
+                    hex::encode(&artifact.intent_id.as_bytes()[..8]),
+                    e
+                );
+            }
+        }
+
+        info!(
+            "🔍 [HANDLER_DEBUG] 💾 Storing artifact in persistent storage for message {}",
+            hex::encode(&artifact.intent_id.as_bytes()[..8])
+        );
+
+        // Store the artifact in storage
+        if let Ok(artifact_bytes) = serde_json::to_vec(&artifact) {
+            if let Err(e) = self
+                .storage
+                .store_finality_artifact(&artifact.intent_id, &artifact_bytes)
+                .await
+            {
+                warn!(
+                    "🔍 [HANDLER_DEBUG] ❌ FAILED to store finality artifact in storage for message {} from peer {}: {}",
+                    hex::encode(&artifact.intent_id.as_bytes()[..8]),
+                    from_peer,
+                    e
+                );
+                return Err(AdicError::Storage(format!(
+                    "Failed to store finality artifact: {}",
+                    e
+                )));
+            }
+            info!(
+                "🔍 [HANDLER_DEBUG] ✅ Successfully stored artifact in persistent storage"
+            );
+        } else {
+            warn!(
+                "🔍 [HANDLER_DEBUG] ❌ Failed to SERIALIZE finality artifact for message {}",
+                hex::encode(&artifact.intent_id.as_bytes()[..8])
+            );
+            return Err(AdicError::Serialization(
+                "Failed to serialize finality artifact".into(),
+            ));
+        }
+
+        // Store artifact in finality engine's in-memory cache
+        info!(
+            "🔍 [HANDLER_DEBUG] 💾 Storing artifact in finality engine's in-memory cache"
+        );
+        self.finality.store_artifact(artifact.clone()).await;
+        info!(
+            "🔍 [HANDLER_DEBUG] ✅ Successfully stored artifact in finality engine cache"
+        );
+
+        // Relay to other peers (gossip propagation, avoid sending back to sender)
+        let transport = self.transport.read().await;
+        let pool = transport.connection_pool();
+        let connections = pool.get_all_connections().await;
+        drop(transport);
+
+        info!(
+            "🔍 [HANDLER_DEBUG] 🔄 Relaying artifact to {} peers (excluding sender {})",
+            connections.len() - 1,
+            from_peer
+        );
+
+        let mut relay_count = 0;
+        for (peer_id, _) in connections {
+            if peer_id != from_peer {
+                // Don't send back to sender
+                info!(
+                    "🔍 [HANDLER_DEBUG] Relaying artifact to peer {}",
+                    peer_id
+                );
+                let transport = self.transport.read().await;
+                if let Err(e) = transport
+                    .send_finality_artifact(&peer_id, artifact.clone())
+                    .await
+                {
+                    warn!(
+                        "🔍 [HANDLER_DEBUG] ❌ Failed to relay finality artifact to peer {}: {}",
+                        peer_id, e
+                    );
+                } else {
+                    relay_count += 1;
+                    info!(
+                        "🔍 [HANDLER_DEBUG] ✅ Successfully relayed artifact to peer {}",
+                        peer_id
+                    );
+                }
+            }
+        }
+
+        info!(
+            "🔍 [HANDLER_DEBUG] 🎉 COMPLETE: Stored and relayed finality artifact for message {} from {} to {} other peers",
+            hex::encode(&artifact.intent_id.as_bytes()[..8]),
+            from_peer,
+            relay_count
+        );
+
+        Ok(())
+    }
+
+    /// Handle reputation sync messages for sharing reputation state across the network
+    async fn handle_reputation_sync(
+        &self,
+        message: crate::transport::ReputationSyncMessage,
+        from_peer: PeerId,
+    ) -> Result<()> {
+        use crate::transport::ReputationSyncMessage;
+
+        match message {
+            ReputationSyncMessage::RequestSnapshot {
+                request_id,
+                at_timestamp: _,
+            } => {
+                // Get all reputation scores from consensus engine
+                let scores = self.consensus.reputation.get_all_scores().await;
+                let timestamp = chrono::Utc::now().timestamp();
+
+                // Convert to vector of tuples
+                let scores_vec: Vec<(adic_types::PublicKey, adic_consensus::ReputationScore)> =
+                    scores.into_iter().collect();
+                let total_validators = scores_vec.len();
+
+                // Send response
+                let response = ReputationSyncMessage::SnapshotResponse {
+                    request_id,
+                    timestamp,
+                    scores: scores_vec,
+                    total_validators,
+                };
+
+                let transport = self.transport.read().await;
+                transport.send_reputation_sync(&from_peer, response).await?;
+
+                info!(
+                    "Sent reputation snapshot with {} validators to peer {}",
+                    total_validators, from_peer
+                );
+            }
+            ReputationSyncMessage::SnapshotResponse {
+                request_id: _,
+                timestamp,
+                scores,
+                total_validators,
+            } => {
+                info!(
+                    "Received reputation snapshot with {} validators from peer {} (timestamp: {})",
+                    total_validators, from_peer, timestamp
+                );
+
+                // Update our local reputation state with received scores
+                // Note: We should merge/reconcile with our local state rather than blindly accepting
+                for (validator, score) in scores {
+                    // Only update if the received reputation is newer or we don't have data for this validator
+                    let local_rep = self.consensus.reputation.get_reputation(&validator).await;
+                    if local_rep == 1.0 || score.last_update > timestamp - 86400 {
+                        // Accept if we have default reputation OR received score is recent (within 24h)
+                        self.consensus
+                            .reputation
+                            .set_reputation(&validator, score.value)
+                            .await;
+                    }
+                }
+
+                debug!(
+                    "Updated reputation state from peer {} snapshot",
+                    from_peer
+                );
+            }
+            ReputationSyncMessage::IncrementalUpdate {
+                validator,
+                new_score,
+                reason,
+            } => {
+                info!(
+                    "Received reputation update for validator {} from peer {}: {} (reason: {})",
+                    hex::encode(&validator.as_bytes()[..8]),
+                    from_peer,
+                    new_score.value,
+                    reason
+                );
+
+                // Apply the incremental update to our local state
+                // NOTE: In production, we should verify the update is valid before applying
+                self.consensus
+                    .reputation
+                    .set_reputation(&validator, new_score.value)
+                    .await;
+
+                // Relay to other peers (gossip propagation, avoid sending back to sender)
+                let transport = self.transport.read().await;
+                let connections = transport.connection_pool().get_all_connections().await;
+                drop(transport);
+
+                let mut relay_count = 0;
+                for (peer_id, _) in connections {
+                    if peer_id != from_peer {
+                        let transport = self.transport.read().await;
+                        if let Err(e) = transport
+                            .send_reputation_sync(
+                                &peer_id,
+                                ReputationSyncMessage::IncrementalUpdate {
+                                    validator,
+                                    new_score: new_score.clone(),
+                                    reason: reason.clone(),
+                                },
+                            )
+                            .await
+                        {
+                            warn!(
+                                "Failed to relay reputation update to peer {}: {}",
+                                peer_id, e
+                            );
+                        } else {
+                            relay_count += 1;
+                        }
+                    }
+                }
+
+                debug!(
+                    "Relayed reputation update for validator {} to {} peers",
+                    hex::encode(&validator.as_bytes()[..8]),
+                    relay_count
+                );
+            }
+            ReputationSyncMessage::RequestValidators {
+                request_id,
+                validators,
+            } => {
+                // Get reputation scores for specific validators
+                let mut scores = Vec::new();
+                for validator in validators {
+                    let score_value = self.consensus.reputation.get_reputation(&validator).await;
+                    // Create a ReputationScore from the value
+                    let score = adic_consensus::ReputationScore {
+                        value: score_value,
+                        messages_finalized: 0, // We don't track this separately
+                        messages_pending: 0,
+                        last_update: chrono::Utc::now().timestamp(),
+                        is_transferable: false,
+                        issue_timestamp: 0,
+                        issuer: None,
+                        bound_to_keypair: validator,
+                    };
+                    scores.push((validator, score));
+                }
+
+                // Get count before moving scores
+                let scores_len = scores.len();
+
+                // Send response
+                let response = ReputationSyncMessage::ValidatorsResponse {
+                    request_id,
+                    scores,
+                };
+
+                let transport = self.transport.read().await;
+                transport.send_reputation_sync(&from_peer, response).await?;
+
+                debug!(
+                    "Sent reputation data for {} validators to peer {}",
+                    scores_len,
+                    from_peer
+                );
+            }
+            ReputationSyncMessage::ValidatorsResponse {
+                request_id: _,
+                scores,
+            } => {
+                info!(
+                    "Received reputation data for {} validators from peer {}",
+                    scores.len(),
+                    from_peer
+                );
+
+                // Update our local reputation state with received scores
+                for (validator, score) in scores {
+                    self.consensus
+                        .reputation
+                        .set_reputation(&validator, score.value)
+                        .await;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -1956,11 +2480,14 @@ mod tests {
         };
         let storage = Arc::new(StorageEngine::new(storage_config).unwrap());
         let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
-        let finality = Arc::new(FinalityEngine::new(
-            FinalityConfig::from(&params),
-            consensus.clone(),
-            storage.clone(),
-        ));
+        let finality = Arc::new(
+            FinalityEngine::new(
+                FinalityConfig::from(&params),
+                consensus.clone(),
+                storage.clone(),
+            )
+            .await,
+        );
 
         let config = NetworkConfig {
             listen_addresses: vec!["/ip4/127.0.0.1/tcp/0".parse().unwrap()],

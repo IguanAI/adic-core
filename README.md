@@ -4,7 +4,7 @@
 
 **A Higher-Dimensional p-Adic Ultrametric Tangle with Feeless Consensus**
 
-[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://github.com/IguanAI/adic-core/releases)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/IguanAI/adic-core/releases)
 [![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://github.com/IguanAI/adic-core/actions/workflows/ci.yml/badge.svg)](https://github.com/IguanAI/adic-core/actions)
@@ -39,6 +39,7 @@ ADIC-DAG Core is a Rust implementation of the **ADIC-DAG protocol** as specified
 
 ### ✨ Protocol Features (Implementation Status)
 
+- **🔐 Privacy & Security**: ✅ **Bech32 Addresses** - User-facing adic1... format (raw public keys never exposed), Wallet v4 with XSalsa20-Poly1305 + Argon2id
 - **🔐 Ultrametric Cryptography**: ⚠️ **Partially Implemented** - Hash-based ball proofs, experimental p-adic crypto
 - **⚡ High Performance**: ⚠️ **Benchmarks Needed** - P-adic operations performance unverified
 - **📊 Dual Finality Tests**: ✅ **K-core (F1) Complete** | ✅ **F2 Persistent Homology Complete** - Full implementation with GUDHI validation
@@ -48,8 +49,6 @@ ADIC-DAG Core is a Rust implementation of the **ADIC-DAG protocol** as specified
 
 ## Implementation Status
 
-> **📋 For detailed integration status with the Explorer Backend, see [INTEGRATION-STATUS.md](./INTEGRATION-STATUS.md)**
-
 This implementation provides a foundation for the ADIC-DAG protocol but contains several simplified components that require further development:
 
 ### ✅ Fully Implemented
@@ -57,7 +56,7 @@ This implementation provides a foundation for the ADIC-DAG protocol but contains
 - **Message Structure**: d-dimensional simplices with parent approvals
 - **C1-C3 Constraint Validation**: Proximity, diversity, and reputation checking
 - **K-core (F1) Finality**: Complete implementation with proper graph algorithms
-- **F2 Persistent Homology**: Complete implementation with streaming support (3,566 lines)
+- **F2 Persistent Homology**: Complete implementation with streaming support (3,603 lines)
 - **GUDHI Validation Suite**: Gold-standard TDA library validation (5 topological test cases)
 - **Streaming Finality Updates**: O(n) amortized incremental persistence computation
 - **Multi-axis Random Walk**: Tip selection with ultrametric weighting
@@ -71,15 +70,20 @@ This implementation provides a foundation for the ADIC-DAG protocol but contains
 - **P2P Update System**: ✅ Distributed binary updates with cryptographic verification
 - **Swarm Analytics**: ✅ Network-wide performance monitoring
 - **Version Management**: ✅ Automatic version syncing via CARGO_PKG_VERSION
+- **Governance System**: ✅ Quadratic voting (√Rmax), 19 parameters, treasury execution
+- **Storage Market**: ✅ JITCA compilation, PoSt verification, cross-chain settlement
+- **PoUW Framework**: ✅ VRF worker selection, quorum validation, dispute resolution
+- **BLS Threshold Crypto**: ✅ DKG + threshold signatures for governance/PoUW receipts
+- **VRF Randomness**: ✅ Commit-reveal protocol for unpredictable worker selection
+- **Bech32 Addresses**: ✅ Privacy-preserving adic1... addresses (no raw public keys exposed)
+- **Wallet v4**: ✅ XSalsa20-Poly1305 AEAD + Argon2id KDF (production-grade encryption)
 
 ### ⚠️ Partially Implemented / Simplified
 - **Ball Membership Proofs**: Blake3 hash-based verification instead of cryptographic proofs
 - **Feature Commitments**: Hash commitments without zero-knowledge properties
-- **API Security Endpoints**: Return placeholder values instead of real computations
 - **Ultrametric Cryptography**: Experimental XOR-based encryption in p-adic module
 
 ### ❌ Not Implemented
-- **Threshold Signatures**: Planned but not implemented
 - **Zero-Knowledge Proofs**: Hash-based placeholders instead of real ZK systems
 - **Proximity Encryption**: Only experimental implementation exists
 - **Performance Verification**: Benchmark results not published
@@ -137,7 +141,7 @@ cargo test --all
 ```bash
 # Verify installation
 ./target/release/adic --version
-# Output: adic 0.2.0
+# Output: adic 0.3.0
 ```
 
 #### Quick Start: Using Network Presets
@@ -451,7 +455,7 @@ The ADIC node exposes a comprehensive REST API for interacting with the network.
 
 #### Consensus & Finality
 - `GET /v1/finality/:id` - Get finality artifact for a message
-- `GET /v1/reputation/:pubkey` - Get reputation score
+- `GET /v1/reputation/:address` - Get reputation score (bech32 adic1... format)
 - `GET /v1/conflicts` - View active conflicts
 
 #### Monitoring
@@ -685,16 +689,16 @@ mu = 1.0           # Conflict penalty weight
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/ball/:axis/:radius` | GET | ⚠️ Messages in specific p-adic ball (placeholder implementation) |
-| `/proof/membership` | POST | ⚠️ Generate ball membership proof (returns placeholder) |
-| `/proof/verify` | POST | ⚠️ Verify ultrametric proof (returns placeholder) |
-| `/security/score/:id` | GET | ⚠️ S(x;A) admissibility score (computed with empty features) |
+| `/ball/:axis/:radius/:center` | GET | ✅ Query messages in specific p-adic ball |
+| `/proofs/membership` | POST | ✅ Generate ball membership proof with p-adic features |
+| `/proofs/verify` | POST | ✅ Verify ultrametric ball membership proofs |
+| `/security/score/:id` | GET | ✅ Compute S(x;A) admissibility score (C1+C2+C3) |
 
 ### Consensus & Reputation
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/reputation/:pubkey` | GET | ADIC-Rep score (non-transferable) |
+| `/v1/reputation/:address` | GET | ADIC-Rep score (accepts bech32 adic1... addresses) |
 | `/v1/conflict/:id` | GET | Conflict set with energy |
 
 ## Testing
@@ -751,37 +755,50 @@ cargo test -p adic-network
 
 ### Cryptographic Primitives
 
-- **Signatures**: Ed25519 with reputation weighting
+- **Signatures**: Ed25519 (messages), BLS threshold signatures (governance/PoUW receipts)
 - **Hashing**: Blake3 for commitments and proofs
-- **Key Exchange**: X25519 with ultrametric constraints
-- **Encryption**: AES-256-GCM with proximity keys
+- **Key Derivation**: Argon2id (wallet v4)
+- **Encryption**: XSalsa20-Poly1305 AEAD (wallet v4), experimental p-adic XOR
+- **Randomness**: VRF commit-reveal protocol for unpredictable worker selection
+- **DKG**: Distributed key generation for BLS threshold schemes
 
 ## Roadmap
 
-### Phase 0 (Complete) ✅
-- [x] P-adic mathematics (vp, distance, balls)
-- [x] Ultrametric security modules
+### Phase 0: Prototype (Complete) ✅
+**Goal**: Core consensus and basic functionality ([Paper §9.1](./docs/references/adic-dag-paper.pdf))
+
+- [x] Message format, feature encoders, and p-adic ultrametric
+- [x] MRW (multi-axis random walk) tip selection
 - [x] C1-C3 admissibility enforcement
-- [x] K-core (F1) finality
-- [x] Homology (F2) finality (heuristic implementation)
-- [x] Feature commitments and proofs
+- [x] K-core (F1) finality with diversity thresholds
 - [x] Energy descent conflict resolution
+- [x] Deposits and refunds (anti-spam, feeless base)
 - [x] Genesis manifest and configuration system
 - [x] Bootstrap node infrastructure
-- [x] P2P update distribution system
-- [x] Wallet system with transactions
+- [x] Explorer and basic monitoring
 
-### Phase 1 (Beta) 🚧
-- [ ] Genesis L1 anchoring (Ethereum/Bitcoin)
-- [x] Persistent homology streaming (complete implementation, 3,566 lines)
-- [ ] ADIC-Rep SBT implementation
-- [ ] Axis-aware gossip overlays
+### Phase 1: Beta (Nearly Complete) ✅🚧
+**Goal**: Production-grade finality and reputation system ([Paper §9.2](./docs/references/adic-dag-paper.pdf))
 
-### Phase 2 (Mainnet Candidate) 📅
-- [ ] PoUW sponsor hooks
-- [ ] Storage markets
-- [ ] Governance module (quadratic)
-- [ ] Parameter optimization
+- [x] **Persistent homology-based finality (F2)** - Streaming implementation complete (3,603 LOC in `adic-finality/src/ph/`)
+- [x] **ADIC-Rep SBT** - Non-transferable reputation scoring (692 LOC, `is_transferable: false`, soul-bound to keypair)
+- [x] **Axis-aware gossip overlays** - Multi-axis p-adic ball routing (`adic-network/src/protocol/axis_overlay.rs`)
+- [x] **Anti-entropy checkpoints** - Merkle-root checkpoints with F1/F2 metadata (`adic-finality/src/checkpoint.rs`)
+- [ ] **Optional L1 anchors** - Genesis timestamping to Ethereum/Bitcoin (hash function exists, no L1 integration yet)
+
+**Status**: 4/5 Phase 1 deliverables complete. L1 anchoring requires ethers-rs/bitcoin-rs integration.
+
+### Phase 2: Mainnet Candidate ✅
+**Goal**: Advanced features and production hardening ([Paper §9.3](./docs/references/adic-dag-paper.pdf))
+
+- [x] **Governance module** - Quadratic voting, 19 parameters, treasury execution
+- [x] **Storage markets** - JITCA compilation, PoSt verification
+- [x] **PoUW sponsor hooks** - VRF worker selection, quorum validation
+- [x] **BLS threshold signatures** - DKG for governance/PoUW receipts
+- [ ] **Parameter sweeps** - Empirical optimization of (ρ, q, k, D, Δ)
+- [ ] **Adversarial testing** - Security audit and attack simulations
+
+**Status**: Phase 2 core features complete (v0.3.0). Parameter optimization and security audits remain for full mainnet readiness.
 
 ## Documentation
 
@@ -797,7 +814,6 @@ cargo test -p adic-network
 - 💾 [**Update System**](./docs/UPDATE-SYSTEM.md) - P2P update distribution
 - 💰 [**Wallet API**](./docs/wallet-api.md) - Wallet integration guide
 - 📊 [**Logging Best Practices**](./docs/LOGGING_BEST_PRACTICES.md) - Structured logging guide
-- 📈 [**Integration Status**](./INTEGRATION-STATUS.md) - Explorer backend integration
 
 ## Genesis Contribution
 

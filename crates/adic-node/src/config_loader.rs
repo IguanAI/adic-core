@@ -65,10 +65,18 @@ pub struct ConsensusConfig {
     pub alpha: f64,
     #[serde(default = "default_beta_adm")]
     pub beta_adm: f64,
+
+    // Epoch duration for time-based operations
+    #[serde(default = "default_epoch_duration_secs_unified")]
+    pub epoch_duration_secs: u64,
 }
 
 fn default_beta_adm() -> f64 {
     1.0
+}
+
+fn default_epoch_duration_secs_unified() -> u64 {
+    3600 // 1 hour epochs by default
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -179,6 +187,9 @@ impl UnifiedConfig {
 
         // Validate configuration
         config.validate()?;
+
+        // SECURITY: Additional validation for mainnet genesis configuration
+        config.validate_genesis_security()?;
 
         info!(
             chain_id = %config.network.chain_id,
@@ -337,6 +348,55 @@ impl UnifiedConfig {
         Ok(())
     }
 
+    /// Validate genesis configuration security (defense-in-depth)
+    /// This provides early warning if genesis config has been tampered with
+    fn validate_genesis_security(&self) -> Result<()> {
+        use sha2::{Digest, Sha256};
+
+        // For mainnet, verify the genesis allocations match canonical
+        if self.network.chain_id == "adic-dag-v1" {
+            // Calculate hash of the genesis configuration
+            let canonical_json = serde_json::json!({
+                "chain_id": self.genesis.allocations,
+                "timestamp": self.genesis.timestamp,
+                "deposit_amount": self.genesis.deposit_amount,
+                "allocations": self.genesis.allocations,
+                "genesis_identities": self.genesis.genesis_identities,
+                "parameters": {
+                    "p": self.genesis.parameters.p,
+                    "d": self.genesis.parameters.d,
+                    "rho": self.genesis.parameters.rho,
+                    "q": self.genesis.parameters.q,
+                    "k": self.genesis.parameters.k,
+                    "depth_star": self.genesis.parameters.depth_star,
+                    "homology_window": self.genesis.parameters.homology_window,
+                    "alpha": self.genesis.parameters.alpha,
+                    "beta": self.genesis.parameters.beta,
+                }
+            });
+
+            let json_string = serde_json::to_string(&canonical_json)?;
+            let mut hasher = Sha256::new();
+            hasher.update(json_string.as_bytes());
+            let calculated_hash = hex::encode(hasher.finalize());
+
+            // This is the canonical hash for mainnet
+            let canonical_hash = "e03dffb732c202021e35225771c033b1217b0e6241be360ad88f6d7ac43675f8";
+
+            if calculated_hash != canonical_hash {
+                tracing::warn!(
+                    calculated = %calculated_hash,
+                    canonical = %canonical_hash,
+                    "⚠️  SECURITY WARNING: Mainnet configuration has non-canonical genesis allocations. \
+                     This configuration will be rejected when starting a bootstrap node. \
+                     If you are seeing this for official mainnet, the configuration file may have been tampered with."
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     /// Get the network name
     pub fn network_name(&self) -> &str {
         &self.network.name
@@ -399,9 +459,11 @@ impl UnifiedConfig {
                 r_min: self.consensus.r_min,
                 deposit: self.consensus.deposit,
                 lambda: self.consensus.lambda,
+                alpha: self.consensus.alpha,
                 beta: self.consensus.beta,
                 mu: self.consensus.mu,
                 gamma: self.consensus.gamma,
+                epoch_duration_secs: self.consensus.epoch_duration_secs,
             },
             storage: crate::config::StorageConfig {
                 backend: self.storage.backend,
@@ -439,6 +501,8 @@ impl UnifiedConfig {
                     Some(self.network.node_key_path)
                 },
                 auto_update: self.network.auto_update,
+                asn: None,
+                region: None,
             },
             logging: crate::config::LoggingConfig {
                 level: self.logging.level,
@@ -453,6 +517,7 @@ impl UnifiedConfig {
                 field_filters: std::collections::HashMap::new(),
             },
             genesis: Some(genesis_config),
+            applications: crate::config::ApplicationsConfig::default(),
         }
     }
 }

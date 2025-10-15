@@ -66,7 +66,7 @@ async fn test_kcore_with_complex_graph_structure() {
     let storage = create_test_storage();
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone()).await;
 
     let keypair = Keypair::generate();
 
@@ -155,7 +155,7 @@ async fn test_empty_and_disconnected_graphs() {
     let storage = create_test_storage();
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone()).await;
 
     // Test with empty graph
     let finalized = finality.check_finality().await.unwrap();
@@ -198,7 +198,7 @@ async fn test_finality_with_insufficient_diversity() {
     let storage = create_test_storage();
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone()).await;
 
     let keypair = Keypair::generate();
 
@@ -254,7 +254,7 @@ async fn test_finality_with_low_reputation() {
     let storage = create_test_storage();
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone()).await;
 
     let keypair = Keypair::generate();
 
@@ -305,7 +305,7 @@ async fn test_finality_with_deep_dag_structure() {
     let storage = create_test_storage();
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone()).await;
 
     let keypair = Keypair::generate();
 
@@ -367,7 +367,7 @@ async fn test_finality_performance_under_load() {
     let storage = create_test_storage();
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
     let finality_config = FinalityConfig::from(&params);
-    let finality = FinalityEngine::new(finality_config, consensus, storage.clone());
+    let finality = FinalityEngine::new(finality_config, consensus, storage.clone()).await;
 
     let keypair = Keypair::generate();
 

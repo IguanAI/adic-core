@@ -56,12 +56,66 @@ pub enum NetworkMessage {
         peer_id: Vec<u8>,
         version: u32,
         listening_port: Option<u16>,
+        /// Optional self-reported ASN for network diversity
+        asn: Option<u32>,
+        /// Optional self-reported region for network diversity
+        region: Option<String>,
     },
     /// Sync protocol messages
     SyncRequest(crate::protocol::sync::SyncRequest),
     SyncResponse(crate::protocol::sync::SyncResponse),
     /// Update protocol messages for P2P binary distribution
     Update(UpdateMessage),
+    /// DKG protocol messages for distributed key generation
+    DKG(crate::protocol::dkg::DKGMessage),
+    /// Finality artifact message for consensus verification
+    /// CRITICAL: Propagates F1 k-core and F2 persistent homology finality proofs
+    FinalityArtifact(adic_finality::FinalityArtifact),
+    /// Reputation sync protocol messages for distributing reputation snapshots
+    ReputationSync(ReputationSyncMessage),
+}
+
+/// Reputation sync message types for sharing reputation state across the network
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ReputationSyncMessage {
+    /// Request reputation snapshot from a peer
+    RequestSnapshot {
+        /// Request ID for tracking responses
+        request_id: u64,
+        /// Optional: request snapshot at specific timestamp (None = latest)
+        at_timestamp: Option<i64>,
+    },
+    /// Response with reputation snapshot data
+    SnapshotResponse {
+        /// Request ID this is responding to
+        request_id: u64,
+        /// Snapshot timestamp
+        timestamp: i64,
+        /// Reputation scores for all validators
+        scores: Vec<(adic_types::PublicKey, adic_consensus::ReputationScore)>,
+        /// Total number of validators in snapshot
+        total_validators: usize,
+    },
+    /// Incremental reputation update broadcast
+    /// Used to propagate reputation changes in real-time
+    IncrementalUpdate {
+        /// Validator whose reputation changed
+        validator: adic_types::PublicKey,
+        /// New reputation score
+        new_score: adic_consensus::ReputationScore,
+        /// Reason for the update
+        reason: String,
+    },
+    /// Request missing reputation data for specific validators
+    RequestValidators {
+        request_id: u64,
+        validators: Vec<adic_types::PublicKey>,
+    },
+    /// Response with specific validator reputation data
+    ValidatorsResponse {
+        request_id: u64,
+        scores: Vec<(adic_types::PublicKey, adic_consensus::ReputationScore)>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -593,28 +647,40 @@ impl HybridTransport {
                 .with_root_certificates(roots)
                 .with_no_client_auth()
         } else {
-            // Development mode: Still use verification but with custom verifier for self-signed certs
-            error!(
-                security_mode = "development",
-                production_required = true,
-                "⚠️ WARNING: TLS certificate verification is DISABLED!"
-            );
-            error!(
-                risk = "extremely_high",
-                "⚠️ This is EXTREMELY UNSAFE and should NEVER be used in production!"
-            );
-            error!(
-                fix = "set use_production_tls=true",
-                "⚠️ Set use_production_tls=true for secure operation"
-            );
-            warn!(
-                tls_mode = "development",
-                "⚠️ Using development TLS mode - not suitable for production"
-            );
-            rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(SkipServerVerification::new()))
-                .with_no_client_auth()
+            // Development mode: Skip verification (ONLY allowed in debug builds)
+            #[cfg(all(not(debug_assertions), not(test)))]
+            {
+                panic!(
+                    "FATAL: use_production_tls=false is NOT allowed in release builds. \
+                    This configuration disables TLS certificate verification and is extremely unsafe. \
+                    Set use_production_tls=true in your configuration file."
+                );
+            }
+
+            #[cfg(any(debug_assertions, test))]
+            {
+                error!(
+                    security_mode = "development",
+                    production_required = true,
+                    "⚠️ WARNING: TLS certificate verification is DISABLED!"
+                );
+                error!(
+                    risk = "extremely_high",
+                    "⚠️ This is EXTREMELY UNSAFE and should NEVER be used in production!"
+                );
+                error!(
+                    fix = "set use_production_tls=true",
+                    "⚠️ Set use_production_tls=true for secure operation"
+                );
+                warn!(
+                    tls_mode = "development",
+                    "⚠️ Using development TLS mode - not suitable for production"
+                );
+                rustls::ClientConfig::builder()
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(SkipServerVerification::new()))
+                    .with_no_client_auth()
+            }
         };
 
         let mut client_config = ClientConfig::new(Arc::new(
@@ -780,6 +846,113 @@ impl HybridTransport {
         Ok(())
     }
 
+    /// Send a finality artifact to a specific peer
+    pub async fn send_finality_artifact(
+        &self,
+        peer_id: &PeerId,
+        artifact: adic_finality::FinalityArtifact,
+    ) -> Result<()> {
+        let network_msg = NetworkMessage::FinalityArtifact(artifact);
+        let data = serde_json::to_vec(&network_msg).map_err(|e| {
+            TransportError::ConnectionFailed(format!("Failed to serialize finality artifact: {}", e))
+        })?;
+
+        // Use consensus priority for finality artifacts
+        self.send_with_priority(peer_id, &data, PriorityLane::Consensus)
+            .await
+    }
+
+    /// Broadcast a finality artifact to all connected peers
+    /// CRITICAL: Ensures all nodes receive finality proofs for consensus verification
+    pub async fn broadcast_finality_artifact(&self, artifact: adic_finality::FinalityArtifact) -> Result<()> {
+        let connections = self.connection_pool.get_all_connections().await;
+        info!(
+            "🔍 [BROADCAST_DEBUG] Broadcasting finality artifact for message {} to {} connected peers",
+            hex::encode(&artifact.intent_id.as_bytes()[..8]),
+            connections.len()
+        );
+
+        let mut success_count = 0;
+        let mut fail_count = 0;
+
+        for (peer_id, _) in connections {
+            info!(
+                "🔍 [BROADCAST_DEBUG] Attempting to send artifact to peer {}",
+                peer_id
+            );
+            match self.send_finality_artifact(&peer_id, artifact.clone()).await {
+                Ok(()) => {
+                    success_count += 1;
+                    info!(
+                        "🔍 [BROADCAST_DEBUG] ✅ Successfully sent artifact to peer {}",
+                        peer_id
+                    );
+                }
+                Err(e) => {
+                    fail_count += 1;
+                    warn!(
+                        "🔍 [BROADCAST_DEBUG] ❌ Failed to send finality artifact to peer {}: {}",
+                        peer_id, e
+                    );
+                }
+            }
+        }
+
+        info!(
+            "🔍 [BROADCAST_DEBUG] Broadcast complete: {} succeeded, {} failed",
+            success_count, fail_count
+        );
+        Ok(())
+    }
+
+    /// Send a reputation sync message to a specific peer
+    pub async fn send_reputation_sync(
+        &self,
+        peer_id: &PeerId,
+        message: ReputationSyncMessage,
+    ) -> Result<()> {
+        let network_msg = NetworkMessage::ReputationSync(message);
+        let data = serde_json::to_vec(&network_msg).map_err(|e| {
+            TransportError::ConnectionFailed(format!("Failed to serialize reputation sync message: {}", e))
+        })?;
+
+        // Use consensus priority for reputation sync (reputation is critical for consensus)
+        self.send_with_priority(peer_id, &data, PriorityLane::Consensus)
+            .await
+    }
+
+    /// Broadcast a reputation incremental update to all connected peers
+    /// Used for real-time reputation propagation across the network
+    pub async fn broadcast_reputation_update(
+        &self,
+        validator: adic_types::PublicKey,
+        new_score: adic_consensus::ReputationScore,
+        reason: String,
+    ) -> Result<()> {
+        let message = ReputationSyncMessage::IncrementalUpdate {
+            validator,
+            new_score,
+            reason,
+        };
+
+        let connections = self.connection_pool.get_all_connections().await;
+        debug!(
+            "Broadcasting reputation update for validator {} to {} peers",
+            hex::encode(&validator.as_bytes()[..8]),
+            connections.len()
+        );
+
+        for (peer_id, _) in connections {
+            if let Err(e) = self.send_reputation_sync(&peer_id, message.clone()).await {
+                warn!(
+                    "Failed to send reputation update to peer {}: {}",
+                    peer_id, e
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Starting transport shutdown...");
 
@@ -802,15 +975,19 @@ impl HybridTransport {
 
 // Simplified certificate verification for development
 // In production, use proper certificate verification
+// Only compile this in debug/test builds - blocked in release builds
+#[cfg(any(debug_assertions, test))]
 #[derive(Debug)]
 struct SkipServerVerification;
 
+#[cfg(any(debug_assertions, test))]
 impl SkipServerVerification {
     fn new() -> Self {
         Self
     }
 }
 
+#[cfg(any(debug_assertions, test))]
 impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     fn verify_server_cert(
         &self,

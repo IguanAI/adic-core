@@ -59,11 +59,14 @@ impl TestNode {
         let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
 
         // Create finality engine
-        let finality = Arc::new(FinalityEngine::new(
-            FinalityConfig::from(&params),
-            consensus.clone(),
-            storage.clone(),
-        ));
+        let finality = Arc::new(
+            FinalityEngine::new(
+                FinalityConfig::from(&params),
+                consensus.clone(),
+                storage.clone(),
+            )
+            .await,
+        );
 
         // Create network config
         let config = NetworkConfig {
@@ -77,6 +80,7 @@ impl TestNode {
                 libp2p_listen_addrs: vec![format!("/ip4/127.0.0.1/tcp/{}", tcp_port)
                     .parse()
                     .unwrap()],
+                use_production_tls: false, // Use development mode for testing with self-signed certs
                 ..Default::default()
             },
             ..Default::default()
@@ -273,6 +277,20 @@ async fn test_three_node_finality() {
         Err(_) => warn!("Node 0 connection to Node 1 timed out"),
     }
 
+    // Assert node0 eventually sees at least one connected peer
+    {
+        let mut ok = false;
+        for _ in 0..10 {
+            sleep(Duration::from_millis(200)).await;
+            let peers = node0.network.read().await.get_connected_peers().await;
+            if !peers.is_empty() {
+                ok = true;
+                break;
+            }
+        }
+        assert!(ok, "Node 0 should report at least one connected peer (Node 1)");
+    }
+
     sleep(Duration::from_millis(500)).await;
 
     let quic2 = node2.actual_quic_port().await;
@@ -282,6 +300,20 @@ async fn test_three_node_finality() {
         Err(_) => warn!("Node 1 connection to Node 2 timed out"),
     }
 
+    // Assert node1 eventually sees at least one connected peer
+    {
+        let mut ok = false;
+        for _ in 0..10 {
+            sleep(Duration::from_millis(200)).await;
+            let peers = node1.network.read().await.get_connected_peers().await;
+            if !peers.is_empty() {
+                ok = true;
+                break;
+            }
+        }
+        assert!(ok, "Node 1 should report at least one connected peer (Node 2)");
+    }
+
     sleep(Duration::from_millis(500)).await;
 
     let quic0 = node0.actual_quic_port().await;
@@ -289,6 +321,20 @@ async fn test_three_node_finality() {
         Ok(Ok(_)) => info!("Node 2 connected to Node 0"),
         Ok(Err(e)) => warn!("Node 2 failed to connect to Node 0: {}", e),
         Err(_) => warn!("Node 2 connection to Node 0 timed out"),
+    }
+
+    // Assert node2 eventually sees at least one connected peer
+    {
+        let mut ok = false;
+        for _ in 0..10 {
+            sleep(Duration::from_millis(200)).await;
+            let peers = node2.network.read().await.get_connected_peers().await;
+            if !peers.is_empty() {
+                ok = true;
+                break;
+            }
+        }
+        assert!(ok, "Node 2 should report at least one connected peer (Node 0)");
     }
 
     sleep(Duration::from_millis(500)).await;
@@ -307,6 +353,16 @@ async fn test_three_node_finality() {
 
     // Wait for genesis to propagate
     sleep(Duration::from_secs(2)).await;
+
+    // After propagation, at least one other node should have stored a message
+    {
+        let (msg_count1, _, _) = node1.get_stats().await;
+        let (msg_count2, _, _) = node2.get_stats().await;
+        assert!(
+            msg_count1 > 0 || msg_count2 > 0,
+            "At least one peer should have received the genesis message"
+        );
+    }
 
     // Submit messages from each node to build the DAG
     let mut message_ids = vec![genesis_id];

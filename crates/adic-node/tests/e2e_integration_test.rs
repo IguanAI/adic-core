@@ -97,11 +97,14 @@ async fn test_complete_message_lifecycle() {
         epsilon: 0.1,
         checkpoint_interval: 100,
     };
-    let finality = Arc::new(FinalityEngine::new(
-        finality_config,
-        consensus.clone(),
-        storage.clone(),
-    ));
+    let finality = Arc::new(
+        FinalityEngine::new(
+            finality_config,
+            consensus.clone(),
+            storage.clone(),
+        )
+        .await,
+    );
     let reputation = Arc::new(ReputationTracker::new(params.gamma));
 
     // Create test accounts
@@ -316,7 +319,9 @@ async fn test_full_finalization_flow() {
         checkpoint_interval: 100,
     };
     let consensus_engine = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
-    let finality = FinalityEngine::new(finality_config, consensus_engine, storage.clone());
+    let finality = Arc::new(
+        FinalityEngine::new(finality_config, consensus_engine, storage.clone()).await
+    );
 
     // Create a DAG structure that will achieve k-core finality
     let proposers: Vec<_> = (0..5).map(|_| *Keypair::generate().public_key()).collect();

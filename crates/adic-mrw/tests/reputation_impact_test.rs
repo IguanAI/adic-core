@@ -1,10 +1,11 @@
-use adic_consensus::{ConflictResolver, ReputationTracker};
+use adic_consensus::ConsensusEngine;
 use adic_mrw::MrwEngine;
 use adic_storage::{store::BackendType, StorageConfig, StorageEngine};
 use adic_types::{
     AdicFeatures, AdicMessage, AdicMeta, AdicParams, AxisPhi, MessageId, PublicKey, QpDigits,
 };
 use chrono::Utc;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_reputation_impacts_parent_selection() {
@@ -18,13 +19,14 @@ async fn test_reputation_impacts_parent_selection() {
     };
 
     // Use in-memory storage to avoid RocksDB file locks across concurrent tests
-    let storage = StorageEngine::new(StorageConfig {
-        backend_type: BackendType::Memory,
-        ..Default::default()
-    })
-    .unwrap();
-    let conflict_resolver = ConflictResolver::new();
-    let reputation_tracker = ReputationTracker::new(params.gamma);
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    let consensus = ConsensusEngine::new(params.clone(), storage.clone());
     let mrw = MrwEngine::new(params.clone());
 
     // Create proposers with different reputations
@@ -35,26 +37,29 @@ async fn test_reputation_impacts_parent_selection() {
     // Set reputations
     // High reputation proposer - consistent good behavior
     for _ in 0..10 {
-        reputation_tracker
+        consensus
+            .reputation
             .good_update(&high_rep_proposer, 5.0, 10)
             .await;
     }
 
     // Medium reputation proposer - average behavior
     for _ in 0..5 {
-        reputation_tracker
+        consensus
+            .reputation
             .good_update(&medium_rep_proposer, 3.0, 10)
             .await;
     }
 
     // Low reputation proposer - poor behavior
-    reputation_tracker.bad_update(&low_rep_proposer, 5.0).await;
+    consensus.reputation.bad_update(&low_rep_proposer, 5.0).await;
 
-    let high_rep = reputation_tracker.get_reputation(&high_rep_proposer).await;
-    let medium_rep = reputation_tracker
+    let high_rep = consensus.reputation.get_reputation(&high_rep_proposer).await;
+    let medium_rep = consensus
+        .reputation
         .get_reputation(&medium_rep_proposer)
         .await;
-    let low_rep = reputation_tracker.get_reputation(&low_rep_proposer).await;
+    let low_rep = consensus.reputation.get_reputation(&low_rep_proposer).await;
 
     println!("Reputation scores:");
     println!("  High: {:.3}", high_rep);
@@ -99,9 +104,8 @@ async fn test_reputation_impacts_parent_selection() {
             .select_parents(
                 &new_features,
                 &tip_ids,
-                &storage,
-                &conflict_resolver,
-                &reputation_tracker,
+                &*storage,
+                &consensus,
             )
             .await
             .unwrap();
@@ -180,13 +184,14 @@ async fn test_c3_prevents_low_reputation_parents() {
     };
 
     // Use in-memory storage to avoid RocksDB file locks across concurrent tests
-    let storage = StorageEngine::new(StorageConfig {
-        backend_type: BackendType::Memory,
-        ..Default::default()
-    })
-    .unwrap();
-    let conflict_resolver = ConflictResolver::new();
-    let reputation_tracker = ReputationTracker::new(params.gamma);
+    let storage = Arc::new(
+        StorageEngine::new(StorageConfig {
+            backend_type: BackendType::Memory,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    let consensus = ConsensusEngine::new(params.clone(), storage.clone());
     let mrw = MrwEngine::new(params.clone());
 
     // Create a very low reputation proposer
@@ -194,10 +199,10 @@ async fn test_c3_prevents_low_reputation_parents() {
 
     // Severely penalize the bad proposer
     for _ in 0..5 {
-        reputation_tracker.bad_update(&bad_proposer, 10.0).await;
+        consensus.reputation.bad_update(&bad_proposer, 10.0).await;
     }
 
-    let bad_rep = reputation_tracker.get_reputation(&bad_proposer).await;
+    let bad_rep = consensus.reputation.get_reputation(&bad_proposer).await;
     println!("Bad proposer reputation: {:.3}", bad_rep);
     assert!(
         bad_rep <= 0.15,
@@ -226,8 +231,7 @@ async fn test_c3_prevents_low_reputation_parents() {
             &new_features,
             &tip_ids,
             &storage,
-            &conflict_resolver,
-            &reputation_tracker,
+            &consensus,
         )
         .await
         .unwrap();
@@ -236,7 +240,7 @@ async fn test_c3_prevents_low_reputation_parents() {
     // and likely not be selected
     for parent_id in &selected_parents {
         if let Ok(Some(parent)) = storage.get_message(parent_id).await {
-            let rep = reputation_tracker.get_reputation(&parent.proposer_pk).await;
+            let rep = consensus.reputation.get_reputation(&parent.proposer_pk).await;
             println!("Selected parent reputation: {:.3}", rep);
 
             // If we enforce C3 strictly, this should not select very low reputation parents

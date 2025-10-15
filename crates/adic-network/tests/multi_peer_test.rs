@@ -65,11 +65,14 @@ async fn create_test_node_with_discovery(
 
     let params = AdicParams::default();
     let consensus = Arc::new(ConsensusEngine::new(params.clone(), storage.clone()));
-    let finality = Arc::new(FinalityEngine::new(
-        FinalityConfig::from(&params),
-        consensus.clone(),
-        storage.clone(),
-    ));
+    let finality = Arc::new(
+        FinalityEngine::new(
+            FinalityConfig::from(&params),
+            consensus.clone(),
+            storage.clone(),
+        )
+        .await,
+    );
 
     // Use port 0 for auto-assignment to avoid conflicts
     let config = NetworkConfig {
@@ -79,6 +82,7 @@ async fn create_test_node_with_discovery(
         enable_metrics: false,
         transport: TransportConfig {
             quic_listen_addr: "127.0.0.1:0".parse().unwrap(),
+            use_production_tls: false, // Use development mode for testing with self-signed certs
             ..Default::default()
         },
         ..Default::default()

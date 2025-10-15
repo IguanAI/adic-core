@@ -35,8 +35,6 @@ impl CompressionLevel {
 #[derive(Debug, Clone, Copy)]
 pub enum CompressionType {
     None,
-    Zstd,
-    Lz4,
     Snappy,
 }
 
@@ -46,16 +44,11 @@ impl Compressor {
     pub fn compress(data: &[u8], compression: CompressionType) -> Result<Vec<u8>> {
         match compression {
             CompressionType::None => Ok(data.to_vec()),
-            CompressionType::Zstd | CompressionType::Snappy => {
+            CompressionType::Snappy => {
                 let mut encoder = snap::raw::Encoder::new();
                 encoder
                     .compress_vec(data)
                     .map_err(|e| AdicError::Serialization(format!("Compression failed: {}", e)))
-            }
-            CompressionType::Lz4 => {
-                // Would use lz4 crate
-                // For now, fallback to snap
-                Self::compress(data, CompressionType::Snappy)
             }
         }
     }
@@ -63,16 +56,11 @@ impl Compressor {
     pub fn decompress(data: &[u8], compression: CompressionType) -> Result<Vec<u8>> {
         match compression {
             CompressionType::None => Ok(data.to_vec()),
-            CompressionType::Zstd | CompressionType::Snappy => {
+            CompressionType::Snappy => {
                 let mut decoder = snap::raw::Decoder::new();
                 decoder
                     .decompress_vec(data)
                     .map_err(|e| AdicError::Serialization(format!("Decompression failed: {}", e)))
-            }
-            CompressionType::Lz4 => {
-                // Would use lz4 crate
-                // For now, fallback to snap
-                Self::decompress(data, CompressionType::Snappy)
             }
         }
     }

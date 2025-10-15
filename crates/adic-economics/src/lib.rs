@@ -13,7 +13,7 @@ pub use genesis::{GenesisAllocation, GenesisAllocator};
 pub use storage::TransactionRecord;
 pub use supply::{SupplyMetrics, TokenSupply, TransferEventCallback};
 pub use treasury::{TreasuryManager, TreasuryProposal};
-pub use types::{AccountAddress, AdicAmount, AllocationConfig, EmissionSchedule};
+pub use types::{AccountAddress, AdicAmount, AllocationConfig, EmissionSchedule, TransferReason};
 
 // Export TokenomicsEngine as an alias to EconomicsEngine
 pub type TokenomicsEngine = EconomicsEngine;

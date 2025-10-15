@@ -1,13 +1,14 @@
 use crate::backend::{Result, StorageBackend, StorageError, StorageStats};
 use adic_types::{AdicMessage, MessageId, PublicKey};
 use async_trait::async_trait;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 // Type aliases for complex types
 type MetadataMap = Arc<RwLock<HashMap<(MessageId, String), Vec<u8>>>>;
 type BallIndexMap = Arc<RwLock<HashMap<(u32, Vec<u8>), HashSet<MessageId>>>>;
+type TimeIndexMap = Arc<RwLock<BTreeMap<i64, Vec<MessageId>>>>;
 
 /// In-memory storage backend for testing and development
 pub struct MemoryBackend {
@@ -20,6 +21,8 @@ pub struct MemoryBackend {
     finalized: Arc<RwLock<HashMap<MessageId, Vec<u8>>>>,
     conflicts: Arc<RwLock<HashMap<String, HashSet<MessageId>>>>,
     ball_index: BallIndexMap,
+    /// Time index for efficient range queries - BTreeMap for O(log N + K) access
+    time_index: TimeIndexMap,
 }
 
 impl MemoryBackend {
@@ -34,6 +37,7 @@ impl MemoryBackend {
             finalized: Arc::new(RwLock::new(HashMap::new())),
             conflicts: Arc::new(RwLock::new(HashMap::new())),
             ball_index: Arc::new(RwLock::new(HashMap::new())),
+            time_index: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 }
@@ -54,6 +58,14 @@ impl StorageBackend for MemoryBackend {
         }
 
         messages.insert(message.id, message.clone());
+
+        // Maintain time index for efficient range queries
+        let timestamp_millis = message.meta.timestamp.timestamp_millis();
+        let mut time_index = self.time_index.write().await;
+        time_index
+            .entry(timestamp_millis)
+            .or_insert_with(Vec::new)
+            .push(message.id);
 
         // Note: Parent-child relationships are now handled by store_message in store.rs
         // to ensure consistency across all backends
@@ -273,28 +285,21 @@ impl StorageBackend for MemoryBackend {
         end_timestamp_millis: Option<i64>,
         limit: usize,
     ) -> Result<Vec<MessageId>> {
-        let messages = self.messages.read().await;
+        let time_index = self.time_index.read().await;
         let end_ts = end_timestamp_millis.unwrap_or(i64::MAX);
 
-        let mut matching_messages: Vec<(MessageId, i64)> = messages
-            .iter()
-            .filter_map(|(id, msg)| {
-                let ts = msg.meta.timestamp.timestamp_millis();
-                if ts >= start_timestamp_millis && ts < end_ts {
-                    Some((*id, ts))
-                } else {
-                    None
+        // BTreeMap range query: O(log N + K) instead of O(N) + sort
+        let mut result = Vec::new();
+        for (_ts, message_ids) in time_index.range(start_timestamp_millis..end_ts) {
+            for &id in message_ids {
+                if result.len() >= limit {
+                    return Ok(result);
                 }
-            })
-            .collect();
+                result.push(id);
+            }
+        }
 
-        // Sort by timestamp
-        matching_messages.sort_by_key(|(_, ts)| *ts);
-
-        // Take only up to limit
-        matching_messages.truncate(limit);
-
-        Ok(matching_messages.into_iter().map(|(id, _)| id).collect())
+        Ok(result)
     }
 
     async fn get_messages_after_timestamp(
@@ -319,6 +324,7 @@ impl Clone for MemoryBackend {
             finalized: Arc::clone(&self.finalized),
             conflicts: Arc::clone(&self.conflicts),
             ball_index: Arc::clone(&self.ball_index),
+            time_index: Arc::clone(&self.time_index),
         }
     }
 }

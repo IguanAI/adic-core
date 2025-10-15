@@ -25,6 +25,10 @@ pub struct F2Config {
     /// Use streaming (incremental) persistent homology instead of batch
     /// Streaming mode provides O(n) amortized complexity vs O(n²-n³) batch
     pub use_streaming: bool,
+    /// Maximum allowed Betti number for H_d stability (governable parameter)
+    pub max_betti_d: usize,
+    /// Minimum persistence threshold for noise filtering (governable parameter)
+    pub min_persistence: f64,
 }
 
 impl Default for F2Config {
@@ -36,6 +40,8 @@ impl Default for F2Config {
             epsilon: 0.1,         // ε = 0.1 as per paper
             timeout_ms: 2000,     // 2 second timeout
             use_streaming: false, // Batch mode by default (backward compatible)
+            max_betti_d: 2,       // Default from existing heuristic
+            min_persistence: 0.01, // Default from existing heuristic (noise filtering)
         }
     }
 }
@@ -200,7 +206,12 @@ impl F2FinalityChecker {
             let persistence = streaming.persistence();
 
             // Check H_d stabilization (using local dimension var)
-            let h_d_stable = check_h_d_stability_impl(persistence, dimension);
+            let h_d_stable = check_h_d_stability_impl(
+                persistence,
+                dimension,
+                self.config.max_betti_d,
+                self.config.min_persistence,
+            );
 
             // Get H_{d-1} diagram
             let current_h_d_minus_1 = persistence.get_diagram(dimension - 1).cloned();
@@ -415,7 +426,12 @@ impl F2FinalityChecker {
     /// - All infinite bars were established early in the filtration
     /// - No short-lived bars exist (noise filtering)
     fn check_h_d_stability(&self, persistence: &PersistenceData) -> bool {
-        check_h_d_stability_impl(persistence, self.config.dimension)
+        check_h_d_stability_impl(
+            persistence,
+            self.config.dimension,
+            self.config.max_betti_d,
+            self.config.min_persistence,
+        )
     }
 
     /// Reset the checker (clear previous window data)
@@ -425,7 +441,12 @@ impl F2FinalityChecker {
 }
 
 /// Standalone implementation of H_d stability check (to avoid borrow issues)
-fn check_h_d_stability_impl(persistence: &PersistenceData, d: usize) -> bool {
+fn check_h_d_stability_impl(
+    persistence: &PersistenceData,
+    d: usize,
+    max_betti_d: usize,
+    min_persistence: f64,
+) -> bool {
     if let Some(h_d) = persistence.get_diagram(d) {
         // Check that all infinite intervals are stable
         // (This is a simplified check - could be enhanced)
@@ -433,13 +454,15 @@ fn check_h_d_stability_impl(persistence: &PersistenceData, d: usize) -> bool {
 
         // For d=3, we typically expect betti_3 = 0 or 1
         // If we have too many infinite bars, something is wrong
-        if betti > 2 {
+        // Use configurable threshold (governable parameter)
+        if betti > max_betti_d {
             return false;
         }
 
         // Check that finite bars have reasonable persistence
         // (filter out noise)
-        let finite_bars = h_d.filter_by_persistence(0.01); // Min persistence threshold
+        // Use configurable threshold (governable parameter)
+        let finite_bars = h_d.filter_by_persistence(min_persistence);
         let total_bars = h_d.num_intervals();
 
         // If too many bars are noise, not stable
@@ -549,6 +572,8 @@ mod tests {
             epsilon: 0.5,
             timeout_ms: 5000,
             use_streaming: false,
+            max_betti_d: 2,
+            min_persistence: 0.01,
         };
         let mut checker = F2FinalityChecker::new(config);
         let keypair = Keypair::generate();
@@ -608,6 +633,8 @@ mod tests {
             epsilon: 0.1,
             timeout_ms: 1, // Very short timeout
             use_streaming: false,
+            max_betti_d: 2,
+            min_persistence: 0.01,
         };
         let mut checker = F2FinalityChecker::new(config);
         let keypair = Keypair::generate();
@@ -667,6 +694,8 @@ mod tests {
                 epsilon: 0.5,
                 timeout_ms: 5000,
                 use_streaming: false,
+                max_betti_d: 2,
+                min_persistence: 0.01,
             };
             let mut checker = F2FinalityChecker::new(config);
 
@@ -694,6 +723,8 @@ mod tests {
             epsilon: 0.001,
             timeout_ms: 5000,
             use_streaming: false,
+            max_betti_d: 2,
+            min_persistence: 0.01,
         };
         let mut strict_checker = F2FinalityChecker::new(strict_config);
 
@@ -705,6 +736,8 @@ mod tests {
             epsilon: 10.0,
             timeout_ms: 5000,
             use_streaming: false,
+            max_betti_d: 2,
+            min_persistence: 0.01,
         };
         let mut lenient_checker = F2FinalityChecker::new(lenient_config);
 
@@ -738,6 +771,8 @@ mod tests {
             epsilon: 0.5,
             timeout_ms: 10000,
             use_streaming: false,
+            max_betti_d: 2,
+            min_persistence: 0.01,
         };
         let mut checker = F2FinalityChecker::new(config);
         let keypair = Keypair::generate();
@@ -769,6 +804,8 @@ mod tests {
             epsilon: 0.5,
             timeout_ms: 5000,
             use_streaming: false,
+            max_betti_d: 2,
+            min_persistence: 0.01,
         };
         let keypair = Keypair::generate();
 

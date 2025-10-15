@@ -590,9 +590,34 @@ impl UpdateProtocol {
             .collect()
     }
 
-    // Placeholder methods - would be implemented with actual storage
     async fn get_local_versions(&self) -> Vec<VersionInfo> {
-        Vec::new()
+        let version_strings = self.binary_store.list_versions().await;
+        let mut version_infos = Vec::new();
+
+        for version in version_strings {
+            if let Some(metadata) = self.binary_store.get_metadata(&version).await {
+                // Convert BinaryMetadata to VersionInfo
+                // For local versions, we don't have signature/timestamps from network
+                // Use file metadata for timestamps when available
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+
+                version_infos.push(VersionInfo {
+                    version: metadata.version,
+                    binary_hash: metadata.binary_hash,
+                    signature: Vec::new(), // Local versions aren't signed for seeding
+                    size_bytes: metadata.total_size,
+                    chunk_count: metadata.total_chunks,
+                    release_timestamp: timestamp as i64,
+                    total_chunks: metadata.total_chunks,
+                    timestamp,
+                });
+            }
+        }
+
+        version_infos
     }
 
     async fn get_current_version(&self) -> String {

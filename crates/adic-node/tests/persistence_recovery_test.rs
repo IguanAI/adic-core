@@ -9,7 +9,10 @@ use tempfile::TempDir;
 #[tokio::test]
 async fn test_node_basic_operations() {
     // Test basic node operations - simplified test
+    let temp_dir = TempDir::new().unwrap();
     let mut config = NodeConfig::default();
+    config.node.data_dir = temp_dir.path().to_path_buf();
+    config.node.name = "test_node_basic_ops".to_string();
     // Use in-memory storage for this test
     config.storage.backend = "memory".to_string();
     config.node.bootstrap = Some(true); // Set as bootstrap node for tests

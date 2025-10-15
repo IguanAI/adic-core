@@ -78,7 +78,7 @@ As a validator on the ADIC testnet, your node will:
 - **Maintain the Tangle**: Store and propagate messages across the network
 - **Earn Test Tokens**: Receive test ADIC tokens for validation work (testnet only)
 - **Support Network Security**: Contribute to the network's ultrametric security model
-- **Auto-Update**: Automatically update to new versions (v0.1.7+)
+- **Auto-Update**: Automatically update to new versions (v0.3.0+)
 
 ### Validator Responsibilities
 

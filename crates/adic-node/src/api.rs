@@ -1,3 +1,5 @@
+use crate::api_governance::{governance_routes, GovernanceApiState};
+use crate::api_storage_market::{storage_market_routes, StorageMarketApiState};
 use crate::api_sse;
 use crate::api_ws;
 use crate::auth::{auth_middleware, rate_limit_middleware, AuthUser};
@@ -6,6 +8,7 @@ use crate::metrics;
 use crate::node::AdicNode;
 use crate::openapi::ApiDoc;
 use crate::wallet_registry::WalletRegistrationRequest;
+use adic_economics::address_encoding::{decode_address, encode_address};
 use adic_math::ball_id;
 use adic_types::{ConflictId, MessageId, PublicKey, QpDigits};
 use axum::{
@@ -39,10 +42,8 @@ struct SubmitMessageRequest {
     features: Option<SubmitFeatures>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parents: Option<Vec<String>>, // Hex-encoded parent message IDs
-    #[serde(skip_serializing_if = "Option::is_none")]
-    signature: Option<String>, // Hex-encoded signature
-    #[serde(skip_serializing_if = "Option::is_none")]
-    proposer_pk: Option<String>, // Hex-encoded public key
+    signature: String, // Hex-encoded signature
+    proposer_address: String, // Bech32 adic1... address
     #[serde(skip_serializing_if = "Option::is_none")]
     transfer: Option<SubmitTransfer>, // Optional value transfer
 }
@@ -279,6 +280,14 @@ pub fn start_api_server_with_listener(
         economics: Arc::clone(&node.economics),
     };
 
+    let governance_state = GovernanceApiState {
+        node: node.clone(),
+    };
+
+    let storage_market_state = StorageMarketApiState {
+        node: node.clone(),
+    };
+
     // Build v1 API by composing all domain routers
     let v1_api = Router::new()
         .merge(core_routes())
@@ -295,7 +304,11 @@ pub fn start_api_server_with_listener(
         .layer(middleware::from_fn(auth_middleware))
         .with_state(state)
         // Merge economics routes (has its own state)
-        .merge(economics_routes(economics_state));
+        .merge(economics_routes(economics_state))
+        // Merge governance routes (has its own state)
+        .merge(governance_routes(governance_state))
+        // Merge storage market routes (has its own state)
+        .merge(storage_market_routes(storage_market_state));
 
     // Add Swagger UI for API documentation
     let app = Router::new()
@@ -472,28 +485,76 @@ async fn submit_message(
 ) -> Response {
     state.metrics.messages_submitted.inc();
 
-    // Check if proposer public key is provided (required for deposit checking)
-    let proposer_pk = if let Some(pk_hex) = req.proposer_pk {
-        match hex::decode(&pk_hex) {
-            Ok(bytes) if bytes.len() == 32 => {
-                let mut pk_bytes = [0u8; 32];
-                pk_bytes.copy_from_slice(&bytes);
-                PublicKey::from_bytes(pk_bytes)
-            }
-            _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Invalid proposer public key".to_string(),
-                    }),
-                )
-                    .into_response();
+    // Decode adic1... address to public key
+    let proposer_pk = match decode_address(&req.proposer_address) {
+        Ok(bytes) => PublicKey::from_bytes(bytes),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Invalid proposer address: must be bech32 adic1... format".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Decode signature
+    let sig_bytes = match hex::decode(&req.signature) {
+        Ok(bytes) if bytes.len() == 64 => bytes,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Invalid signature: must be 64-byte hex-encoded".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Build canonical message for signature verification
+    // Signature covers: content || proposer_pk || parents (if provided)
+    let mut signed_data = Vec::new();
+    signed_data.extend_from_slice(req.content.as_bytes());
+    signed_data.extend_from_slice(proposer_pk.as_bytes());
+
+    // Include parents in signature if provided
+    if let Some(ref parents) = req.parents {
+        for parent_hex in parents {
+            if let Ok(parent_bytes) = hex::decode(parent_hex) {
+                signed_data.extend_from_slice(&parent_bytes);
             }
         }
-    } else {
-        // Use node's own public key if not provided
-        state.node.public_key()
-    };
+    }
+
+    // Verify Ed25519 signature
+    let signature = adic_types::Signature::new(sig_bytes);
+    let crypto = adic_crypto::CryptoEngine::new();
+
+    // Create temporary message for verification
+    let temp_message = adic_types::AdicMessage::new(
+        vec![],
+        adic_types::AdicFeatures::new(vec![]),
+        adic_types::AdicMeta::new(chrono::Utc::now()),
+        proposer_pk,
+        signed_data.clone(),
+    );
+
+    match crypto.verify_signature(&temp_message, &proposer_pk, &signature) {
+        Ok(true) => {
+            tracing::debug!("✅ Signature verification passed for message submission");
+        }
+        Ok(false) | Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "Signature verification failed: invalid signature for provided content and public key".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
 
     // Check balance for deposit requirement
     let deposit_amount = state.node.get_deposit_amount();
@@ -642,13 +703,16 @@ async fn submit_message(
             )
                 .into_response()
         }
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-            .into_response(),
+        Err(e) => {
+            state.metrics.messages_failed.inc();
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -682,7 +746,7 @@ async fn get_message(State(state): State<Arc<AppState>>, Path(id): Path<String>)
                 },
                 "content": general_purpose::STANDARD.encode(&message.data),  // Use base64 per API spec
                 "timestamp": message.meta.timestamp.to_rfc3339(),
-                "proposer_pk": hex::encode(message.proposer_pk.as_bytes()),
+                "proposer": encode_address(&message.proposer_pk.as_bytes()).unwrap_or_else(|_| "invalid".to_string()),
                 "signature": hex::encode(message.signature.as_bytes()),
                 "depth": depth,
             });
@@ -1139,8 +1203,8 @@ async fn get_all_reputations(State(state): State<Arc<AppState>>) -> Response {
     let mut reputations = HashMap::new();
 
     for (pubkey, score) in scores {
-        let key = hex::encode(pubkey.as_bytes());
-        reputations.insert(key, score.value);
+        let address = encode_address(&pubkey.as_bytes()).unwrap_or_else(|_| "invalid".to_string());
+        reputations.insert(address, score.value);
     }
 
     // Wrap in "reputations" object per API specification
@@ -1153,15 +1217,12 @@ async fn get_all_reputations(State(state): State<Arc<AppState>>) -> Response {
 
 async fn get_reputation(
     State(state): State<Arc<AppState>>,
-    Path(pubkey_hex): Path<String>,
+    Path(address): Path<String>,
 ) -> Response {
-    let pubkey_bytes = match hex::decode(&pubkey_hex) {
-        Ok(bytes) if bytes.len() == 32 => {
-            let mut key_bytes = [0u8; 32];
-            key_bytes.copy_from_slice(&bytes);
-            PublicKey::from_bytes(key_bytes)
-        }
-        _ => return StatusCode::BAD_REQUEST.into_response(),
+    // Decode adic1... address to public key bytes
+    let pubkey_bytes = match decode_address(&address) {
+        Ok(bytes) => PublicKey::from_bytes(bytes),
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
     let scores = state.node.consensus.reputation.get_all_scores().await;
@@ -1169,14 +1230,14 @@ async fn get_reputation(
 
     let response = if let Some(s) = score {
         serde_json::json!({
-            "public_key": pubkey_hex,
+            "address": address,
             "reputation": s.value,
             "messages_approved": s.messages_finalized,
             "last_updated": chrono::Utc::now().to_rfc3339(),
         })
     } else {
         serde_json::json!({
-            "public_key": pubkey_hex,
+            "address": address,
             "reputation": 1.0, // Default reputation
             "messages_approved": 0,
             "last_updated": chrono::Utc::now().to_rfc3339(),
@@ -1187,7 +1248,7 @@ async fn get_reputation(
 }
 
 async fn get_all_conflicts(State(state): State<Arc<AppState>>) -> Response {
-    let conflicts = state.node.consensus.conflicts().get_all_conflicts().await;
+    let conflicts = state.node.consensus.energy_tracker().get_all_conflicts().await;
 
     let mut conflict_list = Vec::new();
     for (conflict_id, energy) in conflicts {
@@ -1230,19 +1291,19 @@ async fn get_conflict_details(
     let energy = state
         .node
         .consensus
-        .conflicts()
+        .energy_tracker()
         .get_energy(&conflict_id)
         .await;
     let is_resolved = state
         .node
         .consensus
-        .conflicts()
-        .is_resolved(&conflict_id, 0.5)
+        .energy_tracker()
+        .is_resolved(&conflict_id)
         .await;
     let winner = state
         .node
         .consensus
-        .conflicts()
+        .energy_tracker()
         .get_winner(&conflict_id)
         .await;
 
@@ -1250,7 +1311,7 @@ async fn get_conflict_details(
     let conflict_details = state
         .node
         .consensus
-        .conflicts()
+        .energy_tracker()
         .get_conflict_details(&conflict_id)
         .await;
 
@@ -1315,14 +1376,14 @@ async fn get_detailed_statistics(State(state): State<Arc<AppState>>) -> Response
     let conflicts_count = state
         .node
         .consensus
-        .conflicts()
+        .energy_tracker()
         .get_all_conflicts()
         .await
         .len();
     let resolved_conflicts = state
         .node
         .consensus
-        .conflicts()
+        .energy_tracker()
         .get_resolved_conflicts(0.5)
         .await
         .len();
@@ -1399,7 +1460,7 @@ async fn get_deposits_summary(State(state): State<Arc<AppState>>) -> Response {
         "recent_deposits": recent_deposits.iter().map(|deposit| {
             serde_json::json!({
                 "message_id": hex::encode(deposit.message_id.as_bytes()),
-                "proposer": hex::encode(deposit.proposer_pk.as_bytes()),
+                "proposer": encode_address(&deposit.proposer_pk.as_bytes()).unwrap_or_else(|_| "invalid".to_string()),
                 "amount": deposit.amount,
                 "status": format!("{:?}", deposit.status),
                 "timestamp": deposit.timestamp,
@@ -1427,7 +1488,7 @@ async fn get_deposit_status(
         Ok(Some(deposit)) => {
             let response = serde_json::json!({
                 "message_id": hex::encode(deposit.message_id.as_bytes()),
-                "proposer": hex::encode(deposit.proposer_pk.as_bytes()),
+                "proposer": encode_address(&deposit.proposer_pk.as_bytes()).unwrap_or_else(|_| "invalid".to_string()),
                 "amount": deposit.amount,
                 "status": format!("{:?}", deposit.status),
                 "timestamp": deposit.timestamp,
@@ -1572,7 +1633,7 @@ async fn get_messages_bulk(
                     },
                     "content": general_purpose::STANDARD.encode(&message.data),
                     "timestamp": message.meta.timestamp.to_rfc3339(),
-                    "proposer_pk": hex::encode(message.proposer_pk.as_bytes()),
+                    "proposer": encode_address(&message.proposer_pk.as_bytes()).unwrap_or_else(|_| "invalid".to_string()),
                     "signature": hex::encode(message.signature.as_bytes()),
                     "depth": depth,
                 });
@@ -1677,7 +1738,7 @@ async fn get_messages_range(
             },
             "content": general_purpose::STANDARD.encode(&message.data),
             "timestamp": message.meta.timestamp.to_rfc3339(),
-            "proposer_pk": hex::encode(message.proposer_pk.as_bytes()),
+            "proposer": encode_address(&message.proposer_pk.as_bytes()).unwrap_or_else(|_| "invalid".to_string()),
             "signature": hex::encode(message.signature.as_bytes()),
             "depth": depth,
         });
@@ -1759,7 +1820,7 @@ async fn get_messages_since(
             },
             "content": general_purpose::STANDARD.encode(&message.data),
             "timestamp": message.meta.timestamp.to_rfc3339(),
-            "proposer_pk": hex::encode(message.proposer_pk.as_bytes()),
+            "proposer": encode_address(&message.proposer_pk.as_bytes()).unwrap_or_else(|_| "invalid".to_string()),
             "signature": hex::encode(message.signature.as_bytes()),
             "depth": depth,
         });
@@ -2089,7 +2150,7 @@ async fn get_diversity_stats(State(state): State<Arc<AppState>>) -> Response {
 
     // Analyze p-adic ball distribution per axis
     let mut axis_stats = Vec::new();
-    let params = &state.node.consensus.params();
+    let params = state.node.consensus.params().await;
 
     for (axis_idx, &radius) in params.rho.iter().enumerate() {
         let mut distinct_balls = std::collections::HashSet::new();
@@ -2141,7 +2202,7 @@ async fn get_active_energy_conflicts(State(state): State<Arc<AppState>>) -> Resp
     let metrics = state.node.consensus.energy_tracker.get_metrics().await;
 
     // Get all conflicts with their energy levels
-    let all_conflicts = state.node.consensus.conflicts().get_all_conflicts().await;
+    let all_conflicts = state.node.consensus.energy_tracker().get_all_conflicts().await;
     let mut active_conflicts = Vec::new();
 
     for (conflict_id, conflict_energy) in all_conflicts.iter() {
@@ -2164,7 +2225,7 @@ async fn get_active_energy_conflicts(State(state): State<Arc<AppState>>) -> Resp
 
             active_conflicts.push(serde_json::json!({
                 "conflict_id": conflict_id.to_string(),
-                "energy": conflict_energy.energy,
+                "energy": conflict_energy.total_energy,
                 "expected_drift": drift,
                 "is_descending": drift < 0.0,
                 "support": conflict_energy.support.iter()
@@ -2242,7 +2303,7 @@ async fn get_kcore_metrics(State(state): State<Arc<AppState>>) -> Response {
     };
 
     // Get k-core parameters
-    let params = state.node.consensus.params();
+    let params = state.node.consensus.params().await;
 
     let response = serde_json::json!({
         "parameters": {

@@ -4,6 +4,41 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
+/// Network type for genesis validation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkType {
+    Mainnet,
+    Testnet,
+    Devnet,
+    Custom,
+}
+
+impl NetworkType {
+    /// Determine network type from chain_id
+    pub fn from_chain_id(chain_id: &str) -> Self {
+        match chain_id {
+            "adic-dag-v1" => NetworkType::Mainnet,
+            "adic-testnet" => NetworkType::Testnet,
+            "adic-devnet" => NetworkType::Devnet,
+            _ => NetworkType::Custom,
+        }
+    }
+
+    /// Get the canonical genesis hash for this network
+    pub fn canonical_genesis_hash(&self) -> Option<&'static str> {
+        match self {
+            NetworkType::Mainnet => Some(GenesisManifest::canonical_hash()),
+            // Testnet and devnet don't have enforced canonical hashes
+            NetworkType::Testnet | NetworkType::Devnet | NetworkType::Custom => None,
+        }
+    }
+
+    /// Whether this network requires canonical genesis validation
+    pub fn requires_canonical_genesis(&self) -> bool {
+        matches!(self, NetworkType::Mainnet)
+    }
+}
+
 /// Helper to create AccountAddress from hex string
 pub fn account_address_from_hex(hex_str: &str) -> Result<AccountAddress, String> {
     let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
@@ -178,6 +213,74 @@ impl GenesisConfig {
         }
 
         Ok(())
+    }
+
+    /// Verify genesis config with network-aware canonical hash validation
+    /// This is the SECURE validation that should be used for bootstrap nodes
+    pub fn verify_with_canonical(&self, is_bootstrap: bool) -> Result<(), String> {
+        // First run basic validation
+        self.verify()?;
+
+        // Determine network type from chain_id
+        let network_type = NetworkType::from_chain_id(&self.chain_id);
+
+        // Calculate hash for all validation checks
+        let calculated_hash = self.calculate_hash();
+        let canonical_hash = GenesisManifest::canonical_hash();
+
+        // SECURITY: For bootstrap nodes, check if allocations match canonical mainnet
+        // If so, they MUST use the correct chain_id "adic-dag-v1"
+        if is_bootstrap {
+            let canonical_config = GenesisConfig::default();
+            if self.allocations == canonical_config.allocations
+                && self.timestamp == canonical_config.timestamp
+            {
+                // Allocations match canonical mainnet
+                if self.chain_id != "adic-dag-v1" {
+                    return Err(format!(
+                        "SECURITY: Genesis allocations match canonical mainnet, \
+                         but chain_id is '{}' instead of 'adic-dag-v1'. \
+                         If you want to use mainnet genesis, use chain_id 'adic-dag-v1'. \
+                         For custom networks, modify the genesis allocations.",
+                        self.chain_id
+                    ));
+                }
+            }
+        }
+
+        // SECURITY: For bootstrap nodes with mainnet chain_id, enforce canonical genesis
+        if is_bootstrap && network_type == NetworkType::Mainnet {
+            if calculated_hash != canonical_hash {
+                return Err(format!(
+                    "SECURITY: Mainnet bootstrap node MUST use canonical genesis. \
+                     Expected hash {}, got {}. \
+                     Mainnet genesis allocations cannot be customized.",
+                    canonical_hash,
+                    calculated_hash
+                ));
+            }
+        }
+
+        // For any network claiming to be mainnet (bootstrap or not), validate against canonical
+        if network_type.requires_canonical_genesis() {
+            if let Some(canonical_hash) = network_type.canonical_genesis_hash() {
+                if calculated_hash != canonical_hash {
+                    return Err(format!(
+                        "Genesis hash mismatch for {}. Expected canonical hash {}, got {}",
+                        self.chain_id,
+                        canonical_hash,
+                        calculated_hash
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the network type for this genesis configuration
+    pub fn network_type(&self) -> NetworkType {
+        NetworkType::from_chain_id(&self.chain_id)
     }
 
     /// Calculate deterministic hash of the genesis configuration

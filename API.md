@@ -75,7 +75,7 @@ Get node status including network statistics and finality metrics.
 ```json
 {
   "node_id": "a1b2c3d4e5f6789...",
-  "version": "0.1.8",
+  "version": "0.3.0",
   "capabilities": {
     "sse_streaming": false,
     "websocket": false,
@@ -624,7 +624,7 @@ Get detailed node statistics.
 {
   "node": {
     "uptime": 3600,
-    "version": "0.1.8",
+    "version": "0.3.0",
     "memory_usage": 1024000,
     "cpu_usage": 0.15
   },
@@ -1232,6 +1232,12 @@ Official SDKs are planned for:
 - Go
 
 ## Changelog
+
+### v0.3.0
+- Phase 2 complete: governance, storage market, PoUW framework integrated
+- Added BLS threshold cryptography support for decentralized governance
+- Enhanced security with libp2p hardening (67% feature reduction, custom DHT protocol)
+- No new API endpoints (focus on internal improvements and security hardening)
 
 ### v0.1.8
 - Added genesis system endpoints (GET /v1/economics/genesis, POST /v1/economics/initialize)

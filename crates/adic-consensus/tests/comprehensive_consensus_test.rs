@@ -1,6 +1,6 @@
 use adic_consensus::{
-    AdmissibilityChecker, ConflictResolver, ConsensusEngine, EnergyDescentTracker,
-    MessageValidator, ReputationTracker,
+    AdmissibilityChecker, ConsensusEngine, EnergyDescentTracker, MessageValidator,
+    ReputationTracker,
 };
 use adic_crypto::Keypair;
 use adic_storage::{store::BackendType, StorageConfig, StorageEngine};
@@ -481,63 +481,6 @@ async fn test_c1_c2_c3_constraint_edge_cases() {
     }
 }
 
-// ============= Byzantine Fault Scenarios =============
-
-#[tokio::test]
-async fn test_byzantine_double_voting_detection() {
-    let storage = StorageEngine::new(StorageConfig {
-        backend_type: BackendType::Memory,
-        ..Default::default()
-    })
-    .unwrap();
-
-    let conflict_resolver = ConflictResolver::new();
-    let keypair = Keypair::generate();
-    let byzantine_proposer = *keypair.public_key();
-
-    // Byzantine node creates two conflicting messages with same parents
-    let msg1 = create_message_with_parents_and_features(
-        1,
-        vec![],
-        byzantine_proposer,
-        vec![(0, 100)], // Claims value 100
-    );
-
-    let msg2 = create_message_with_parents_and_features(
-        2,
-        vec![],
-        byzantine_proposer,
-        vec![(0, 200)], // Claims different value 200
-    );
-
-    // Both reference the same logical slot (detected by application logic)
-    storage.store_message(&msg1).await.unwrap();
-    storage.store_message(&msg2).await.unwrap();
-
-    // Register as conflict with messages
-    conflict_resolver
-        .register_conflict_with_messages("byzantine_double_vote", vec![msg1.id, msg2.id])
-        .await;
-
-    // Track proposer's conflict
-    conflict_resolver
-        .register_proposer_conflict(&byzantine_proposer)
-        .await;
-
-    // Check if conflict detected
-    let conflicts = conflict_resolver.get_conflicts_for_message(&msg1.id).await;
-    assert!(!conflicts.is_empty());
-
-    let conflicts2 = conflict_resolver.get_conflicts_for_message(&msg2.id).await;
-    assert!(!conflicts2.is_empty());
-
-    // Verify byzantine proposer is penalized
-    let penalty = conflict_resolver
-        .get_proposer_conflict_count(&byzantine_proposer)
-        .await;
-    assert!(penalty > 0);
-}
-
 #[tokio::test]
 async fn test_byzantine_ancestor_manipulation() {
     let storage = StorageEngine::new(StorageConfig {
@@ -731,106 +674,4 @@ async fn test_full_consensus_flow_with_storage() {
         let score = reputation.get_reputation(proposer).await;
         assert!(score > 0.1); // All should maintain some reputation
     }
-}
-
-#[tokio::test]
-async fn test_multi_node_conflict_resolution() {
-    let params = AdicParams {
-        lambda: 1.0,
-        mu: 0.5,
-        ..Default::default()
-    };
-
-    let storage = Arc::new(
-        StorageEngine::new(StorageConfig {
-            backend_type: BackendType::Memory,
-            ..Default::default()
-        })
-        .unwrap(),
-    );
-
-    let reputation = Arc::new(ReputationTracker::new(params.gamma));
-    let energy_resolver = Arc::new(EnergyDescentTracker::new(params.lambda, params.mu));
-    let conflict_resolver = Arc::new(ConflictResolver::new());
-
-    // Create conflicting transactions
-    let keypair1 = Keypair::generate();
-    let keypair2 = Keypair::generate();
-    let proposer1 = *keypair1.public_key();
-    let proposer2 = *keypair2.public_key();
-
-    // Both try to spend the same resource
-    let resource_id = "utxo_12345";
-
-    let msg1 = create_message_with_parents_and_features(
-        1,
-        vec![],
-        proposer1,
-        vec![(0, 100)], // Spend to address 100
-    );
-
-    let msg2 = create_message_with_parents_and_features(
-        2,
-        vec![],
-        proposer2,
-        vec![(0, 200)], // Spend to address 200
-    );
-
-    storage.store_message(&msg1).await.unwrap();
-    storage.store_message(&msg2).await.unwrap();
-
-    // Register conflict
-    let conflict_id = ConflictId::new(resource_id.to_string());
-    energy_resolver.register_conflict(conflict_id.clone()).await;
-    conflict_resolver
-        .register_conflict_with_messages(resource_id, vec![msg1.id, msg2.id])
-        .await;
-
-    // Simulate nodes voting with converging support
-    for i in 0..10 {
-        // Start with disputed support, gradually converge
-        let _support1 = 0.6 + (i as f64 * 0.03); // Increases to 0.9
-        let _support2 = 0.4 - (i as f64 * 0.03); // Decreases to 0.1
-
-        energy_resolver
-            .update_support(&conflict_id, msg1.id, &storage, &reputation)
-            .await
-            .unwrap();
-        energy_resolver
-            .update_support(&conflict_id, msg2.id, &storage, &reputation)
-            .await
-            .unwrap();
-    }
-
-    // Force energy descent by reducing total support
-    for _depth in 2..5 {
-        energy_resolver
-            .update_support(&conflict_id, msg1.id, &storage, &reputation)
-            .await
-            .unwrap();
-        energy_resolver
-            .update_support(&conflict_id, msg2.id, &storage, &reputation)
-            .await
-            .unwrap();
-    }
-
-    // Check resolution - may not be resolved yet due to threshold
-    let _winner = energy_resolver.get_winner(&conflict_id).await;
-
-    // At minimum, verify the conflict state is tracked
-    let msg1_energy = energy_resolver
-        .get_conflict_penalty(&msg1.id, &conflict_id)
-        .await;
-    let msg2_energy = energy_resolver
-        .get_conflict_penalty(&msg2.id, &conflict_id)
-        .await;
-
-    // The message with higher support should have lower penalty
-    assert!(msg1_energy <= msg2_energy);
-
-    // Verify conflict resolver consistency
-    let msg1_conflicts = conflict_resolver.get_conflicts_for_message(&msg1.id).await;
-    let msg2_conflicts = conflict_resolver.get_conflicts_for_message(&msg2.id).await;
-    assert!(!msg1_conflicts.is_empty());
-    assert!(!msg2_conflicts.is_empty());
 }

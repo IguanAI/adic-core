@@ -99,7 +99,10 @@ node.key
 
 # Test data and config directories
 /test-data/
-/config/
+# Essential network configs are tracked: mainnet.toml, testnet.toml, devnet.toml, bootstrap-node.toml, logging-example.toml
+# Ignore only node-specific and override configs
+/config/node*.toml
+/config/*-override.toml
 test-node-data*/
 node*/
 certs*/
@@ -327,6 +330,7 @@ backup/
 backups/
 archive/
 archives/
+.archive-docs/
 *.old
 *.save
 

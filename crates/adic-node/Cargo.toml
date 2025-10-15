@@ -10,7 +10,7 @@ name = "adic"
 path = "src/main.rs"
 
 [dependencies]
-adic-types = { path = "../adic-types" }
+adic-types = { path = "../adic-types", features = ["governance", "pouw"] }
 adic-math = { path = "../adic-math" }
 adic-crypto = { path = "../adic-crypto" }
 adic-consensus = { path = "../adic-consensus" }
@@ -19,6 +19,14 @@ adic-mrw = { path = "../adic-mrw" }
 adic-finality = { path = "../adic-finality" }
 adic-storage = { path = "../adic-storage" }
 adic-network = { path = "../adic-network" }
+adic-vrf = { path = "../adic-vrf" }
+adic-quorum = { path = "../adic-quorum" }
+adic-app-common = { path = "../adic-app-common" }
+adic-pouw = { path = "../adic-pouw" }
+adic-governance = { path = "../adic-governance" }
+adic-storage-market = { path = "../adic-storage-market" }
+adic-challenges = { path = "../adic-challenges" }
+blake3 = { workspace = true }
 
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
@@ -50,16 +58,31 @@ headers = "0.4"
 base64 = "0.22.1"
 sha2 = "0.10"
 rpassword = "7.3"
+# Authenticated encryption for wallet keys (replaces p-adic crypto)
+sodiumoxide = "0.2"
 indicatif = "0.17"
 console = "0.15"
 nix = { version = "0.29", features = ["process", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 utoipa = { version = "4.2", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "6.0", features = ["axum"] }
 
 [features]
 default = ["rocksdb"]
 rocksdb = ["adic-storage/rocksdb"]
+# Legacy p-adic wallet encryption (v3) - DO NOT USE IN PRODUCTION
+# Only for development/testing migration from old wallets
+legacy-padic-wallet = []
 
 [dev-dependencies]
 tempfile = "3"
 ed25519-dalek = "2"
+blake3 = { workspace = true }
+rand = { workspace = true }
+adic-app-common = { path = "../adic-app-common" }
+adic-challenges = { path = "../adic-challenges" }
+adic-pouw = { path = "../adic-pouw" }
+adic-quorum = { path = "../adic-quorum" }
+adic-storage-market = { path = "../adic-storage-market" }
+adic-vrf = { path = "../adic-vrf" }
+adic-governance = { path = "../adic-governance" }

@@ -115,8 +115,11 @@ impl RateLimiter {
 
 pub struct MessagePipeline {
     config: PipelineConfig,
-    priority_queue: Arc<RwLock<Vec<QueuedMessage>>>,
+    // Separate queues per priority level for O(1) insertion instead of O(n log n) sorting
+    critical_queue: Arc<RwLock<VecDeque<QueuedMessage>>>,
+    high_queue: Arc<RwLock<VecDeque<QueuedMessage>>>,
     normal_queue: Arc<RwLock<VecDeque<QueuedMessage>>>,
+    low_queue: Arc<RwLock<VecDeque<QueuedMessage>>>,
     rate_limiter: Arc<RateLimiter>,
     validation_semaphore: Arc<Semaphore>,
     stats: Arc<RwLock<PipelineStats>>,
@@ -149,8 +152,11 @@ impl MessagePipeline {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
 
         Self {
-            priority_queue: Arc::new(RwLock::new(Vec::with_capacity(config.priority_queue_size))),
+            // Allocate priority queues - total capacity split among priority levels
+            critical_queue: Arc::new(RwLock::new(VecDeque::with_capacity(config.priority_queue_size / 4))),
+            high_queue: Arc::new(RwLock::new(VecDeque::with_capacity(config.priority_queue_size / 4))),
             normal_queue: Arc::new(RwLock::new(VecDeque::with_capacity(config.max_queue_size))),
+            low_queue: Arc::new(RwLock::new(VecDeque::with_capacity(config.priority_queue_size / 2))),
             rate_limiter: Arc::new(RateLimiter::new(
                 config.rate_limit_per_peer,
                 config.rate_limit_window,
@@ -181,24 +187,39 @@ impl MessagePipeline {
         // Determine priority
         let priority = self.determine_priority(&message);
 
-        // Queue the message
+        // Queue the message - no sorting needed, each priority has its own queue
         let queued = QueuedMessage::new(message.clone(), priority, source);
 
         match priority {
-            MessagePriority::Critical | MessagePriority::High => {
-                let mut queue = self.priority_queue.write().await;
-                if queue.len() >= self.config.priority_queue_size {
+            MessagePriority::Critical => {
+                let mut queue = self.critical_queue.write().await;
+                if queue.len() >= self.config.priority_queue_size / 4 {
                     self.event_sender.send(PipelineEvent::QueueFull).ok();
-                    return Err(AdicError::Network("Priority queue full".to_string()));
+                    return Err(AdicError::Network("Critical queue full".to_string()));
                 }
-                queue.push(queued);
-                queue.sort_by_key(|m| m.priority);
+                queue.push_back(queued);
             }
-            _ => {
+            MessagePriority::High => {
+                let mut queue = self.high_queue.write().await;
+                if queue.len() >= self.config.priority_queue_size / 4 {
+                    self.event_sender.send(PipelineEvent::QueueFull).ok();
+                    return Err(AdicError::Network("High priority queue full".to_string()));
+                }
+                queue.push_back(queued);
+            }
+            MessagePriority::Normal => {
                 let mut queue = self.normal_queue.write().await;
                 if queue.len() >= self.config.max_queue_size {
                     self.event_sender.send(PipelineEvent::QueueFull).ok();
                     return Err(AdicError::Network("Normal queue full".to_string()));
+                }
+                queue.push_back(queued);
+            }
+            MessagePriority::Low => {
+                let mut queue = self.low_queue.write().await;
+                if queue.len() >= self.config.priority_queue_size / 2 {
+                    self.event_sender.send(PipelineEvent::QueueFull).ok();
+                    return Err(AdicError::Network("Low priority queue full".to_string()));
                 }
                 queue.push_back(queued);
             }
@@ -207,7 +228,11 @@ impl MessagePipeline {
         let mut stats = self.stats.write().await;
         stats.messages_received += 1;
         stats.queue_depth = self.normal_queue.read().await.len();
-        stats.priority_queue_depth = self.priority_queue.read().await.len();
+        // Priority queue depth is now the sum of critical + high + low queues
+        stats.priority_queue_depth =
+            self.critical_queue.read().await.len() +
+            self.high_queue.read().await.len() +
+            self.low_queue.read().await.len();
 
         self.event_sender
             .send(PipelineEvent::MessageQueued(message.id, priority))
@@ -217,10 +242,8 @@ impl MessagePipeline {
     }
 
     fn determine_priority(&self, message: &AdicMessage) -> MessagePriority {
-        // Check if it's a finality message (simplified check)
-        if message.meta.axes.contains_key("finality") {
-            return MessagePriority::Critical;
-        }
+        // Note: Finality updates are sent via GossipMessage::FinalityUpdate,
+        // not through AdicMessage axes. This pipeline prioritizes message validation.
 
         // Check if it has a value transfer - high priority for economic activity
         if message.has_value_transfer() {
@@ -247,21 +270,44 @@ impl MessagePipeline {
         let mut validated_messages = Vec::new();
         let mut batch = Vec::new();
 
-        // Get messages from priority queue first
+        // Drain from queues in priority order: Critical -> High -> Normal -> Low
+        // Process up to batch_size messages
+
+        // Critical queue first (highest priority)
         {
-            let mut priority_queue = self.priority_queue.write().await;
-            while batch.len() < self.config.batch_size / 2 && !priority_queue.is_empty() {
-                if let Some(queued) = priority_queue.pop() {
+            let mut critical_queue = self.critical_queue.write().await;
+            while batch.len() < self.config.batch_size && !critical_queue.is_empty() {
+                if let Some(queued) = critical_queue.pop_front() {
                     batch.push(queued);
                 }
             }
         }
 
-        // Fill remaining from normal queue
+        // High priority queue
+        {
+            let mut high_queue = self.high_queue.write().await;
+            while batch.len() < self.config.batch_size && !high_queue.is_empty() {
+                if let Some(queued) = high_queue.pop_front() {
+                    batch.push(queued);
+                }
+            }
+        }
+
+        // Normal queue
         {
             let mut normal_queue = self.normal_queue.write().await;
             while batch.len() < self.config.batch_size && !normal_queue.is_empty() {
                 if let Some(queued) = normal_queue.pop_front() {
+                    batch.push(queued);
+                }
+            }
+        }
+
+        // Low priority queue (only if batch not full)
+        {
+            let mut low_queue = self.low_queue.write().await;
+            while batch.len() < self.config.batch_size && !low_queue.is_empty() {
+                if let Some(queued) = low_queue.pop_front() {
                     batch.push(queued);
                 }
             }
@@ -338,9 +384,19 @@ impl MessagePipeline {
                 .unwrap();
 
             handles.push(tokio::spawn(async move {
-                // let message_bytes = message.to_bytes();
-                // Simplified signature verification - would use adic_crypto when available
-                let is_valid = !message.signature.as_bytes().is_empty();
+                // Full cryptographic signature verification using Ed25519
+                let crypto = adic_crypto::CryptoEngine::new();
+                let is_valid = crypto
+                    .verify_signature(&message, &message.proposer_pk, &message.signature)
+                    .unwrap_or(false);
+
+                if !is_valid {
+                    debug!(
+                        message_id = ?message.id,
+                        "❌ Signature verification failed for message"
+                    );
+                }
+
                 drop(permit);
                 (message.id, is_valid)
             }));
@@ -395,11 +451,10 @@ impl MessagePipeline {
     }
 
     pub async fn clear_queues(&self) {
-        let mut priority_queue = self.priority_queue.write().await;
-        priority_queue.clear();
-
-        let mut normal_queue = self.normal_queue.write().await;
-        normal_queue.clear();
+        self.critical_queue.write().await.clear();
+        self.high_queue.write().await.clear();
+        self.normal_queue.write().await.clear();
+        self.low_queue.write().await.clear();
 
         let mut stats = self.stats.write().await;
         stats.queue_depth = 0;
@@ -413,24 +468,44 @@ impl MessagePipeline {
     }
 
     pub async fn get_pending_messages(&self) -> Vec<AdicMessage> {
-        // Get a batch of pending messages from both queues
+        // Get a batch of pending messages from all queues in priority order
         let mut messages = Vec::new();
 
-        // First get high priority messages
+        // Critical priority first
         {
-            let mut priority_queue = self.priority_queue.write().await;
-            while messages.len() < 50 && !priority_queue.is_empty() {
-                if let Some(queued) = priority_queue.pop() {
+            let mut critical_queue = self.critical_queue.write().await;
+            while messages.len() < 25 && !critical_queue.is_empty() {
+                if let Some(queued) = critical_queue.pop_front() {
                     messages.push(queued.message);
                 }
             }
         }
 
-        // Then get normal priority messages
+        // High priority
+        {
+            let mut high_queue = self.high_queue.write().await;
+            while messages.len() < 50 && !high_queue.is_empty() {
+                if let Some(queued) = high_queue.pop_front() {
+                    messages.push(queued.message);
+                }
+            }
+        }
+
+        // Normal priority
         {
             let mut normal_queue = self.normal_queue.write().await;
             while messages.len() < 100 && !normal_queue.is_empty() {
                 if let Some(queued) = normal_queue.pop_front() {
+                    messages.push(queued.message);
+                }
+            }
+        }
+
+        // Low priority (if space available)
+        {
+            let mut low_queue = self.low_queue.write().await;
+            while messages.len() < 100 && !low_queue.is_empty() {
+                if let Some(queued) = low_queue.pop_front() {
                     messages.push(queued.message);
                 }
             }
@@ -460,7 +535,7 @@ impl MessagePipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adic_types::{AdicFeatures, AdicMeta, PublicKey};
+    use adic_types::{AdicFeatures, AdicMeta, ConflictId, PublicKey};
 
     #[tokio::test]
     async fn test_rate_limiter() {
@@ -501,18 +576,16 @@ mod tests {
         let config = PipelineConfig::default();
         let pipeline = MessagePipeline::new(config);
 
-        let mut critical_msg = AdicMessage::new(
+        // Create a high-priority message with a conflict (per determine_priority logic)
+        let high_priority_msg = AdicMessage::new(
             vec![],
             AdicFeatures::new(vec![]),
-            AdicMeta::new(chrono::Utc::now()),
+            AdicMeta::new(chrono::Utc::now()).with_conflict(ConflictId::new("test-conflict".to_string())),
             PublicKey::from_bytes([0; 32]),
             vec![],
         );
-        critical_msg
-            .meta
-            .axes
-            .insert("finality".to_string(), "true".to_string());
 
+        // Create a normal priority message (no conflict, no transfer)
         let normal_msg = AdicMessage::new(
             vec![],
             AdicFeatures::new(vec![]),
@@ -523,11 +596,11 @@ mod tests {
 
         let peer = PeerId::random();
         pipeline.submit_message(normal_msg, peer).await.unwrap();
-        pipeline.submit_message(critical_msg, peer).await.unwrap();
+        pipeline.submit_message(high_priority_msg, peer).await.unwrap();
 
         let stats = pipeline.get_stats().await;
         assert_eq!(stats.messages_received, 2);
-        assert_eq!(stats.priority_queue_depth, 1);
-        assert_eq!(stats.queue_depth, 1);
+        assert_eq!(stats.priority_queue_depth, 1); // Conflict message goes to priority queue
+        assert_eq!(stats.queue_depth, 1); // Normal message goes to normal queue
     }
 }
